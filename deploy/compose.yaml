@@ -1,0 +1,36 @@
+name: ${COMPOSE_PROJECT_NAME:-quickbooks-ledger-mcp}
+
+services:
+  quickbooks-mcp:
+    image: ${QUICKBOOKS_APP_IMAGE:?Set QUICKBOOKS_APP_IMAGE}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    env_file: [.env.quickbooks]
+    ports:
+      - target: 3000
+        published: ${QUICKBOOKS_LOOPBACK_PORT:-18003}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777,uid=10001,gid=10001"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    pids_limit: 256
+    mem_limit: ${QUICKBOOKS_MEMORY_LIMIT:-768m}
+    cpus: ${QUICKBOOKS_CPU_LIMIT:-1.0}
+    stop_grace_period: 30s
+    networks: [quickbooks-egress, quickbooks-data]
+
+networks:
+  quickbooks-egress:
+    external: true
+    name: ${QUICKBOOKS_EGRESS_NETWORK:?Set QUICKBOOKS_EGRESS_NETWORK}
+  quickbooks-data:
+    external: true
+    name: ${QUICKBOOKS_DATA_NETWORK:?Set QUICKBOOKS_DATA_NETWORK}

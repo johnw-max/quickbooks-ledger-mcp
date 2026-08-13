@@ -1,0 +1,234 @@
+import type { DeterministicValidationReceipt } from "../ledger-control/deterministicValidation.js";
+import type { QuickBooksWritableEntity, QuickBooksWriteOperation } from "./writePolicy.js";
+
+export const QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION = "0.1.0";
+export const QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION = "quickbooks-sg-core-v1";
+
+/**
+ * Public Accounting Case release boundary. The official Intuit write catalog is
+ * deliberately broader; only these compiler-owned actions can be executed from
+ * the Agent-facing Case tools in this release.
+ */
+export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES = [
+  "CREATE:Customer",
+  "CREATE:Vendor",
+  "CREATE:Invoice",
+  "CREATE:Bill",
+  "CREATE:CreditMemo",
+  "CREATE:VendorCredit",
+] as const;
+
+export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS = [
+  "customer.create_basic",
+  "vendor.create_basic",
+  "invoice.create",
+  "bill.create",
+  "credit_memo.create",
+  "vendor_credit.create",
+] as const;
+
+export const QUICKBOOKS_ACCOUNTING_FACT_KINDS = [
+  "CONTACT_CANDIDATE",
+  "NATIVE_DOCUMENT",
+  "EVIDENCE",
+  "CONTROL_FINDING",
+] as const;
+
+export type QuickBooksAccountingFactKind = typeof QUICKBOOKS_ACCOUNTING_FACT_KINDS[number];
+export type QuickBooksAccountingFactOrigin = "MODEL_EXTRACTED" | "AGENT_ASSERTED";
+
+export interface QuickBooksSourceUnit {
+  unitId: string;
+  expectedFactKinds: QuickBooksAccountingFactKind[];
+}
+
+export interface QuickBooksSourceArtifact {
+  artifactId: string;
+  label: string;
+  units: QuickBooksSourceUnit[];
+}
+
+interface QuickBooksFactBase {
+  factId: string;
+  lineageKey: string;
+  eventKey: string;
+  sourceUnitIds: string[];
+  origin: QuickBooksAccountingFactOrigin;
+  revision: number;
+  supersedesFactId?: string;
+}
+
+export interface QuickBooksContactCandidateFact extends QuickBooksFactBase {
+  kind: "CONTACT_CANDIDATE";
+  role: "CUSTOMER" | "VENDOR";
+  displayName: string;
+  email?: string;
+  companyName?: string;
+}
+
+export type QuickBooksNativeDocumentType = "INVOICE" | "BILL" | "CREDIT_MEMO" | "VENDOR_CREDIT";
+
+export interface QuickBooksNativeDocumentLine {
+  lineId: string;
+  description: string;
+  quantity: string;
+  unitAmount: string;
+  sourceTax: string;
+  codingType: "ITEM" | "ACCOUNT";
+  codingName: string;
+  taxCodeName?: string;
+}
+
+export interface QuickBooksNativeDocumentFact extends QuickBooksFactBase {
+  kind: "NATIVE_DOCUMENT";
+  documentType: QuickBooksNativeDocumentType;
+  counterpartyName: string;
+  documentDate: string;
+  dueDate?: string;
+  documentNumber?: string;
+  currency: string;
+  taxMode: "NO_TAX" | "TAX_EXCLUDED" | "TAX_INCLUSIVE";
+  lines: QuickBooksNativeDocumentLine[];
+  declaredNet: string;
+  declaredTax: string;
+  declaredGross: string;
+  businessReason: string;
+}
+
+export interface QuickBooksEvidenceFact extends QuickBooksFactBase {
+  kind: "EVIDENCE";
+  evidenceRole: "SOURCE_DOCUMENT" | "APPROVAL" | "CORRESPONDENCE" | "CONTROL_SUPPORT";
+  relatedEventKey?: string;
+  note: string;
+}
+
+export interface QuickBooksControlFindingFact extends QuickBooksFactBase {
+  kind: "CONTROL_FINDING";
+  severity: "INFO" | "WARNING" | "BLOCK_WRITE";
+  relatedEventKey?: string;
+  code: string;
+  note: string;
+}
+
+export type QuickBooksAccountingFact =
+  | QuickBooksContactCandidateFact
+  | QuickBooksNativeDocumentFact
+  | QuickBooksEvidenceFact
+  | QuickBooksControlFindingFact;
+
+export type QuickBooksCaseEventDisposition =
+  | "AUTO_EXECUTE"
+  | "EVIDENCE_ONLY"
+  | "BLOCKED_COVERAGE"
+  | "BLOCKED_VALIDATION"
+  | "REVIEW_REQUIRED";
+
+export interface QuickBooksCaseEvent {
+  eventId: string;
+  eventKey: string;
+  primaryFactId?: string;
+  factIds: string[];
+  sourceUnitIds: string[];
+  disposition: QuickBooksCaseEventDisposition;
+  reasonCodes: string[];
+  route?: QuickBooksNativeDocumentType | "CONTACT_CREATE";
+}
+
+export interface QuickBooksCaseOperationCandidate {
+  operationId: string;
+  eventId: string;
+  actionId: string;
+  entity: QuickBooksWritableEntity;
+  operation: QuickBooksWriteOperation;
+  sourceUnitIds: string[];
+  primaryFactId: string;
+}
+
+export interface QuickBooksCaseCompilationDraft {
+  caseId: string;
+  version: number;
+  providerId: "quickbooks";
+  sourceRevisionHash: string;
+  compilerVersion: string;
+  policyVersion: string;
+  activeFacts: QuickBooksAccountingFact[];
+  events: QuickBooksCaseEvent[];
+  operationCandidates: QuickBooksCaseOperationCandidate[];
+  status: "BLOCKED_COVERAGE" | "BLOCKED_VALIDATION" | "PLANNED_NEEDS_PREFLIGHT" | "PLANNED_WITH_EXCEPTIONS";
+  coverage: {
+    expectedArtifactCount: number;
+    expectedSourceUnitCount: number;
+    expectedFactRequirementCount: number;
+    satisfiedFactRequirementCount: number;
+    missingFactRequirements: string[];
+  };
+}
+
+export interface QuickBooksCaseOperation extends QuickBooksCaseOperationCandidate {
+  canonicalPayload: Record<string, unknown>;
+  canonicalPayloadHash: string;
+  validationReceipt: DeterministicValidationReceipt;
+}
+
+export interface CompiledQuickBooksAccountingCase extends QuickBooksCaseCompilationDraft {
+  realmId: string;
+  companyName: string;
+  baseCurrency: string;
+  operations: QuickBooksCaseOperation[];
+}
+
+export type QuickBooksCaseOperationState =
+  | "PENDING"
+  | "PREPARED"
+  | "READBACK_VERIFIED"
+  | "WRITE_UNCERTAIN"
+  | "READBACK_MISMATCH"
+  | "PROVIDER_REJECTED"
+  | "BLOCKED_VALIDATION";
+
+export interface QuickBooksCaseOperationRecord {
+  operation: QuickBooksCaseOperation;
+  state: QuickBooksCaseOperationState;
+  preparationId?: string;
+  mutationRequestId?: string;
+  providerEntityId?: string;
+  authorizationReceipt?: Record<string, unknown>;
+  writeReceipt?: Record<string, unknown>;
+  readback?: Record<string, unknown>;
+  errorReceipt?: Record<string, unknown>;
+}
+
+export type QuickBooksCaseState =
+  | "BLOCKED_COVERAGE"
+  | "BLOCKED_VALIDATION"
+  | "PLANNED_NEEDS_PREFLIGHT"
+  | "PLANNED_WITH_EXCEPTIONS"
+  | "EXECUTING"
+  | "RECOVERY_REQUIRED"
+  | "TERMINAL";
+
+export interface QuickBooksCaseBinding {
+  actorId: string;
+  workspaceId: string;
+  subjectType: "USER" | "TEAM";
+  subjectId: string;
+  agentId: string;
+  installationId: string;
+  bindingId: string;
+  bindingRevision: number;
+  connectionId: string;
+  realmId: string;
+  targetSessionHash: string;
+}
+
+export interface QuickBooksAccountingCaseRecord {
+  binding: QuickBooksCaseBinding;
+  compiled: CompiledQuickBooksAccountingCase;
+  compiledPlanHash: string;
+  state: QuickBooksCaseState;
+  executionRequestId?: string;
+  operations: QuickBooksCaseOperationRecord[];
+  terminalSummary?: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}

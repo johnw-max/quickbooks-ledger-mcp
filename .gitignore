@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+dist/
+coverage/
+output/
+test-results/
+*.log
+
+.env
+.env.*
+deploy/.env*
+config/*.local
+
+*.pem
+*.key
+*.crt

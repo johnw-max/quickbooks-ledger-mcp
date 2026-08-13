@@ -1,0 +1,12 @@
+.git
+.github
+node_modules
+dist
+coverage
+output
+test-results
+.env
+.env.*
+deploy/.env*
+config/*.local
+*.log
