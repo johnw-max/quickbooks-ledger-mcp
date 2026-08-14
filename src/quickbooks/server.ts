@@ -213,11 +213,17 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   const errorClass = error instanceof Error ? error.name : "StartupError";
+  const errorMessage = error instanceof Error
+    ? error.message
+      .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "[REDACTED_DATABASE_URL]")
+      .slice(0, 1_024)
+    : "QuickBooks startup failed with a non-Error value.";
   console.error(JSON.stringify({
     timestamp: new Date().toISOString(),
     level: "error",
     message: "QuickBooks startup failed.",
     errorClass,
+    errorMessage,
   }));
   process.exitCode = 1;
 });
