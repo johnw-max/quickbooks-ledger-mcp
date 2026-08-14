@@ -1,4 +1,5 @@
 import type { Server } from "node:http";
+import { resolve } from "node:path";
 import { Pool } from "pg";
 import { createLogger } from "../logging.js";
 import { Aes256GcmTokenCipher } from "../security/tokenCipher.js";
@@ -21,10 +22,15 @@ import { QuickBooksAccountingCaseService } from "./accountingCaseService.js";
 import { QuickBooksPostgresAccountingCaseRepository } from "./postgresAccountingCaseRepository.js";
 import { QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES } from "./accountingCase.js";
 import { QuickBooksPostgresControlRepository } from "./postgresControlRepository.js";
+import { runQuickBooksMigrations } from "./migrate.js";
+import { inspectQuickBooksRuntimeReadiness } from "./runtimeReadiness.js";
+import { QUICKBOOKS_MUTATION_EXECUTION_LEASE_MS } from "./mutationExecutionAttempt.js";
 
 async function main(): Promise<void> {
   const config = loadQuickBooksConfig();
   const logger = createLogger(config);
+  const migrationsDirectory = resolve(process.cwd(), "migrations");
+  await runQuickBooksMigrations(config.databaseUrl, migrationsDirectory);
   const pool = new Pool({ connectionString: config.databaseUrl, max: 10 });
   const controlRepository = new QuickBooksPostgresControlRepository(pool);
   const connectionRepository = new QuickBooksPostgresConnectionRepository(pool);
@@ -103,12 +109,48 @@ async function main(): Promise<void> {
     repository: mcpOAuthRepository,
     manager,
     qbo: managerConfig,
-    client: config.mcpOAuth,
+    config: config.mcpOAuth,
     cipher,
     onActorSecurityRevoked: async (actorId) => {
       await reviews.revokeActorSessions(actorId);
     },
   }) : undefined;
+  const runtimeReadiness = () => inspectQuickBooksRuntimeReadiness({
+    pool,
+    migrationsDirectory,
+    controlRepositoryReady: () => controlRepository.readiness(),
+    mutationRepositoryReady: () => mutationRepository.readiness(),
+    accountingCaseRepositoryReady: () => accountingCaseRepository.readiness(),
+  });
+  const reconcileExecutionAttempts = async () => {
+    const reconciliation = await mutationRepository.reconcileStaleExecutionAttempts(new Date());
+    if (reconciliation.stalePreDispatchReclaimable > 0 || reconciliation.transitionedToUnknownNoId > 0) {
+      logger.info("QuickBooks mutation execution attempts reconciled.", {
+        stalePreDispatchReclaimable: reconciliation.stalePreDispatchReclaimable,
+        transitionedToUnknownNoId: reconciliation.transitionedToUnknownNoId,
+        oldestStaleAt: reconciliation.oldestStaleAt?.toISOString(),
+      });
+    }
+  };
+  let startupReadiness: Awaited<ReturnType<typeof runtimeReadiness>>;
+  try {
+    startupReadiness = await runtimeReadiness();
+  } catch (error) {
+    await pool.end();
+    throw error;
+  }
+  if (!startupReadiness.ready) {
+    await pool.end();
+    throw new Error(`QuickBooks startup readiness failed: ${JSON.stringify({
+      persistence: startupReadiness.persistence.status,
+      migrations: startupReadiness.migrations.status,
+      missingMigrations: startupReadiness.migrations.missingCount,
+      unexpectedMigrations: startupReadiness.migrations.unexpectedCount,
+      checksumMismatches: startupReadiness.migrations.checksumMismatchCount,
+      legacyCompilerRows: startupReadiness.migrations.legacyCompilerRowCount,
+    })}`);
+  }
+  await reconcileExecutionAttempts();
   const app = createQuickBooksHttpApp({
     config,
     workflow,
@@ -118,15 +160,7 @@ async function main(): Promise<void> {
     ...(mcpOAuth ? { mcpOAuth } : {}),
     reviews,
     tickets,
-    readiness: async () => {
-      const [controlReady, qboReady, mutationReady, accountingCaseReady] = await Promise.all([
-        controlRepository.readiness(),
-        pool.query("SELECT 1").then(() => true).catch(() => false),
-        mutationRepository.readiness(),
-        accountingCaseRepository.readiness(),
-      ]);
-      return controlReady && qboReady && mutationReady && accountingCaseReady;
-    },
+    readiness: runtimeReadiness,
     logger,
   });
 
@@ -145,10 +179,20 @@ async function main(): Promise<void> {
   });
   logger.info("QuickBooks Accounting MCP server started.", { host: config.host, port: config.port });
 
+  const executionReconciler = setInterval(() => {
+    void reconcileExecutionAttempts().catch((error: unknown) => {
+      logger.error("QuickBooks mutation execution reconciliation failed.", {
+        errorClass: error instanceof Error ? error.name : "ExecutionReconciliationError",
+      });
+    });
+  }, Math.max(30_000, Math.floor(QUICKBOOKS_MUTATION_EXECUTION_LEASE_MS / 2)));
+  executionReconciler.unref();
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(executionReconciler);
     logger.info("QuickBooks Accounting MCP server stopping.");
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());

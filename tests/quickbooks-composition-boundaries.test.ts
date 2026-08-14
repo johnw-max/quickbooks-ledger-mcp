@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { assertInternalQuickBooksCaller } from "../src/quickbooks/callerPolicy.js";
 import { verifyQuickBooksSourceAttestation } from "../src/quickbooks/sourceAttestation.js";
 import type { RequestContext } from "../src/security/requestContext.js";
+import { createOAuthRequestContextFromAuthInfo } from "../src/security/requestContext.js";
 import {
   quickBooksPrepareMutationSchema,
   quickBooksPrepareSupplierBillSchema,
@@ -44,14 +45,52 @@ describe("QuickBooks composition trust boundaries", () => {
       bindingId: "binding-a",
       connectionId: "connection-a",
       bindingRevision: 1,
+      identityAssurance: "TRUSTED_HOST_CONTEXT" as const,
     };
     expect(assertInternalQuickBooksCaller(context({
       ...trusted,
       actorId: "workspace-a:user:user-a",
     }))).toBe("TRUSTED_HOST_CONTEXT");
+    expect(assertInternalQuickBooksCaller(context({
+      ...trusted,
+      identityAssurance: "INSTALLATION_ONLY",
+      actorId: "workspace-a:user:user-a",
+    }))).toBe("INSTALLATION_ONLY");
     expect(() => assertInternalQuickBooksCaller(context({ ...trusted, actorId: "installation-a" }))).toThrow(
       expect.objectContaining({ code: "FORBIDDEN" }),
     );
+  });
+
+  it("does not let Broker AuthInfo self-upgrade to trusted Host identity", () => {
+    const audience = "https://mcp.jiayuanwang.xyz/quickbooks/mcp";
+    const contextFromBroker = createOAuthRequestContextFromAuthInfo({
+      issuer: "https://mcp.jiayuanwang.xyz/quickbooks/oauth",
+      expectedAudience: audience,
+      authInfo: {
+        token: "discarded-opaque-token",
+        clientId: "work-quickbooks",
+        scopes: ["quickbooks.read"],
+        expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
+        resource: new URL(audience),
+        extra: {
+          credentialId: "credential-a",
+          installationId: "installation-a",
+          bindingId: "binding-a",
+          connectionId: "connection-a",
+          bindingRevision: 1,
+          authorizationId: "authorization-a",
+          workspaceId: "broker-synthetic-workspace",
+          subjectType: "USER",
+          subjectId: "broker-synthetic-subject",
+          agentId: "work-quickbooks",
+          policyId: "policy-a",
+          tenantId: "9341457658718743",
+          identityAssurance: "TRUSTED_HOST_CONTEXT",
+        },
+      },
+    });
+    expect(contextFromBroker.identityAssurance).toBe("INSTALLATION_ONLY");
+    expect(assertInternalQuickBooksCaller(contextFromBroker)).toBe("INSTALLATION_ONLY");
   });
 
   it("does not accept a model-asserted HOST source digest without WorkStore verification", async () => {

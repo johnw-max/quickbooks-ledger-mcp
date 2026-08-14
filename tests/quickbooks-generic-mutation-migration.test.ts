@@ -34,4 +34,39 @@ describe("QuickBooks generic mutation migration", () => {
     expect(sql).toContain("^[a-f0-9]{64}$");
     expect(sql).toContain("repeat('0', 64)");
   });
+
+  it("adds a pre-readback Provider outcome checkpoint and recovery-only states", async () => {
+    const sql = await readFile(new URL("../migrations/030_quickbooks_mutation_recovery.sql", import.meta.url), "utf8");
+    expect(sql).toContain("provider_outcome_receipt");
+    expect(sql).toContain("PROVIDER_OUTCOME_RECORDED");
+    expect(sql).toContain("provider_entity_id IS NOT NULL AND jsonb_typeof(provider_outcome_receipt) = 'object'");
+    expect(sql).toContain("WHERE state IN ('EXECUTING','PROVIDER_OUTCOME_RECORDED','WRITE_RESULT_UNKNOWN','READBACK_MISMATCH')");
+    expect(sql).toContain("quickbooks_mutation_provider_outcome_immutable_guard");
+  });
+
+  it("adds one durable execution attempt, lease fence, dispatch marker, and no-Id operator state", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/033_quickbooks_mutation_execution_fencing.sql",
+      import.meta.url,
+    ), "utf8");
+    for (const required of [
+      "execution_attempt_id",
+      "execution_claim_sequence",
+      "execution_lease_token_hash",
+      "execution_lease_until",
+      "dispatch_started_at",
+      "provider_outcome_recorded_at",
+      "WRITE_RESULT_UNKNOWN_NO_ID",
+      "operatorResolutionRequired",
+      "automaticRearmAllowed",
+      "quickbooks_mutation_execution_attempt_shape",
+      "quickbooks_mutation_execution_attempt_immutable_guard",
+    ]) {
+      expect(sql).toContain(required);
+    }
+    expect(sql).toContain("LEGACY_EXECUTING_STATE_MIGRATED_FAIL_CLOSED");
+    expect(sql).toContain("LEGACY_RECOVERY_WITHOUT_EXACT_ID_MIGRATED_FAIL_CLOSED");
+    expect(sql).toContain("execution_lease_token_hash IS DISTINCT FROM OLD.execution_lease_token_hash");
+    expect(sql).toContain("ON quickbooks_mutation_preparations (state, execution_lease_until)");
+  });
 });

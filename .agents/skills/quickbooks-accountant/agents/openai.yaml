@@ -1,0 +1,4 @@
+interface:
+  display_name: "QuickBooks Accountant"
+  short_description: "Governed QuickBooks Case orchestration for accountants"
+  default_prompt: "Use $quickbooks-accountant to process these accounting materials through the QuickBooks MCP."

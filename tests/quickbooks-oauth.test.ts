@@ -71,4 +71,24 @@ describe("QuickBooks OAuth", () => {
     const body = request.mock.calls[0]?.[1]?.body as URLSearchParams;
     expect(body.get("refresh_token")).toBe("refresh-old");
   });
+
+  it.each([
+    [401, "NOT_CONNECTED", false],
+    [403, "FORBIDDEN", false],
+    [429, "RATE_LIMITED", true],
+    [503, "PROVIDER_UNAVAILABLE", true],
+  ] as const)("classifies OAuth HTTP %i as %s", async (status, code, retryable) => {
+    const request = vi.fn().mockResolvedValue(new Response("{}", {
+      status,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(refreshQuickBooksToken({ config, refreshToken: "refresh-old", request }))
+      .rejects.toMatchObject({ code, retryable });
+  });
+
+  it("classifies an unreachable OAuth provider as temporarily unavailable", async () => {
+    const request = vi.fn().mockRejectedValue(new Error("network down"));
+    await expect(refreshQuickBooksToken({ config, refreshToken: "refresh-old", request }))
+      .rejects.toMatchObject({ code: "PROVIDER_UNAVAILABLE", retryable: true });
+  });
 });

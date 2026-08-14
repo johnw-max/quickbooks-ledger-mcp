@@ -100,20 +100,137 @@ describe("QuickBooks runtime configuration", () => {
     }))).toThrow(/HTTPS origin/);
   });
 
-  it("enables a registered confidential Agent2 OAuth client without changing the Intuit redirect", () => {
+  it("loads isolated Agent2 and Work Host clients without changing the one Intuit redirect", () => {
     const config = loadQuickBooksConfig(env({
       NODE_ENV: "production",
       QUICKBOOKS_MCP_OAUTH_ENABLED: "true",
-      QUICKBOOKS_MCP_OAUTH_CLIENT_ID: "agent2-quickbooks",
-      QUICKBOOKS_MCP_OAUTH_CLIENT_SECRET: "s".repeat(48),
-      QUICKBOOKS_MCP_OAUTH_REDIRECT_URIS: "https://agent2.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback",
+      QUICKBOOKS_MCP_ALLOWED_ORIGINS: "https://agent2.zcloak.ai,https://work.zcloak.ai",
+      QUICKBOOKS_MCP_OAUTH_HOST_CLIENTS_JSON: JSON.stringify([
+        {
+          name: "Agent2",
+          client_id: "agent2-quickbooks",
+          client_secret: "a".repeat(48),
+          redirect_uris: ["https://agent2.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback"],
+          allowed_origins: ["https://agent2.zcloak.ai"],
+        },
+        {
+          name: "Work",
+          client_id: "work-quickbooks",
+          client_secret: "w".repeat(48),
+          redirect_uris: ["https://work.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback"],
+          allowed_origins: ["https://work.zcloak.ai"],
+        },
+      ]),
     }));
 
     expect(config.oauth.redirectUri).toBe("https://quickbooks-mcp.example.test/oauth/quickbooks/callback");
     expect(config.mcpOAuth).toMatchObject({
-      clientId: "agent2-quickbooks",
-      redirectUris: ["https://agent2.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback"],
+      resourceUri: "https://quickbooks-mcp.example.test/quickbooks/mcp",
       accessTokenTtlSeconds: 3_600,
+      hostClients: [
+        {
+          clientId: "agent2-quickbooks",
+          redirectUris: ["https://agent2.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback"],
+          allowedOrigins: ["https://agent2.zcloak.ai"],
+        },
+        {
+          clientId: "work-quickbooks",
+          redirectUris: ["https://work.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback"],
+          allowedOrigins: ["https://work.zcloak.ai"],
+        },
+      ],
     });
+  });
+
+  it("keeps the deprecated Agent2 single-client environment compatible", () => {
+    const config = loadQuickBooksConfig(env({
+      NODE_ENV: "production",
+      QUICKBOOKS_MCP_OAUTH_ENABLED: "true",
+      QUICKBOOKS_MCP_OAUTH_CLIENT_ID: "agent2-quickbooks",
+      QUICKBOOKS_MCP_OAUTH_CLIENT_SECRET: "a".repeat(48),
+      QUICKBOOKS_MCP_OAUTH_REDIRECT_URIS: "https://agent2.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback",
+    }));
+    expect(config.mcpOAuth?.hostClients).toMatchObject([{
+      name: "Legacy MCP Host",
+      clientId: "agent2-quickbooks",
+      allowedOrigins: ["https://agent2.zcloak.ai"],
+    }]);
+    expect(() => loadQuickBooksConfig(env({
+      QUICKBOOKS_MCP_OAUTH_ENABLED: "true",
+      QUICKBOOKS_MCP_OAUTH_CLIENT_ID: "agent2-quickbooks",
+      QUICKBOOKS_MCP_OAUTH_CLIENT_SECRET: "a".repeat(48),
+      QUICKBOOKS_MCP_OAUTH_REDIRECT_URIS: "not-a-url",
+    }))).toThrow(/HOST_CLIENTS_JSON/);
+  });
+
+  it.each([
+    ["redirect ownership", {
+      clients: [
+        { name: "Agent2", client_id: "agent2-client", client_secret: "a".repeat(48) },
+        { name: "Work", client_id: "work-client", client_secret: "w".repeat(48) },
+      ],
+      mutate: (clients: Array<Record<string, unknown>>) => {
+        clients[1]!.redirect_uris = clients[0]!.redirect_uris;
+      },
+      expected: /must not be registered to more than one Host client/,
+    }],
+    ["secret ownership", {
+      clients: [
+        { name: "Agent2", client_id: "agent2-client", client_secret: "a".repeat(48) },
+        { name: "Work", client_id: "work-client", client_secret: "a".repeat(48) },
+      ],
+      mutate: () => undefined,
+      expected: /must not be shared/,
+    }],
+    ["origin ownership", {
+      clients: [
+        { name: "Agent2", client_id: "agent2-client", client_secret: "a".repeat(48) },
+        { name: "Work", client_id: "work-client", client_secret: "w".repeat(48) },
+      ],
+      mutate: (clients: Array<Record<string, unknown>>) => {
+        clients[1]!.allowed_origins = clients[0]!.allowed_origins;
+      },
+      expected: /must not be registered to more than one Host client/,
+    }],
+  ] as const)("rejects cross-client %s confusion", (_, testCase) => {
+    const clients = testCase.clients.map((client, index) => ({
+      ...client,
+      redirect_uris: [index === 0
+        ? "https://agent2.zcloak.ai/api/mcp/qbo/oauth/callback"
+        : "https://work.zcloak.ai/api/mcp/qbo/oauth/callback"],
+      allowed_origins: [index === 0 ? "https://agent2.zcloak.ai" : "https://work.zcloak.ai"],
+    }));
+    testCase.mutate(clients);
+    expect(() => loadQuickBooksConfig(env({
+      QUICKBOOKS_MCP_ALLOWED_ORIGINS: "https://agent2.zcloak.ai,https://work.zcloak.ai",
+      QUICKBOOKS_MCP_OAUTH_ENABLED: "true",
+      QUICKBOOKS_MCP_OAUTH_HOST_CLIENTS_JSON: JSON.stringify(clients),
+    }))).toThrow(testCase.expected);
+  });
+
+  it("rejects redirect normalization tricks and Host origins missing from the edge allowlist", () => {
+    const host = (redirect: string, origin = "https://work.zcloak.ai") => JSON.stringify([{
+      name: "Work",
+      client_id: "work-client",
+      client_secret: "w".repeat(48),
+      redirect_uris: [redirect],
+      allowed_origins: [origin],
+    }]);
+    for (const redirect of [
+      "https://work.zcloak.ai/api/mcp/qbo/oauth/callback#fragment",
+      "https://work.zcloak.ai/api/mcp/*/oauth/callback",
+      "https://user@work.zcloak.ai/api/mcp/qbo/oauth/callback",
+      "https://work.zcloak.ai:443/api/mcp/qbo/oauth/callback",
+      "https://WORK.zcloak.ai/api/mcp/qbo/oauth/callback",
+    ]) {
+      expect(() => loadQuickBooksConfig(env({
+        QUICKBOOKS_MCP_OAUTH_ENABLED: "true",
+        QUICKBOOKS_MCP_OAUTH_HOST_CLIENTS_JSON: host(redirect),
+      }))).toThrow(/HOST_CLIENTS_JSON/);
+    }
+    expect(() => loadQuickBooksConfig(env({
+      QUICKBOOKS_MCP_OAUTH_ENABLED: "true",
+      QUICKBOOKS_MCP_OAUTH_HOST_CLIENTS_JSON: host("https://work.zcloak.ai/api/mcp/qbo/oauth/callback"),
+    }))).toThrow(/must also be present in QUICKBOOKS_MCP_ALLOWED_ORIGINS/);
   });
 });

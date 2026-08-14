@@ -49,7 +49,12 @@ export function assertInternalQuickBooksCaller(context: RequestContext): QuickBo
     (context.bindingRevision ?? 0) > 0
   ) {
     requireOAuthBoundRequestContext(context);
-    return "TRUSTED_HOST_CONTEXT";
+    // A complete broker-created installation tuple isolates tokens and the QBO
+    // Company, but it is not proof of the Host's human/workspace identity.
+    // Only a separately verified Host identity assertion may raise assurance.
+    return context.identityAssurance === "TRUSTED_HOST_CONTEXT"
+      ? "TRUSTED_HOST_CONTEXT"
+      : "INSTALLATION_ONLY";
   }
   return "INSTALLATION_ONLY";
 }

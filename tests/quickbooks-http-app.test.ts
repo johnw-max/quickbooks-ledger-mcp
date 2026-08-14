@@ -11,6 +11,7 @@ import type { QuickBooksOAuthService } from "../src/quickbooks/oauthService.js";
 import type { QuickBooksMcpOAuthService } from "../src/quickbooks/mcpOAuthService.js";
 import type { QuickBooksReviewService } from "../src/quickbooks/reviewService.js";
 import type { QuickBooksWorkflowService } from "../src/quickbooks/service.js";
+import type { QuickBooksAccountingCaseService } from "../src/quickbooks/accountingCaseService.js";
 
 function config(): QuickBooksRuntimeConfig {
   return {
@@ -20,7 +21,7 @@ function config(): QuickBooksRuntimeConfig {
     publicBaseUrl: "https://quickbooks-mcp.example.test",
     databaseUrl: "postgres://unused",
     mcpBearerToken: "m".repeat(48),
-    allowedOrigins: ["https://agent2.zcloak.ai"],
+    allowedOrigins: ["https://agent2.zcloak.ai", "https://work.zcloak.ai"],
     allowedHosts: ["127.0.0.1", "quickbooks-mcp.example.test"],
     requestBodyLimitBytes: 1_048_576,
     oauth: {
@@ -30,6 +31,12 @@ function config(): QuickBooksRuntimeConfig {
       environment: "sandbox",
     },
     writeEnabled: false,
+    writeTargetMode: "exact_allowlist",
+    allowedWriteCapabilities: [],
+    restrictedReviewerActors: [],
+    standingDelegationEnabled: false,
+    standingDelegationActions: [],
+    targetSessionTtlSeconds: 900,
     tokenEncryptionKey: Buffer.alloc(32, 2),
     demoActorId: "trusted-qbo-actor",
     logLevel: "error",
@@ -60,20 +67,46 @@ describe("QuickBooks HTTP and MCP edge", () => {
 
   it("serves health, enforces bearer/origin, and advertises only the reviewed tools", async () => {
     const appConfig = config();
+    const verifiedToken = (clientId: "agent2-client" | "work-client") => ({
+      actorId: `qbo-client-test:user:${clientId}`,
+      tokenId: `token-${clientId}`,
+      clientId,
+      resource: "https://quickbooks-mcp.example.test/quickbooks/mcp",
+      audience: "https://quickbooks-mcp.example.test/quickbooks/mcp",
+      grantedScopes: ["quickbooks.read", "quickbooks.bill.prepare"],
+      issuedAt: new Date("2026-08-06T00:00:00.000Z"),
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      workspaceId: "qbo-client-test",
+      subjectType: "USER" as const,
+      subjectId: clientId,
+      agentId: clientId,
+      installationId: `qbt-${clientId}`,
+      bindingId: `qbob-${clientId}`,
+      bindingRevision: 1,
+      connectionId: `qbc-${clientId}`,
+      authorizationId: `qboa-${clientId}`,
+      policyId: `qbop-${clientId}`,
+      tenantId: clientId === "agent2-client" ? "9341457658718743" : "9341457658718744",
+      identityAssurance: "INSTALLATION_ONLY" as const,
+      allowedOrigins: [clientId === "agent2-client" ? "https://agent2.zcloak.ai" : "https://work.zcloak.ai"],
+    });
     const mcpOAuth = {
-      verifyAccessToken: vi.fn(async (token: string) => token === "oauth-good" ? {
-        actorId: "qbo-client-test:user:oauth-user",
-        workspaceId: "qbo-client-test",
-        subjectId: "oauth-user",
-        agentId: "agent2-client",
-        installationId: "qbt-token",
-        bindingId: "qbob-binding",
-        bindingRevision: 1,
-        connectionId: "qbc-connection",
-        scopes: ["quickbooks.read", "quickbooks.bill.prepare"],
-        tokenId: "token-1",
-      } : undefined),
+      registeredHostClientCount: 2,
+      verifyAccessToken: vi.fn(async (token: string) => token === "oauth-good"
+        ? verifiedToken("agent2-client")
+        : token === "oauth-work"
+          ? verifiedToken("work-client")
+          : undefined),
       authenticateClient: vi.fn((clientId: string, clientSecret: string) => clientId === "agent2-client" && clientSecret === "agent2-secret"),
+      isOriginAllowedForClient: vi.fn((clientId: string, origin: string) =>
+        (clientId === "agent2-client" && origin === "https://agent2.zcloak.ai") ||
+        (clientId === "work-client" && origin === "https://work.zcloak.ai")
+      ),
+      startAuthorization: vi.fn().mockResolvedValue({
+        consentUrl: "https://appcenter.intuit.com/connect/oauth2?state=opaque",
+        browserCookie: `qbf_${"a".repeat(36)}.${"b".repeat(43)}`,
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      }),
       revoke: vi.fn().mockResolvedValue(undefined),
     } as unknown as QuickBooksMcpOAuthService;
     const connectionStatus = vi.fn().mockResolvedValue({ connected: true, company: { name: "Sandbox" } });
@@ -97,8 +130,33 @@ describe("QuickBooks HTTP and MCP edge", () => {
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toMatchObject({
       provider: "quickbooks-online",
+      providerEnvironment: "sandbox",
       toolCount: 16,
       writeEnabled: false,
+      registeredHostClientCount: 2,
+      readiness: {
+        ready: true,
+        persistence: { status: "READY", source: "UNSTRUCTURED_CALLBACK" },
+        migrations: { status: "NOT_ATTESTED" },
+      },
+      writeControl: {
+        enabled: false,
+        targetMode: "exact_allowlist",
+        exactTargetConfigured: false,
+      },
+      releasedActions: { count: 6, hash: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      releasedCapabilities: { count: 6, hash: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      standingDelegation: { enabled: false, status: "DISABLED", revision: null },
+      providerAuthorizationModel: {
+        requiredOAuthScope: "com.intuit.quickbooks.accounting",
+        dynamicProviderRolesAvailable: false,
+        roleAuthoritySource: "PLATFORM_POLICY_NOT_INTUIT_ROLE",
+      },
+      promotionAssertion: {
+        status: "NOT_ASSERTED",
+        scope: "RUNTIME_CONFIGURATION_AND_PERSISTENCE_ONLY",
+        onlineAgentUatRequired: true,
+      },
     });
 
     const initialize = {
@@ -162,6 +220,32 @@ describe("QuickBooks HTTP and MCP edge", () => {
     });
     expect(wrongOrigin.status).toBe(403);
 
+    const crossClientOrigin = await fetch(`${base}/quickbooks/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer oauth-work",
+        Origin: "https://agent2.zcloak.ai",
+      },
+      body: JSON.stringify(initialize),
+    });
+    expect(crossClientOrigin.status).toBe(403);
+
+    const confusedAuthorize = await fetch(
+      `${base}/quickbooks/oauth/authorize?client_id=agent2-client&redirect_uri=${encodeURIComponent("https://agent2.zcloak.ai/api/mcp/qbo/oauth/callback")}&response_type=code&state=state-a`,
+      { headers: { Origin: "https://work.zcloak.ai" }, redirect: "manual" },
+    );
+    expect(confusedAuthorize.status).toBe(403);
+    expect(mcpOAuth.startAuthorization).not.toHaveBeenCalled();
+
+    const allowedAuthorize = await fetch(
+      `${base}/quickbooks/oauth/authorize?client_id=agent2-client&redirect_uri=${encodeURIComponent("https://agent2.zcloak.ai/api/mcp/qbo/oauth/callback")}&response_type=code&state=state-a`,
+      { headers: { Origin: "https://agent2.zcloak.ai" }, redirect: "manual" },
+    );
+    expect(allowedAuthorize.status).toBe(302);
+    expect(mcpOAuth.startAuthorization).toHaveBeenCalledTimes(1);
+
     const headers = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
@@ -203,6 +287,58 @@ describe("QuickBooks HTTP and MCP edge", () => {
     expect(statusPayload).toMatchObject({
       result: { content: [{ type: "text" }] },
     });
-    expect(connectionStatus).toHaveBeenCalledWith("qbo-client-test:user:oauth-user");
+    expect(connectionStatus).toHaveBeenCalledWith("qbo-client-test:user:agent2-client");
+  });
+
+  it("removes the legacy supplier-Bill review writer in Accounting Case runtime", async () => {
+    const reviews = { authenticate: vi.fn() } as unknown as QuickBooksReviewService;
+    const app = createQuickBooksHttpApp({
+      config: config(),
+      workflow: {} as QuickBooksWorkflowService,
+      accountingCases: {} as QuickBooksAccountingCaseService,
+      oauth: {} as QuickBooksOAuthService,
+      reviews,
+      tickets: {} as QuickBooksConnectionTicketService,
+      readiness: vi.fn().mockResolvedValue(true),
+      logger: logger(),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    servers.push(server);
+    const port = (server.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${port}`;
+
+    const getReview = await fetch(`${base}/quickbooks/review/qbp_legacy`, {
+      headers: { Cookie: "qbo_review_session=opaque" },
+    });
+    expect(getReview.status).toBe(404);
+
+    const approve = await fetch(`${base}/quickbooks/review/qbp_legacy/approve`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Origin: "https://quickbooks-mcp.example.test",
+        Cookie: "qbo_review_session=opaque",
+      },
+      body: "csrf_token=opaque",
+    });
+    expect(approve.status).toBe(404);
+
+    const getMutationReview = await fetch(`${base}/quickbooks/mutation-review/qbm_legacy`, {
+      headers: { Cookie: "qbo_review_session=opaque" },
+    });
+    expect(getMutationReview.status).toBe(404);
+
+    const approveMutation = await fetch(`${base}/quickbooks/mutation-review/qbm_legacy/approve`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Origin: "https://quickbooks-mcp.example.test",
+        Cookie: "qbo_review_session=opaque",
+      },
+      body: "csrf_token=opaque",
+    });
+    expect(approveMutation.status).toBe(404);
+    expect(reviews.authenticate).not.toHaveBeenCalled();
   });
 });

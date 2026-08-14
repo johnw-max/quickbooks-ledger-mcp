@@ -55,9 +55,15 @@ function safeFaultDetails(body: QuickBooksFaultBody): Record<string, unknown> | 
 
 function errorForResponse(status: number, body: QuickBooksFaultBody): AppError {
   const details = safeFaultDetails(body);
-  if (status === 401 || status === 403) {
+  if (status === 401) {
     return new AppError("NOT_CONNECTED", "QuickBooks authorization is no longer valid; reconnection is required.", {
       httpStatus: 409,
+      ...(details ? { details } : {}),
+    });
+  }
+  if (status === 403) {
+    return new AppError("FORBIDDEN", "QuickBooks denied access to this company or accounting capability.", {
+      httpStatus: 403,
       ...(details ? { details } : {}),
     });
   }
@@ -76,6 +82,20 @@ function errorForResponse(status: number, body: QuickBooksFaultBody): AppError {
   if (status === 409) {
     return new AppError("CONFLICT", "QuickBooks rejected the request because the record changed.", {
       httpStatus: 409,
+      ...(details ? { details } : {}),
+    });
+  }
+  if (status === 429) {
+    return new AppError("RATE_LIMITED", "QuickBooks temporarily rate-limited the accounting request.", {
+      httpStatus: 429,
+      retryable: true,
+      ...(details ? { details } : {}),
+    });
+  }
+  if (status >= 500) {
+    return new AppError("PROVIDER_UNAVAILABLE", "QuickBooks is temporarily unavailable.", {
+      httpStatus: 503,
+      retryable: true,
       ...(details ? { details } : {}),
     });
   }
@@ -157,15 +177,19 @@ export class QuickBooksApiClient {
       });
     } catch (error) {
       if (options.isWrite) {
-        throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks write result is unknown; retry only with the same requestId.", {
+        throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks write result is unknown; automatic retry is forbidden until the durable execution attempt is resolved.", {
           httpStatus: 502,
-          retryable: true,
-          details: { requestId: options.requestId ?? "missing" },
+          retryable: false,
+          details: {
+            requestId: options.requestId ?? "missing",
+            providerMutationPossible: true,
+            automaticRearmAllowed: false,
+          },
           cause: error,
         });
       }
-      throw new AppError("PROVIDER_ERROR", "QuickBooks could not be reached.", {
-        httpStatus: 502,
+      throw new AppError("PROVIDER_UNAVAILABLE", "QuickBooks could not be reached.", {
+        httpStatus: 503,
         retryable: true,
         cause: error,
       });
@@ -179,10 +203,15 @@ export class QuickBooksApiClient {
     }
     if (response.ok) return { kind: "success", value: body as T };
     if (options.isWrite && response.status >= 500) {
-      throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks write result is unknown; retry only with the same requestId.", {
+      throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks write result is unknown; automatic retry is forbidden until the durable execution attempt is resolved.", {
         httpStatus: 502,
-        retryable: true,
-        details: { requestId: options.requestId ?? "missing", providerStatus: response.status },
+        retryable: false,
+        details: {
+          requestId: options.requestId ?? "missing",
+          providerStatus: response.status,
+          providerMutationPossible: true,
+          automaticRearmAllowed: false,
+        },
       });
     }
     return { kind: "error", status: response.status, body: body as QuickBooksFaultBody };

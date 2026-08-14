@@ -3,8 +3,10 @@ import {
   QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION,
   QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION,
   type QuickBooksAccountingFact,
+  type QuickBooksCaseAmountBridge,
   type QuickBooksCaseCompilationDraft,
   type QuickBooksCaseEvent,
+  type QuickBooksCaseOperation,
   type QuickBooksCaseOperationCandidate,
   type QuickBooksNativeDocumentFact,
   type QuickBooksSourceArtifact,
@@ -19,6 +21,61 @@ function scaled(value: string): bigint {
 
 function uniqueSorted(values: readonly string[]): string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function decimal4(value: bigint): string {
+  const whole = value / SCALE;
+  const fraction = (value % SCALE).toString().padStart(4, "0");
+  return `${whole}.${fraction}`;
+}
+
+function amountBridge(fact: QuickBooksNativeDocumentFact): QuickBooksCaseAmountBridge {
+  const net = scaled(fact.declaredNet);
+  const tax = scaled(fact.declaredTax);
+  const gross = scaled(fact.declaredGross);
+  return {
+    sourceFactIds: [fact.factId],
+    sourceLineHash: hashObject(fact.lines),
+    currency: fact.currency,
+    sourceNet: decimal4(net),
+    sourceTax: decimal4(tax),
+    sourceGross: decimal4(gross),
+    canonicalNet: decimal4(net),
+    canonicalTax: decimal4(tax),
+    canonicalGross: decimal4(gross),
+  };
+}
+
+function canonicalPayloadAmounts(payload: Record<string, unknown>): {
+  net: string;
+  tax: string;
+  gross: string;
+} | undefined {
+  if (!Array.isArray(payload.Line)) return undefined;
+  let net = 0n;
+  for (const rawLine of payload.Line) {
+    if (!rawLine || typeof rawLine !== "object") return undefined;
+    const amount = (rawLine as Record<string, unknown>).Amount;
+    if (typeof amount !== "number" && typeof amount !== "string") return undefined;
+    try {
+      net += scaled(String(amount));
+    } catch {
+      return undefined;
+    }
+  }
+  const rawTax = payload.TxnTaxDetail && typeof payload.TxnTaxDetail === "object"
+    ? (payload.TxnTaxDetail as Record<string, unknown>).TotalTax
+    : 0;
+  if (typeof rawTax !== "number" && typeof rawTax !== "string") return undefined;
+  try {
+    const tax = scaled(String(rawTax));
+    if (payload.GlobalTaxCalculation === "TaxInclusive") {
+      return { net: decimal4(net - tax), tax: decimal4(tax), gross: decimal4(net) };
+    }
+    return { net: decimal4(net), tax: decimal4(tax), gross: decimal4(net + tax) };
+  } catch {
+    return undefined;
+  }
 }
 
 function stableFacts(facts: readonly QuickBooksAccountingFact[]): QuickBooksAccountingFact[] {
@@ -36,7 +93,11 @@ function documentValidation(fact: QuickBooksNativeDocumentFact): string[] {
   const declaredNet = scaled(fact.declaredNet);
   const declaredTax = scaled(fact.declaredTax);
   const declaredGross = scaled(fact.declaredGross);
-  if (lineNet !== declaredNet) reasons.push("LINE_NET_DOES_NOT_MATCH_DECLARED_NET");
+  if (fact.taxMode === "TAX_INCLUSIVE") {
+    if (lineNet !== declaredGross) reasons.push("LINE_GROSS_DOES_NOT_MATCH_DECLARED_GROSS");
+  } else if (lineNet !== declaredNet) {
+    reasons.push("LINE_NET_DOES_NOT_MATCH_DECLARED_NET");
+  }
   if (lineTax !== declaredTax) reasons.push("LINE_TAX_DOES_NOT_MATCH_DECLARED_TAX");
   if (declaredNet + declaredTax !== declaredGross) reasons.push("NET_PLUS_TAX_DOES_NOT_MATCH_GROSS");
   if (fact.taxMode === "NO_TAX" && (declaredTax !== 0n || lineTax !== 0n)) reasons.push("NO_TAX_REQUIRES_ZERO_TAX");
@@ -44,6 +105,41 @@ function documentValidation(fact: QuickBooksNativeDocumentFact): string[] {
     reasons.push("TAX_CODE_REQUIRED");
   }
   return uniqueSorted(reasons);
+}
+
+function stableOperationKey(fact: QuickBooksAccountingFact): string {
+  if (fact.kind === "CONTACT_CANDIDATE") {
+    return hashObject({
+      schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
+      kind: fact.kind,
+      role: fact.role,
+      displayName: fact.displayName.trim().toLocaleLowerCase("en"),
+    });
+  }
+  if (fact.kind === "NATIVE_DOCUMENT") {
+    const exactDocumentIdentity = fact.documentNumber?.trim().toLocaleLowerCase("en");
+    return hashObject({
+      schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
+      kind: fact.kind,
+      documentType: fact.documentType,
+      counterpartyName: fact.counterpartyName.trim().toLocaleLowerCase("en"),
+      documentIdentity: exactDocumentIdentity ?? {
+        documentDate: fact.documentDate,
+        currency: fact.currency,
+        declaredGross: fact.declaredGross,
+        lines: fact.lines.map((line) => ({
+          description: line.description.trim().toLocaleLowerCase("en"),
+          quantity: line.quantity,
+          unitAmount: line.unitAmount,
+        })),
+      },
+    });
+  }
+  return hashObject({
+    schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
+    kind: fact.kind,
+    eventKey: fact.eventKey,
+  });
 }
 
 function eventRoute(fact: QuickBooksAccountingFact): QuickBooksCaseEvent["route"] {
@@ -55,11 +151,19 @@ function eventRoute(fact: QuickBooksAccountingFact): QuickBooksCaseEvent["route"
 function operationCandidate(
   caseId: string,
   version: number,
+  sourceRevisionHash: string,
   event: QuickBooksCaseEvent,
   primary: QuickBooksAccountingFact,
 ): QuickBooksCaseOperationCandidate | undefined {
   if (event.disposition !== "AUTO_EXECUTE" || !event.primaryFactId) return undefined;
   const operationId = `qboop_${hashObject({ caseId, version, eventId: event.eventId }).slice(0, 32)}`;
+  const sourceFactHash = hashObject(primary);
+  const sourceEvidenceHash = hashObject({
+    sourceRevisionHash,
+    sourceUnitIds: event.sourceUnitIds,
+    primaryFactId: primary.factId,
+    sourceFactHash,
+  });
   if (primary.kind === "CONTACT_CANDIDATE") {
     const entity = primary.role === "CUSTOMER" ? "Customer" as const : "Vendor" as const;
     return {
@@ -70,6 +174,10 @@ function operationCandidate(
       operation: "CREATE",
       sourceUnitIds: event.sourceUnitIds,
       primaryFactId: primary.factId,
+      sourceRevisionHash,
+      sourceFactHash,
+      sourceEvidenceHash,
+      stableOperationKey: stableOperationKey(primary),
     };
   }
   if (primary.kind !== "NATIVE_DOCUMENT") return undefined;
@@ -87,7 +195,54 @@ function operationCandidate(
     operation: "CREATE",
     sourceUnitIds: event.sourceUnitIds,
     primaryFactId: primary.factId,
+    sourceRevisionHash,
+    sourceFactHash,
+    sourceEvidenceHash,
+    stableOperationKey: stableOperationKey(primary),
+    amountBridge: amountBridge(primary),
   };
+}
+
+/**
+ * Re-checks the immutable Case operation against its exact active source fact
+ * and the provider-ready canonical payload. This catches source/canonical
+ * drift (including the observed 80 -> 800 class) before autonomous execution.
+ */
+export function validateQuickBooksCompiledOperationAgainstSource(
+  operation: QuickBooksCaseOperation,
+  fact: QuickBooksAccountingFact,
+): string[] {
+  const reasons: string[] = [];
+  const sourceFactHash = hashObject(fact);
+  const sourceEvidenceHash = hashObject({
+    sourceRevisionHash: operation.sourceRevisionHash,
+    sourceUnitIds: operation.sourceUnitIds,
+    primaryFactId: fact.factId,
+    sourceFactHash,
+  });
+  if (operation.primaryFactId !== fact.factId) reasons.push("SOURCE_FACT_ID_MISMATCH");
+  if (operation.sourceFactHash !== sourceFactHash) reasons.push("SOURCE_FACT_HASH_MISMATCH");
+  if (operation.sourceEvidenceHash !== sourceEvidenceHash) reasons.push("SOURCE_EVIDENCE_HASH_MISMATCH");
+  if (operation.stableOperationKey !== stableOperationKey(fact)) reasons.push("STABLE_OPERATION_KEY_MISMATCH");
+  if (operation.canonicalPayloadHash !== hashObject(operation.canonicalPayload)) {
+    reasons.push("CANONICAL_PAYLOAD_HASH_MISMATCH");
+  }
+  if (fact.kind === "NATIVE_DOCUMENT") {
+    const expectedBridge = amountBridge(fact);
+    if (hashObject(operation.amountBridge) !== hashObject(expectedBridge)) reasons.push("AMOUNT_BRIDGE_MISMATCH");
+    if (operation.amountBridge?.sourceLineHash !== hashObject(fact.lines)) reasons.push("SOURCE_LINE_HASH_MISMATCH");
+    const payloadAmounts = canonicalPayloadAmounts(operation.canonicalPayload);
+    if (!payloadAmounts) {
+      reasons.push("CANONICAL_PAYLOAD_AMOUNTS_UNREADABLE");
+    } else {
+      if (payloadAmounts.net !== expectedBridge.canonicalNet) reasons.push("CANONICAL_NET_MISMATCH");
+      if (payloadAmounts.tax !== expectedBridge.canonicalTax) reasons.push("CANONICAL_TAX_MISMATCH");
+      if (payloadAmounts.gross !== expectedBridge.canonicalGross) reasons.push("CANONICAL_GROSS_MISMATCH");
+    }
+  } else if (operation.amountBridge !== undefined) {
+    reasons.push("UNEXPECTED_AMOUNT_BRIDGE");
+  }
+  return uniqueSorted(reasons);
 }
 
 export function compileQuickBooksAccountingCase(input: {
@@ -132,7 +287,8 @@ export function compileQuickBooksAccountingCase(input: {
   const events: QuickBooksCaseEvent[] = [];
   for (const eventKey of [...byEvent.keys()].sort((left, right) => left.localeCompare(right, "en"))) {
     const facts = (byEvent.get(eventKey) ?? []).sort((left, right) => left.factId.localeCompare(right.factId, "en"));
-    const primaryFacts = facts.filter((fact) => fact.kind === "CONTACT_CANDIDATE" || fact.kind === "NATIVE_DOCUMENT");
+    const primaryFacts = facts.filter((fact) => fact.kind === "CONTACT_CANDIDATE" || fact.kind === "NATIVE_DOCUMENT" ||
+      fact.kind === "UNSUPPORTED_EVENT");
     const blockingControls = facts.filter((fact): fact is Extract<QuickBooksAccountingFact, { kind: "CONTROL_FINDING" }> =>
       fact.kind === "CONTROL_FINDING" && fact.severity === "BLOCK_WRITE");
     const warningControls = facts.filter((fact): fact is Extract<QuickBooksAccountingFact, { kind: "CONTROL_FINDING" }> =>
@@ -147,10 +303,15 @@ export function compileQuickBooksAccountingCase(input: {
       disposition = "BLOCKED_VALIDATION";
       reasons.push("MULTIPLE_PRIMARY_FACTS_FOR_EVENT");
     } else if (primary) {
-      if (primary.kind === "NATIVE_DOCUMENT") reasons.push(...documentValidation(primary));
-      disposition = blockingControls.length > 0 || reasons.some((reason) => !reason.startsWith("CONTROL_WARNING_"))
-        ? "BLOCKED_VALIDATION"
-        : "AUTO_EXECUTE";
+      if (primary.kind === "UNSUPPORTED_EVENT") {
+        disposition = "BLOCKED_UNSUPPORTED";
+        reasons.push(`UNSUPPORTED_EVENT_${primary.eventType}`);
+      } else {
+        if (primary.kind === "NATIVE_DOCUMENT") reasons.push(...documentValidation(primary));
+        disposition = blockingControls.length > 0 || reasons.some((reason) => !reason.startsWith("CONTROL_WARNING_"))
+          ? "BLOCKED_VALIDATION"
+          : "AUTO_EXECUTE";
+      }
     }
     const route = primary ? eventRoute(primary) : undefined;
     events.push({
@@ -162,6 +323,7 @@ export function compileQuickBooksAccountingCase(input: {
       disposition,
       reasonCodes: uniqueSorted(reasons),
       ...(route ? { route } : {}),
+      ...(primary?.kind === "UNSUPPORTED_EVENT" ? { unsupportedEventType: primary.eventType } : {}),
     });
   }
 
@@ -179,12 +341,13 @@ export function compileQuickBooksAccountingCase(input: {
   const operationCandidates = events.flatMap((event) => {
     const primary = event.primaryFactId ? factById.get(event.primaryFactId) : undefined;
     if (!primary) return [];
-    const candidate = operationCandidate(input.caseId, version, event, primary);
+    const candidate = operationCandidate(input.caseId, version, sourceRevisionHash, event, primary);
     return candidate ? [candidate] : [];
   });
   const blockedCoverage = missingFactRequirements.length > 0 || events.some((event) => event.disposition === "BLOCKED_COVERAGE");
   const blockedValidation = events.some((event) => event.disposition === "BLOCKED_VALIDATION");
-  const exceptions = events.some((event) => event.disposition === "REVIEW_REQUIRED");
+  const exceptions = events.some((event) =>
+    event.disposition === "REVIEW_REQUIRED" || event.disposition === "BLOCKED_UNSUPPORTED");
   return {
     caseId: input.caseId,
     version,
@@ -192,6 +355,7 @@ export function compileQuickBooksAccountingCase(input: {
     sourceRevisionHash,
     compilerVersion: QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION,
     policyVersion: QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION,
+    sources: sortedSources,
     activeFacts,
     events,
     operationCandidates,

@@ -3,6 +3,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { AppError } from "../errors.js";
 
 export type BindingSubjectType = "USER" | "TEAM";
+export type HostIdentityAssurance = "TRUSTED_HOST_CONTEXT" | "INSTALLATION_ONLY";
 
 /** Provider-neutral trusted token view required by RequestContext construction. */
 export interface ResolvedMcpAccessToken {
@@ -24,6 +25,7 @@ export interface ResolvedMcpAccessToken {
   agentId: string;
   policyId: string;
   tenantId: string;
+  identityAssurance: HostIdentityAssurance;
 }
 
 export interface RequestAuthentication {
@@ -56,6 +58,8 @@ export interface RequestContext {
   readonly bindingRevision?: number;
   readonly scopes: readonly string[];
   readonly roles: readonly string[];
+  /** Whether the Host supplied a separately verified user/workspace identity tuple. */
+  readonly identityAssurance?: HostIdentityAssurance | "LEGACY_SHARED_BEARER";
   readonly authn: RequestAuthentication;
   readonly legacyDemo: boolean;
 }
@@ -155,6 +159,7 @@ export function createLegacySharedBearerRequestContext(options: {
     actorId: options.actorId,
     scopes,
     roles,
+    identityAssurance: "LEGACY_SHARED_BEARER" as const,
     authn,
     legacyDemo: true,
   });
@@ -200,6 +205,7 @@ export function createOAuthRequestContext(options: {
     bindingRevision: token.bindingRevision,
     scopes,
     roles,
+    identityAssurance: token.identityAssurance,
     authn,
     legacyDemo: false,
   });
@@ -265,6 +271,10 @@ export function createOAuthRequestContextFromAuthInfo(options: {
     agentId: requiredAuthInfoString(extra.agentId, "agent ID"),
     policyId: requiredAuthInfoString(extra.policyId, "policy ID"),
     tenantId: requiredAuthInfoString(extra.tenantId, "tenant ID"),
+    // AuthInfo proves the Broker token, not a Host human/workspace assertion.
+    // A future Host-identity verifier must build a ResolvedMcpAccessToken only
+    // after validating that separate proof; Broker metadata cannot self-upgrade.
+    identityAssurance: "INSTALLATION_ONLY",
   };
   if (!Number.isFinite(resolvedToken.expiresAt.getTime()) || resolvedToken.expiresAt <= new Date()) {
     throw new AppError("AUTH_REQUIRED", "The verified OAuth token is expired.", {

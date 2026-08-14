@@ -36,9 +36,13 @@ export interface QuickBooksAccountingCaseRepository {
     expectedStates: QuickBooksCaseOperationState[];
     state: QuickBooksCaseOperationState;
     preparationId?: string;
+    preparationPayloadHash?: string;
+    operationSourceEvidenceHash?: string;
     mutationRequestId?: string;
     providerEntityId?: string;
     authorizationReceipt?: Record<string, unknown>;
+    authorizationEvidence?: QuickBooksCaseOperationRecord["authorizationEvidence"];
+    reuseEvidenceReceipt?: QuickBooksCaseOperationRecord["reuseEvidenceReceipt"];
     writeReceipt?: Record<string, unknown>;
     readback?: Record<string, unknown>;
     errorReceipt?: Record<string, unknown>;
@@ -61,8 +65,13 @@ export function quickBooksCaseBindingKey(binding: QuickBooksCaseBinding, caseId:
 }
 
 export function quickBooksCaseBindingEqual(left: QuickBooksCaseBinding, right: QuickBooksCaseBinding): boolean {
+  // target_session_ref is deliberately short lived. A later request may use a
+  // freshly issued target proof, but it must still resolve to the exact same
+  // server-owned OAuth installation, connection, binding revision, and Realm.
+  // The original target hash remains immutable audit evidence on the Case; it
+  // is not the durable identity of the Case itself.
   return quickBooksCaseBindingKey(left, "") === quickBooksCaseBindingKey(right, "") &&
-    left.actorId === right.actorId && left.targetSessionHash === right.targetSessionHash;
+    left.actorId === right.actorId;
 }
 
 export function initialQuickBooksCaseOperations(compiled: CompiledQuickBooksAccountingCase): QuickBooksCaseOperationRecord[] {

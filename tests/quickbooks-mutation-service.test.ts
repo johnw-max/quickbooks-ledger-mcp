@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
+import { AppError } from "../src/errors.js";
 import { InMemoryQuickBooksMutationRepository } from "../src/quickbooks/inMemoryMutationRepository.js";
 import { QuickBooksMutationService } from "../src/quickbooks/mutationService.js";
 import type { QuickBooksProviderCapabilities, QuickBooksProviderResolver } from "../src/quickbooks/service.js";
+import {
+  consumeQuickBooksProviderWritePermit,
+  type QuickBooksProviderMutationCommand,
+  type QuickBooksProviderWritePermit,
+} from "../src/security/quickBooksProviderWritePermit.js";
+
+const targetSessionRef = `qbts_v1.${"a".repeat(16)}.${"b".repeat(22)}.${"c".repeat(64)}`;
 
 function fixture(options: {
   writeEnabled?: boolean;
@@ -9,10 +17,31 @@ function fixture(options: {
   allowedCapabilities?: string[];
   accountingCaseReleasedCapabilities?: string[];
 } = {}) {
-  const executeMutation = vi.fn(async (input: { entity: string; operation: string }) => ({
-    providerEntityId: "9001",
-    receipt: { verified: true, entity: input.entity, operation: input.operation },
-    readback: { Id: "9001", DisplayName: "Harbour Kitchen Pte Ltd" },
+  const executeMutation = vi.fn(async (
+    input: QuickBooksProviderMutationCommand,
+    permit: QuickBooksProviderWritePermit,
+    recordProviderOutcome: (outcome: { providerEntityId: string; receipt: Record<string, unknown> }) => Promise<void>,
+    markProviderDispatch: () => Promise<void>,
+  ) => {
+    consumeQuickBooksProviderWritePermit(permit, {
+      realmId: "9341457701636490",
+      command: input,
+    });
+    await markProviderDispatch();
+    const outcome = {
+      providerEntityId: "9001",
+      receipt: { verified: true, entity: input.entity, operation: input.operation },
+      readback: { Id: "9001", DisplayName: "Harbour Kitchen Pte Ltd" },
+    };
+    await recordProviderOutcome({ providerEntityId: outcome.providerEntityId, receipt: {
+      provider: "quickbooks-test", requestId: input.requestId,
+    } });
+    return outcome;
+  });
+  const recoverMutation = vi.fn(async (input: QuickBooksProviderMutationCommand, providerEntityId: string) => ({
+    providerEntityId,
+    receipt: { verified: true, recoveryOnly: true, requestId: input.requestId },
+    readback: { Id: providerEntityId, DisplayName: "Harbour Kitchen Pte Ltd" },
   }));
   const getMutationTarget = vi.fn(async (_entity: string, targetId: string) => ({
     Id: targetId,
@@ -20,7 +49,7 @@ function fixture(options: {
     DisplayName: "Old Vendor Name",
     Active: true,
   }));
-  const provider = { executeMutation, getMutationTarget } as unknown as QuickBooksProviderCapabilities;
+  const provider = { executeMutation, recoverMutation, getMutationTarget } as unknown as QuickBooksProviderCapabilities;
   const resolver: QuickBooksProviderResolver = {
     connectionStatus: vi.fn(),
     resolve: vi.fn(async () => ({
@@ -46,10 +75,11 @@ function fixture(options: {
         : {}),
     },
   );
-  return { service, resolver, executeMutation, getMutationTarget };
+  return { service, resolver, executeMutation, recoverMutation, getMutationTarget };
 }
 
 const customerInput = {
+  target_session_ref: targetSessionRef,
   request_id: "qbo.customer.harbour-001",
   entity: "Customer" as const,
   operation: "CREATE" as const,
@@ -86,11 +116,124 @@ describe("QuickBooks generic mutation service", () => {
       receipt: { verified: true },
     });
     expect(executeMutation).toHaveBeenCalledTimes(1);
+    expect(Object.keys(executeMutation.mock.calls[0]?.[1] as object)).toEqual([]);
+  });
+
+  it("durably checkpoints the Provider Id before readback and recovers by exact Id without a second write", async () => {
+    const repository = new InMemoryQuickBooksMutationRepository();
+    let first = true;
+    const executeMutation = vi.fn(async (
+      input: QuickBooksProviderMutationCommand,
+      permit: QuickBooksProviderWritePermit,
+      recordProviderOutcome: (outcome: { providerEntityId: string; receipt: Record<string, unknown> }) => Promise<void>,
+      markProviderDispatch: () => Promise<void>,
+    ) => {
+      consumeQuickBooksProviderWritePermit(permit, { realmId: "9341457701636490", command: input });
+      await markProviderDispatch();
+      await recordProviderOutcome({ providerEntityId: "recovery-9001", receipt: { requestId: input.requestId } });
+      if (first) {
+        first = false;
+        throw new AppError("WRITE_RESULT_UNKNOWN", "simulated crash after Provider response", { httpStatus: 503, retryable: false });
+      }
+      throw new Error("provider write must never be retried");
+    });
+    const recoverMutation = vi.fn(async (input: QuickBooksProviderMutationCommand, providerEntityId: string) => ({
+      providerEntityId,
+      receipt: { requestId: input.requestId, verification: "RECOVERY_EXACT_ID_READBACK" },
+      readback: { Id: providerEntityId, DisplayName: "Harbour Kitchen Pte Ltd" },
+    }));
+    const provider = { executeMutation, recoverMutation, getMutationTarget: vi.fn() } as unknown as QuickBooksProviderCapabilities;
+    const resolver: QuickBooksProviderResolver = {
+      connectionStatus: vi.fn(),
+      resolve: vi.fn(async () => ({
+        realmId: "9341457701636490", companyName: "Sandbox Company", connectionRefSafe: "qbc_123",
+        boundTargetRefSafe: "qbt_123", bindingRevision: "qbr_v1", provider,
+      })),
+    };
+    const service = new QuickBooksMutationService(repository, resolver, {
+      writeEnabled: true, writeTargetMode: "exact_allowlist", publicBaseUrl: "https://quickbooks-mcp.example.test",
+      allowedRealmId: "9341457701636490",
+    });
+    const prepared = await service.prepare("actor-a", customerInput);
+    await expect(service.executeWithConfirmation("actor-a", {
+      preparation_id: prepared.preparation_id, request_id: customerInput.request_id,
+      confirmation_phrase: prepared.confirmation_phrase as string,
+    })).rejects.toMatchObject({ code: "WRITE_RESULT_UNKNOWN" });
+    await expect(repository.get(prepared.preparation_id)).resolves.toMatchObject({
+      state: "WRITE_RESULT_UNKNOWN", providerEntityId: "recovery-9001",
+      providerOutcomeReceipt: { requestId: expect.any(String), canonicalPayloadHash: expect.any(String) },
+    });
+
+    const recovered = await service.executeWithConfirmation("actor-a", {
+      preparation_id: prepared.preparation_id, request_id: customerInput.request_id,
+      confirmation_phrase: prepared.confirmation_phrase as string,
+    });
+    expect(recovered).toMatchObject({
+      state: "POSTED_READBACK_VERIFIED", providerEntityId: "recovery-9001", idempotentReplay: true,
+      receipt: { recoveryOnly: true, providerMutationRetried: false },
+    });
+    expect(executeMutation).toHaveBeenCalledTimes(1);
+    expect(recoverMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays durable terminal evidence without a second write when audit completion crashes after commit", async () => {
+    const repository = new InMemoryQuickBooksMutationRepository();
+    const executeMutation = vi.fn(async (
+      input: QuickBooksProviderMutationCommand,
+      permit: QuickBooksProviderWritePermit,
+      recordProviderOutcome: (outcome: { providerEntityId: string; receipt: Record<string, unknown> }) => Promise<void>,
+      markProviderDispatch: () => Promise<void>,
+    ) => {
+      consumeQuickBooksProviderWritePermit(permit, { realmId: "9341457701636490", command: input });
+      await markProviderDispatch();
+      await recordProviderOutcome({ providerEntityId: "audit-9001", receipt: { requestId: input.requestId } });
+      return {
+        providerEntityId: "audit-9001", receipt: { verified: true },
+        readback: { Id: "audit-9001", DisplayName: "Harbour Kitchen Pte Ltd" },
+      };
+    });
+    const provider = {
+      executeMutation, recoverMutation: vi.fn(), getMutationTarget: vi.fn(),
+    } as unknown as QuickBooksProviderCapabilities;
+    const resolver: QuickBooksProviderResolver = {
+      connectionStatus: vi.fn(),
+      resolve: vi.fn(async () => ({
+        realmId: "9341457701636490", companyName: "Sandbox Company", connectionRefSafe: "qbc_123",
+        boundTargetRefSafe: "qbt_123", bindingRevision: "qbr_v1", provider,
+      })),
+    };
+    let completionCount = 0;
+    const audit = {
+      beginAudit: vi.fn(async () => undefined),
+      completeAudit: vi.fn(async () => {
+        completionCount += 1;
+        if (completionCount === 2) throw new Error("simulated audit completion crash");
+      }),
+    };
+    const service = new QuickBooksMutationService(repository, resolver, {
+      writeEnabled: true, writeTargetMode: "exact_allowlist", publicBaseUrl: "https://quickbooks-mcp.example.test",
+      allowedRealmId: "9341457701636490",
+    }, audit);
+    const prepared = await service.prepare("actor-a", customerInput);
+    const executeInput = {
+      preparation_id: prepared.preparation_id, request_id: customerInput.request_id,
+      confirmation_phrase: prepared.confirmation_phrase as string,
+    };
+    await expect(service.executeWithConfirmation("actor-a", executeInput)).rejects.toMatchObject({
+      code: "CONFIGURATION_ERROR", details: { auditCompletionStatus: "UNKNOWN" },
+    });
+    await expect(repository.get(prepared.preparation_id)).resolves.toMatchObject({
+      state: "POSTED_READBACK_VERIFIED", providerEntityId: "audit-9001",
+    });
+    const replay = await service.executeWithConfirmation("actor-a", executeInput);
+    expect(replay).toMatchObject({ state: "POSTED_READBACK_VERIFIED", idempotentReplay: true });
+    expect(executeMutation).toHaveBeenCalledTimes(1);
   });
 
   it("requires out-of-band review for a posting transaction", async () => {
     const { service, executeMutation } = fixture();
     const prepared = await service.prepare("actor-a", {
+      target_session_ref: targetSessionRef,
       request_id: "qbo.invoice.001",
       entity: "Invoice",
       operation: "CREATE",
@@ -114,6 +257,7 @@ describe("QuickBooks generic mutation service", () => {
   it("keeps cash actions disabled even after human review unless explicitly allowlisted", async () => {
     const { service, executeMutation } = fixture();
     const prepared = await service.prepare("actor-a", {
+      target_session_ref: targetSessionRef,
       request_id: "qbo.payment.001",
       entity: "Payment",
       operation: "CREATE",
@@ -124,6 +268,8 @@ describe("QuickBooks generic mutation service", () => {
       actorId: "actor-a",
       preparationId: prepared.preparation_id,
       approvedBy: "controller-a",
+      sessionHash: "session-hash",
+      csrfHash: "csrf-hash",
     })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("CREATE:Payment") });
     expect(executeMutation).not.toHaveBeenCalled();
   });
@@ -172,6 +318,7 @@ describe("QuickBooks generic mutation service", () => {
   it("reads and freezes the exact update target during PREPARED", async () => {
     const { service, getMutationTarget } = fixture();
     const prepared = await service.prepare("actor-a", {
+      target_session_ref: targetSessionRef,
       request_id: "qbo.vendor.update.001",
       entity: "Vendor",
       operation: "UPDATE",

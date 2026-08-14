@@ -1,7 +1,11 @@
 import type { DeterministicValidationReceipt } from "../ledger-control/deterministicValidation.js";
 import type { QuickBooksWritableEntity, QuickBooksWriteOperation } from "./writePolicy.js";
+import type {
+  QuickBooksAutonomousAuthorizationEvidence,
+  QuickBooksMutationReuseEvidence,
+} from "./autonomousAuthorizationEvidence.js";
 
-export const QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION = "0.1.0";
+export const QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION = "0.2.0";
 export const QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION = "quickbooks-sg-core-v1";
 
 /**
@@ -30,12 +34,29 @@ export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS = [
 export const QUICKBOOKS_ACCOUNTING_FACT_KINDS = [
   "CONTACT_CANDIDATE",
   "NATIVE_DOCUMENT",
+  "UNSUPPORTED_EVENT",
   "EVIDENCE",
   "CONTROL_FINDING",
 ] as const;
 
+export const QUICKBOOKS_UNSUPPORTED_EVENT_TYPES = [
+  "PAYMENT",
+  "BILL_PAYMENT",
+  "PREPAYMENT",
+  "BANK_FEE",
+  "OPENING_BALANCE",
+  "EXPENSE_CLAIM",
+  "FOREIGN_CURRENCY_BILL",
+  "FX_SETTLEMENT",
+] as const;
+
 export type QuickBooksAccountingFactKind = typeof QUICKBOOKS_ACCOUNTING_FACT_KINDS[number];
 export type QuickBooksAccountingFactOrigin = "MODEL_EXTRACTED" | "AGENT_ASSERTED";
+export type QuickBooksUnsupportedEventType = typeof QUICKBOOKS_UNSUPPORTED_EVENT_TYPES[number];
+export type QuickBooksSourceDigestProvenance =
+  | "AGENT_SUPPLIED_TEXT_FINGERPRINT"
+  | "HOST_PROVIDED_ORIGINAL_FILE_SHA256"
+  | "EXTERNALLY_SUPPLIED_UNVERIFIED_SHA256";
 
 export interface QuickBooksSourceUnit {
   unitId: string;
@@ -46,6 +67,12 @@ export interface QuickBooksSourceArtifact {
   artifactId: string;
   label: string;
   units: QuickBooksSourceUnit[];
+  /** Optional source identity. Its absence does not block MODEL_EXTRACTED facts. */
+  sourceRef?: string;
+  sourceSha256?: string;
+  sourceDigestProvenance?: QuickBooksSourceDigestProvenance;
+  /** Only meaningful with HOST_PROVIDED provenance and a server-side verifier. */
+  sourceAttestationRef?: string;
 }
 
 interface QuickBooksFactBase {
@@ -95,6 +122,21 @@ export interface QuickBooksNativeDocumentFact extends QuickBooksFactBase {
   businessReason: string;
 }
 
+/**
+ * A real accounting event supplied by the user that is outside this release's
+ * native QuickBooks write routes. It remains typed and terminally accounted
+ * for; it must never be disguised as generic evidence or a journal fallback.
+ */
+export interface QuickBooksUnsupportedEventFact extends QuickBooksFactBase {
+  kind: "UNSUPPORTED_EVENT";
+  eventType: QuickBooksUnsupportedEventType;
+  date: string;
+  currency: string;
+  amount: string;
+  counterpartyName?: string;
+  note: string;
+}
+
 export interface QuickBooksEvidenceFact extends QuickBooksFactBase {
   kind: "EVIDENCE";
   evidenceRole: "SOURCE_DOCUMENT" | "APPROVAL" | "CORRESPONDENCE" | "CONTROL_SUPPORT";
@@ -113,6 +155,7 @@ export interface QuickBooksControlFindingFact extends QuickBooksFactBase {
 export type QuickBooksAccountingFact =
   | QuickBooksContactCandidateFact
   | QuickBooksNativeDocumentFact
+  | QuickBooksUnsupportedEventFact
   | QuickBooksEvidenceFact
   | QuickBooksControlFindingFact;
 
@@ -121,6 +164,7 @@ export type QuickBooksCaseEventDisposition =
   | "EVIDENCE_ONLY"
   | "BLOCKED_COVERAGE"
   | "BLOCKED_VALIDATION"
+  | "BLOCKED_UNSUPPORTED"
   | "REVIEW_REQUIRED";
 
 export interface QuickBooksCaseEvent {
@@ -132,6 +176,19 @@ export interface QuickBooksCaseEvent {
   disposition: QuickBooksCaseEventDisposition;
   reasonCodes: string[];
   route?: QuickBooksNativeDocumentType | "CONTACT_CREATE";
+  unsupportedEventType?: QuickBooksUnsupportedEventType;
+}
+
+export interface QuickBooksCaseAmountBridge {
+  sourceFactIds: string[];
+  sourceLineHash: string;
+  currency: string;
+  sourceNet: string;
+  sourceTax: string;
+  sourceGross: string;
+  canonicalNet: string;
+  canonicalTax: string;
+  canonicalGross: string;
 }
 
 export interface QuickBooksCaseOperationCandidate {
@@ -142,6 +199,16 @@ export interface QuickBooksCaseOperationCandidate {
   operation: QuickBooksWriteOperation;
   sourceUnitIds: string[];
   primaryFactId: string;
+  sourceRevisionHash: string;
+  sourceFactHash: string;
+  sourceEvidenceHash: string;
+  /**
+   * Case/version-independent business identity used to collapse the same
+   * source event across retries or separately-created Cases. It is not a
+   * substitute for the immutable Case/source revision hashes above.
+   */
+  stableOperationKey: string;
+  amountBridge?: QuickBooksCaseAmountBridge;
 }
 
 export interface QuickBooksCaseCompilationDraft {
@@ -151,6 +218,7 @@ export interface QuickBooksCaseCompilationDraft {
   sourceRevisionHash: string;
   compilerVersion: string;
   policyVersion: string;
+  sources: QuickBooksSourceArtifact[];
   activeFacts: QuickBooksAccountingFact[];
   events: QuickBooksCaseEvent[];
   operationCandidates: QuickBooksCaseOperationCandidate[];
@@ -190,9 +258,13 @@ export interface QuickBooksCaseOperationRecord {
   operation: QuickBooksCaseOperation;
   state: QuickBooksCaseOperationState;
   preparationId?: string;
+  preparationPayloadHash?: string;
+  operationSourceEvidenceHash?: string;
   mutationRequestId?: string;
   providerEntityId?: string;
   authorizationReceipt?: Record<string, unknown>;
+  authorizationEvidence?: QuickBooksAutonomousAuthorizationEvidence;
+  reuseEvidenceReceipt?: QuickBooksMutationReuseEvidence;
   writeReceipt?: Record<string, unknown>;
   readback?: Record<string, unknown>;
   errorReceipt?: Record<string, unknown>;

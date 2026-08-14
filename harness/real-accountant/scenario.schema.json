@@ -1,0 +1,568 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:zcloak:qbo-real-accountant-uat:v1",
+  "title": "QuickBooks real-accountant UAT scenario pack",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "packId",
+    "sourceProvenance",
+    "privacyBoundary",
+    "target",
+    "startingConditions",
+    "artifactManifest",
+    "businessChains",
+    "cases",
+    "casePlanOracle",
+    "supportedWriteOracles",
+    "unsupportedActionOracles",
+    "factRevisionOracle",
+    "crossLedgerTranslationOracle",
+    "negativeScenarios",
+    "acceptanceGates"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": "qbo-real-accountant-uat/v1"
+    },
+    "packId": {
+      "$ref": "#/$defs/id"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceProvenance": {
+      "type": "object",
+      "required": [
+        "sourceType",
+        "allBusinessNamesAndIdentifiersAreFictitious",
+        "originalFilesCommitted",
+        "colleagueIdentityOrMetadataIncluded"
+      ],
+      "properties": {
+        "sourceType": {
+          "const": "SYNTHETIC_ACCOUNTING_TEST_PACK"
+        },
+        "allBusinessNamesAndIdentifiersAreFictitious": {
+          "const": true
+        },
+        "originalFilesCommitted": {
+          "const": false
+        },
+        "derivedFromColleagueConversationStyle": {
+          "type": "boolean"
+        },
+        "colleagueIdentityOrMetadataIncluded": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "privacyBoundary": {
+      "type": "object",
+      "required": [
+        "committedMaterial",
+        "prohibitedMaterial"
+      ],
+      "properties": {
+        "committedMaterial": {
+          "$ref": "#/$defs/nonEmptyStrings"
+        },
+        "prohibitedMaterial": {
+          "$ref": "#/$defs/nonEmptyStrings"
+        }
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "provider",
+        "environment",
+        "mcpEndpoint",
+        "onlineHost",
+        "mcpIsolation"
+      ],
+      "properties": {
+        "provider": {
+          "const": "quickbooks"
+        },
+        "ledgerRole": {
+          "const": "FORMAL_SYSTEM_OF_RECORD"
+        },
+        "environment": {
+          "const": "QUICKBOOKS_SANDBOX_ONLY"
+        },
+        "mcpEndpoint": {
+          "const": "https://mcp.jiayuanwang.xyz/quickbooks/mcp"
+        },
+        "onlineHost": {
+          "type": "object",
+          "required": ["name", "baseUrl", "modelDisplayName", "modelId"],
+          "properties": {
+            "name": { "const": "Work" },
+            "baseUrl": { "const": "https://work.zcloak.ai" },
+            "modelDisplayName": { "const": "DeepSeek V4" },
+            "modelId": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "mcpIsolation": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "actor": {
+      "type": "object"
+    },
+    "startingConditions": {
+      "type": "object"
+    },
+    "globalToolOracle": {
+      "type": "object"
+    },
+    "artifactManifest": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "businessChains": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "chainId",
+          "artifactIds",
+          "goldFacts"
+        ],
+        "properties": {
+          "chainId": {
+            "enum": [
+              "AR",
+              "AP",
+              "EXPENSE",
+              "FX"
+            ]
+          },
+          "artifactIds": {
+            "$ref": "#/$defs/idArray"
+          },
+          "goldFacts": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    },
+    "casePlanOracle": {
+      "type": "object"
+    },
+    "supportedWriteOracles": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "entity",
+          "businessKey",
+          "expectedReadback",
+          "duplicateMaximum"
+        ],
+        "properties": {
+          "entity": {
+            "enum": [
+              "Customer",
+              "Vendor",
+              "Invoice",
+              "Bill",
+              "CreditMemo",
+              "VendorCredit"
+            ]
+          },
+          "businessKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedReadback": {
+            "type": "object",
+            "minProperties": 1
+          },
+          "forbiddenReadback": {
+            "type": "object"
+          },
+          "duplicateMaximum": {
+            "const": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "unsupportedActionOracles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "businessEvent",
+          "officialQuickBooksEntity",
+          "currentAccountingCaseReleased",
+          "expectedDisposition",
+          "mustNotWrite"
+        ],
+        "properties": {
+          "businessEvent": {
+            "type": "string",
+            "minLength": 1
+          },
+          "officialQuickBooksEntity": {
+            "type": "string",
+            "minLength": 1
+          },
+          "currentAccountingCaseReleased": {
+            "const": false
+          },
+          "expectedDisposition": {
+            "type": "string",
+            "pattern": "^BLOCKED_"
+          },
+          "mustNotWrite": {
+            "const": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "factRevisionOracle": {
+      "type": "object"
+    },
+    "crossLedgerTranslationOracle": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "sourceConcept",
+          "quickBooksRule"
+        ],
+        "properties": {
+          "sourceConcept": {
+            "type": "string",
+            "minLength": 1
+          },
+          "quickBooksRule": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "negativeScenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "scenarioId",
+          "name",
+          "expectedState"
+        ],
+        "properties": {
+          "scenarioId": {
+            "$ref": "#/$defs/id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedState": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedReasonCode": {
+            "type": "string"
+          },
+          "providerCallDelta": {
+            "type": "integer"
+          },
+          "providerCreateDelta": {
+            "type": "integer"
+          },
+          "blindRetryAllowed": {
+            "type": "boolean"
+          },
+          "providerIdsMustRemainIdentical": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "acceptanceGates": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9._:/{}-]+$"
+    },
+    "nonEmptyStrings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "idArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "artifactId",
+        "uploadSlot",
+        "sha256Env",
+        "logicalType",
+        "logicalDocumentNumber",
+        "businessChain",
+        "sourceBranding",
+        "sourceUnits",
+        "quickBooksTranslation"
+      ],
+      "properties": {
+        "artifactId": {
+          "$ref": "#/$defs/id"
+        },
+        "uploadSlot": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14
+        },
+        "sha256Env": {
+          "type": "string",
+          "pattern": "^QBO_UAT_ARTIFACT_(0[1-9]|1[0-4])_SHA256$"
+        },
+        "logicalType": {
+          "type": "string",
+          "pattern": "^[A-Z0-9_]+$"
+        },
+        "logicalDocumentNumber": {
+          "type": "string",
+          "minLength": 1
+        },
+        "businessChain": {
+          "enum": [
+            "AR",
+            "AP",
+            "BANK",
+            "EXPENSE",
+            "FX"
+          ]
+        },
+        "sourceBranding": {
+          "const": "XERO_TEST_PACK"
+        },
+        "sourceUnits": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "unitId",
+              "expectedFactKinds",
+              "terminalDisposition"
+            ],
+            "properties": {
+              "unitId": {
+                "$ref": "#/$defs/id"
+              },
+              "expectedFactKinds": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "CONTACT_CANDIDATE",
+                    "NATIVE_DOCUMENT",
+                    "UNSUPPORTED_EVENT",
+                    "EVIDENCE",
+                    "CONTROL_FINDING"
+                  ]
+                }
+              },
+              "terminalDisposition": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "quickBooksTranslation": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "required": [
+        "caseId",
+        "title",
+        "purpose",
+        "turns"
+      ],
+      "properties": {
+        "caseId": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/turn"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "turn": {
+      "type": "object",
+      "required": [
+        "turnId",
+        "operation",
+        "user",
+        "attachments",
+        "intent",
+        "toolOracle",
+        "responseOracle"
+      ],
+      "properties": {
+        "turnId": {
+          "type": "string",
+          "pattern": "^T[0-9]{2}$"
+        },
+        "operation": {
+          "enum": [
+            "read",
+            "prepare",
+            "write"
+          ]
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attachments": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "intent": {
+          "$ref": "#/$defs/id"
+        },
+        "toolOracle": {
+          "type": "object",
+          "required": [
+            "required",
+            "allowed",
+            "forbidden"
+          ],
+          "properties": {
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "allowed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "forbidden": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "requiredSequence": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "responseOracle": {
+          "type": "object",
+          "required": [
+            "mustState",
+            "mustNotClaim"
+          ],
+          "properties": {
+            "mustState": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "mustNotClaim": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

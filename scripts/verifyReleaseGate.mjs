@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
 
 const hasDatabase = Boolean(process.env.TEST_DATABASE_URL);
+if (!hasDatabase) {
+  console.error(JSON.stringify({
+    status: "failed",
+    gate: "quickbooks-ledger-mcp-0.6.0",
+    step: "required-postgres",
+    error: "TEST_DATABASE_URL is required; release verification cannot pass with the persistence kernel untested.",
+  }));
+  process.exit(1);
+}
 const nonDatabaseEnv = { ...process.env };
 delete nonDatabaseEnv.TEST_DATABASE_URL;
 const steps = [
@@ -13,7 +22,7 @@ const steps = [
   { name: "required-http-edge", command: "npm", args: ["run", "test:http:required"] },
   { name: "deployment-static", command: "sh", args: ["deploy/verify-static.sh"] },
 ];
-if (hasDatabase) steps.push({ name: "required-postgres", command: "npm", args: ["run", "test:postgres:required"] });
+steps.push({ name: "required-postgres", command: "npm", args: ["run", "test:postgres:required"] });
 
 for (const step of steps) {
   const result = spawnSync(step.command, step.args, {
@@ -34,6 +43,6 @@ console.log(JSON.stringify({
   status: "passed",
   gate: "quickbooks-ledger-mcp-0.6.0",
   checks: steps.map((step) => step.name),
-  postgresIntegration: hasDatabase ? "passed" : "not_run_no_TEST_DATABASE_URL",
+  postgresIntegration: "passed",
   agent2Uat: "not_run_by_local_gate",
 }));

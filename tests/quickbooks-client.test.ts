@@ -55,7 +55,7 @@ describe("QuickBooks API client", () => {
       isWrite: true,
     })).rejects.toMatchObject({
       code: "WRITE_RESULT_UNKNOWN",
-      retryable: true,
+      retryable: false,
       details: { requestId: "zc:bill:123" },
     });
   });
@@ -81,5 +81,38 @@ describe("QuickBooks API client", () => {
       },
     });
     expect(JSON.stringify(error)).not.toContain(secret);
+  });
+
+  it.each([
+    [401, "NOT_CONNECTED", false],
+    [403, "FORBIDDEN", false],
+    [429, "RATE_LIMITED", true],
+    [503, "PROVIDER_UNAVAILABLE", true],
+  ] as const)("classifies provider HTTP %i as %s", async (status, code, retryable) => {
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ Fault: { Error: [] } }), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    }));
+    const client = new QuickBooksApiClient({
+      realmId: "123",
+      environment: "sandbox",
+      tokenSource: tokenSource(),
+      request,
+    });
+
+    await expect(client.request("/companyinfo/123")).rejects.toMatchObject({ code, retryable });
+  });
+
+  it("classifies an unreachable provider read as temporarily unavailable", async () => {
+    const client = new QuickBooksApiClient({
+      realmId: "123",
+      environment: "sandbox",
+      tokenSource: tokenSource(),
+      request: vi.fn().mockRejectedValue(new Error("network down")),
+    });
+    await expect(client.request("/companyinfo/123")).rejects.toMatchObject({
+      code: "PROVIDER_UNAVAILABLE",
+      retryable: true,
+    });
   });
 });

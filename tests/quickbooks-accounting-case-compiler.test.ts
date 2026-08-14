@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { QuickBooksAccountingFact, QuickBooksSourceArtifact } from "../src/quickbooks/accountingCase.js";
 import { compileQuickBooksAccountingCase } from "../src/quickbooks/accountingCaseCompiler.js";
 import { quickBooksPrepareAccountingCaseSchema } from "../src/quickbooks/accountingCaseSchemas.js";
 
@@ -22,12 +23,21 @@ const clean = {
   }],
 };
 
+function compileParsed(parsed: ReturnType<typeof quickBooksPrepareAccountingCaseSchema.parse>) {
+  return compileQuickBooksAccountingCase({
+    caseId: parsed.case_id,
+    expectedVersion: parsed.expected_version,
+    sources: parsed.sources as QuickBooksSourceArtifact[],
+    // The strict public schema has already removed undefined-valued optional
+    // properties; its inferred Zod type is wider than the exact domain type.
+    facts: parsed.facts as QuickBooksAccountingFact[],
+  });
+}
+
 describe("QuickBooks Accounting Case compiler", () => {
   it("recomputes line totals and emits one bounded operation", () => {
     const parsed = quickBooksPrepareAccountingCaseSchema.parse(clean);
-    const compiled = compileQuickBooksAccountingCase({
-      caseId: parsed.case_id, expectedVersion: parsed.expected_version, sources: parsed.sources, facts: parsed.facts,
-    });
+    const compiled = compileParsed(parsed);
     expect(compiled).toMatchObject({
       status: "PLANNED_NEEDS_PREFLIGHT",
       coverage: { expectedSourceUnitCount: 1, satisfiedFactRequirementCount: 1, missingFactRequirements: [] },
@@ -36,12 +46,45 @@ describe("QuickBooks Accounting Case compiler", () => {
     });
   });
 
+  it("persists a fully typed residual Case with zero Provider operations", () => {
+    const parsed = quickBooksPrepareAccountingCaseSchema.parse({
+      target_session_ref,
+      case_id: "case-residual-001",
+      expected_version: 0,
+      sources: [{
+        artifactId: "bank-statement.png",
+        label: "Bank statement residual evidence",
+        units: [{ unitId: "bank-fee-row", expectedFactKinds: ["UNSUPPORTED_EVENT", "EVIDENCE"] }],
+      }],
+      facts: [{
+        factId: "bank-fee-v1", lineageKey: "bank-fee", eventKey: "bank-fee",
+        sourceUnitIds: ["bank-fee-row"], origin: "MODEL_EXTRACTED", revision: 1,
+        kind: "UNSUPPORTED_EVENT", eventType: "BANK_FEE", date: "2026-07-25",
+        currency: "SGD", amount: "25.00", note: "Bank fee is not released in this Case version.",
+      }, {
+        factId: "bank-fee-evidence-v1", lineageKey: "bank-fee-evidence", eventKey: "bank-fee",
+        sourceUnitIds: ["bank-fee-row"], origin: "MODEL_EXTRACTED", revision: 1,
+        kind: "EVIDENCE", evidenceRole: "SOURCE_DOCUMENT", relatedEventKey: "bank-fee",
+        note: "The supplied statement supports the blocked bank fee event.",
+      }],
+    });
+    const compiled = compileParsed(parsed);
+    expect(compiled).toMatchObject({
+      status: "PLANNED_WITH_EXCEPTIONS",
+      coverage: { missingFactRequirements: [] },
+      events: [{ disposition: "BLOCKED_UNSUPPORTED", unsupportedEventType: "BANK_FEE" }],
+      operationCandidates: [],
+    });
+  });
+
   it("blocks the original 800 + 7.20 but declared 87.20 near-miss", () => {
     const bad = structuredClone(clean);
-    bad.facts[0].declaredNet = "87.20";
-    bad.facts[0].declaredGross = "87.20";
+    const [badFact] = bad.facts;
+    if (!badFact) throw new Error("test fixture requires one fact");
+    badFact.declaredNet = "87.20";
+    badFact.declaredGross = "87.20";
     const parsed = quickBooksPrepareAccountingCaseSchema.parse(bad);
-    const compiled = compileQuickBooksAccountingCase({ caseId: parsed.case_id, expectedVersion: 0, sources: parsed.sources, facts: parsed.facts });
+    const compiled = compileParsed(parsed);
     expect(compiled.status).toBe("BLOCKED_VALIDATION");
     expect(compiled.events[0]?.reasonCodes).toContain("LINE_NET_DOES_NOT_MATCH_DECLARED_NET");
   });
@@ -55,7 +98,7 @@ describe("QuickBooks Accounting Case compiler", () => {
       ] }],
       facts: [{ ...clean.facts[0], sourceUnitIds: ["row-1"] }],
     });
-    const compiled = compileQuickBooksAccountingCase({ caseId: parsed.case_id, expectedVersion: 0, sources: parsed.sources, facts: parsed.facts });
+    const compiled = compileParsed(parsed);
     expect(compiled.status).toBe("BLOCKED_COVERAGE");
     expect(compiled.coverage.missingFactRequirements).toEqual(["row-2:NATIVE_DOCUMENT"]);
   });
@@ -68,8 +111,8 @@ describe("QuickBooks Accounting Case compiler", () => {
         origin: "AGENT_ASSERTED", revision: 1, kind: "EVIDENCE", evidenceRole: "SOURCE_DOCUMENT", note: "Invoice source supplied",
       }],
     });
-    const left = compileQuickBooksAccountingCase({ caseId: parsed.case_id, expectedVersion: 0, sources: parsed.sources, facts: parsed.facts });
-    const right = compileQuickBooksAccountingCase({ caseId: parsed.case_id, expectedVersion: 0, sources: [...parsed.sources].reverse(), facts: [...parsed.facts].reverse() });
+    const left = compileParsed(parsed);
+    const right = compileParsed({ ...parsed, sources: [...parsed.sources].reverse(), facts: [...parsed.facts].reverse() });
     expect(right.sourceRevisionHash).toBe(left.sourceRevisionHash);
     expect(right.events).toEqual(left.events);
   });

@@ -2,7 +2,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { AppError, toSafeError } from "../errors.js";
 import { hashObject, safeEqual, sha256 } from "../security/hash.js";
 import {
+  evaluateAutonomousLedgerReuse,
   evaluateAutonomousLedgerWrite,
+  type EvaluateAutonomousLedgerWriteInput,
   type LedgerStandingDelegation,
 } from "../ledger-control/ledgerControlKernel.js";
 import {
@@ -10,7 +12,8 @@ import {
   type DeterministicValidationReceipt,
 } from "../ledger-control/deterministicValidation.js";
 import { requireOAuthBoundRequestContext, type RequestContext } from "../security/requestContext.js";
-import type { QuickBooksProviderResolver } from "./service.js";
+import { issueQuickBooksProviderWritePermit } from "../security/quickBooksProviderWritePermit.js";
+import type { QuickBooksProviderCapabilities, QuickBooksProviderResolver } from "./service.js";
 import type {
   QuickBooksExecutePreparedMutationInput,
   QuickBooksGetWriteCapabilitiesInput,
@@ -35,6 +38,19 @@ import {
   verifyQuickBooksSourceAttestation,
   type QuickBooksSourceAttestationVerifier,
 } from "./sourceAttestation.js";
+import {
+  issueQuickBooksAutonomousAuthorizationEvidence,
+  issueQuickBooksMutationReuseEvidence,
+  resolveQuickBooksAutonomousAuthorizationDelegationIdentity,
+  verifyQuickBooksAutonomousAuthorizationEvidence,
+  type QuickBooksAutonomousAuthorizationEvidence,
+  type QuickBooksMutationReuseEvidence,
+} from "./autonomousAuthorizationEvidence.js";
+import {
+  QUICKBOOKS_MUTATION_EXECUTION_LEASE_MS,
+  resolvedNoWriteReceipt,
+  unknownNoIdResolutionReceipt,
+} from "./mutationExecutionAttempt.js";
 
 export interface QuickBooksMutationRuntimePolicy {
   writeEnabled: boolean;
@@ -53,6 +69,11 @@ export interface QuickBooksMutationRuntimePolicy {
 }
 
 type MutationAuditRepository = Pick<QuickBooksControlRepository, "beginAudit" | "completeAudit">;
+
+function isDefinitivePreDispatchFailure(code: AppError["code"]): boolean {
+  return code === "VALIDATION_FAILED" || code === "APPROVAL_INVALID" ||
+    code === "FORBIDDEN" || code === "NOT_FOUND";
+}
 
 function confirmationPhrase(
   input: QuickBooksPrepareMutationInput,
@@ -91,6 +112,7 @@ export class QuickBooksMutationService {
     private readonly policy: QuickBooksMutationRuntimePolicy,
     private readonly audit?: MutationAuditRepository,
     private readonly sourceAttestationVerifier?: QuickBooksSourceAttestationVerifier,
+    private readonly clock: () => Date = () => new Date(),
   ) {}
 
   capabilities(input: QuickBooksGetWriteCapabilitiesInput = {}) {
@@ -135,10 +157,14 @@ export class QuickBooksMutationService {
       entity: input.entity,
       operation: input.operation,
       payload_hash: hashObject(input.payload),
-    }, () => this.#prepare(actorId, input));
+    }, () => this.#prepare(actorId, input, { allowVerifiedTerminalReplay: true }));
   }
 
-  async #prepare(actorId: string, input: QuickBooksPrepareMutationInput) {
+  async #prepare(
+    actorId: string,
+    input: QuickBooksPrepareMutationInput,
+    options: { allowVerifiedTerminalReplay?: boolean } = {},
+  ) {
     const capability = quickBooksWriteCapability(input.operation, input.entity);
     if (!capability) {
       throw new AppError("VALIDATION_FAILED", `Intuit's current official MCP does not expose ${input.operation} for ${input.entity}.`, {
@@ -218,14 +244,16 @@ export class QuickBooksMutationService {
         httpStatus: 409,
       });
     }
-    if (created.preparation.state !== "PREPARED") {
+    const verifiedTerminalReplay = !created.created && options.allowVerifiedTerminalReplay === true &&
+      created.preparation.state === "POSTED_READBACK_VERIFIED";
+    if (created.preparation.state !== "PREPARED" && !verifiedTerminalReplay) {
       throw new AppError("CONFLICT", `The QuickBooks mutation is already in ${created.preparation.state}.`, {
         httpStatus: 409,
       });
     }
     return {
       preparation_id: created.preparation.preparationId,
-      state: "PREPARED" as const,
+      state: verifiedTerminalReplay ? "POSTED_READBACK_VERIFIED" as const : "PREPARED" as const,
       entity: capability.entity,
       operation: capability.operation,
       official_tool: capability.officialTool,
@@ -233,7 +261,7 @@ export class QuickBooksMutationService {
       execution_mode: capability.executionMode,
       provider_effect: capability.providerEffect,
       quickbooks_draft_available: capability.quickBooksDraftAvailable,
-      provider_write_executed: false,
+      provider_write_executed: verifiedTerminalReplay,
       runtime_policy_enabled: this.#enabledCapabilityKeys().includes(`${capability.operation}:${capability.entity}`),
       runtime_execution_enabled: this.policy.writeEnabled &&
         this.#enabledCapabilityKeys().includes(`${capability.operation}:${capability.entity}`) &&
@@ -320,8 +348,13 @@ export class QuickBooksMutationService {
     caseId: string;
     caseVersion: number;
     sourceRevisionHash: string;
+    stableOperationKey: string;
     validationReceipt: DeterministicValidationReceipt;
-  }): Promise<QuickBooksMutationExecutionResult & { authorizationReceipt: Record<string, unknown> }> {
+  }): Promise<QuickBooksMutationExecutionResult & {
+    authorizationReceipt: Record<string, unknown>;
+    authorizationEvidence: QuickBooksAutonomousAuthorizationEvidence;
+    reuseEvidenceReceipt?: QuickBooksMutationReuseEvidence;
+  }> {
     return this.#withAudit(context.actorId, "quickbooks_execute_accounting_case_operation", {
       preparationId: input.preparationId,
       requestId: input.requestId,
@@ -346,18 +379,23 @@ export class QuickBooksMutationService {
       });
       const resolved = await this.resolver.resolve(context.actorId, input.targetSessionRef);
       await this.#assertExecutionAllowed(existing, resolved.realmId, resolved.bindingRevision, context.actorId, "AUTONOMOUS");
+      const standingDelegations = this.policy.standingDelegationProvider
+        ? await this.policy.standingDelegationProvider(context, resolved.realmId)
+        : [];
+      // Authorization is about authority at execution time. The validation
+      // receipt proves deterministic accounting checks, but its historical
+      // issuedAt must never rewind target-session or delegation expiry.
+      const authorizationEvaluatedAt = new Date(this.clock().getTime());
       const providerCapabilityReceiptHash = hashObject({
         provider: "quickbooks",
         realmId: resolved.realmId,
         bindingRevision: resolved.bindingRevision,
         capability: `${existing.operation}:${existing.entity}`,
         executeScope: context.scopes.includes("quickbooks.mutation.execute"),
-        checkedAt: input.validationReceipt.issuedAt,
+        providerAccessDenyReasons: [...(resolved.providerAccessDenyReasons ?? [])],
+        checkedAt: authorizationEvaluatedAt.toISOString(),
       });
-      const standingDelegations = this.policy.standingDelegationProvider
-        ? await this.policy.standingDelegationProvider(context, resolved.realmId)
-        : [];
-      const decision = evaluateAutonomousLedgerWrite({
+      const authorityInput = {
         actionId: input.actionId,
         canonicalPayloadHash,
         sourceRevisionHash: input.sourceRevisionHash,
@@ -381,23 +419,142 @@ export class QuickBooksMutationService {
         } : {}),
         standingDelegations,
         writeKillSwitchEnabled: this.policy.writeEnabled,
-        staticActionReleased: this.#enabledCapabilityKeys().includes(`${existing.operation}:${existing.entity}`),
+        staticActionReleased: this.#enabledCapabilityKeys().includes(`${existing.operation}:${existing.entity}`) &&
+          Boolean(this.policy.accountingCaseReleasedCapabilities?.includes(`${existing.operation}:${existing.entity}`)),
         transportScopeAllowed: context.scopes.includes("quickbooks.mutation.execute"),
-        providerAccessDenyReasons: [],
+        providerAccessDenyReasons: [...(resolved.providerAccessDenyReasons ?? [])],
         providerCapabilityReceiptHash,
         validation: validation
           ? { passed: true, receiptHash: validation.receiptHash }
           : { passed: false, reasonCodes: ["VALIDATION_RECEIPT_INVALID"] },
-        now: new Date(input.validationReceipt.issuedAt),
+        now: authorizationEvaluatedAt,
+      } satisfies EvaluateAutonomousLedgerWriteInput;
+      const expectedAuthorizationEvidence = {
+        preparationId: existing.preparationId,
+        providerRequestId: existing.providerRequestId,
+        stableOperationKey: input.stableOperationKey,
+        actionId: input.actionId,
+        actorId: existing.actorId,
+        realmId: existing.realmId,
+        preparationPayloadHash: existing.payloadHash,
+        canonicalPayloadHash,
+      };
+      let authorizationEvidence = verifyQuickBooksAutonomousAuthorizationEvidence(
+        existing.autonomousAuthorizationEvidence,
+        expectedAuthorizationEvidence,
+      );
+      let currentDelegation: LedgerStandingDelegation;
+      if (existing.autonomousAuthorizationEvidence && !authorizationEvidence) {
+        throw new AppError("CONFIGURATION_ERROR", "QuickBooks durable autonomous authorization evidence failed integrity verification.", {
+          httpStatus: 503,
+          details: { failureLayer: "AUTHORIZATION_CAUSALITY", reasonCodes: ["AUTHORIZATION_EVIDENCE_INVALID"] },
+        });
+      }
+      if (authorizationEvidence) {
+        const reuseDecision = evaluateAutonomousLedgerReuse(authorityInput);
+        if (!reuseDecision.allowed) {
+          throw new AppError("FORBIDDEN", "QuickBooks shared mutation reuse authority was denied.", {
+            httpStatus: 403,
+            details: {
+              failureLayer: "STANDING_DELEGATION",
+              denyReasons: reuseDecision.denyReasons,
+              providerAccessDenyReasons: reuseDecision.providerAccessDenyReasons,
+              validationReasonCodes: reuseDecision.validationReasonCodes,
+            },
+          });
+        }
+        currentDelegation = reuseDecision.delegation;
+      } else {
+        const decision = evaluateAutonomousLedgerWrite(authorityInput);
+        if (!decision.allowed) {
+          throw new AppError("FORBIDDEN", "QuickBooks autonomous ledger authority was denied.", {
+            httpStatus: 403,
+            details: {
+              failureLayer: "STANDING_DELEGATION",
+              denyReasons: decision.denyReasons,
+              providerAccessDenyReasons: decision.providerAccessDenyReasons,
+              validationReasonCodes: decision.validationReasonCodes,
+            },
+          });
+        }
+        currentDelegation = decision.delegation;
+        const candidate = issueQuickBooksAutonomousAuthorizationEvidence({
+          preparationId: existing.preparationId,
+          providerRequestId: existing.providerRequestId,
+          stableOperationKey: input.stableOperationKey,
+          actionId: input.actionId,
+          preparationPayloadHash: existing.payloadHash,
+          canonicalPayloadHash,
+          caseId: input.caseId,
+          caseVersion: input.caseVersion,
+          sourceRevisionHash: input.sourceRevisionHash,
+          deterministicValidationReceipt: input.validationReceipt,
+          authorizationReceipt: decision.receipt,
+          recordedAt: authorizationEvaluatedAt,
+        });
+        const recorded = await this.repository.recordAutonomousAuthorizationEvidence({
+          preparationId: existing.preparationId,
+          actorId: context.actorId,
+          evidence: candidate,
+          now: authorizationEvaluatedAt,
+        });
+        authorizationEvidence = verifyQuickBooksAutonomousAuthorizationEvidence(
+          recorded.preparation.autonomousAuthorizationEvidence,
+          expectedAuthorizationEvidence,
+        );
+        if (!authorizationEvidence) {
+          throw new AppError("CONFIGURATION_ERROR", "QuickBooks autonomous authorization evidence was not durably linked to the mutation.", {
+            httpStatus: 503,
+            details: { failureLayer: "AUTHORIZATION_CAUSALITY", reasonCodes: ["AUTHORIZATION_EVIDENCE_PERSISTENCE_MISMATCH"] },
+          });
+        }
+      }
+      if (!authorizationEvidence) {
+        throw new AppError("CONFIGURATION_ERROR", "QuickBooks autonomous authorization evidence is unavailable.", {
+          httpStatus: 503,
+          details: { failureLayer: "AUTHORIZATION_CAUSALITY", reasonCodes: ["AUTHORIZATION_EVIDENCE_MISSING"] },
+        });
+      }
+      const causalitySnapshot = await this.#owned(input.preparationId, context.actorId);
+      const durableAuthorizationEvidence = verifyQuickBooksAutonomousAuthorizationEvidence(
+        causalitySnapshot.autonomousAuthorizationEvidence,
+        expectedAuthorizationEvidence,
+      );
+      if (!durableAuthorizationEvidence ||
+          !safeEqual(durableAuthorizationEvidence.authorizationIdentityHash, authorizationEvidence.authorizationIdentityHash)) {
+        throw new AppError("CONFIGURATION_ERROR", "QuickBooks autonomous authorization evidence changed or disappeared before execution claim.", {
+          httpStatus: 503,
+          details: { failureLayer: "AUTHORIZATION_CAUSALITY", reasonCodes: ["AUTHORIZATION_EVIDENCE_PERSISTENCE_MISMATCH"] },
+        });
+      }
+      authorizationEvidence = durableAuthorizationEvidence;
+      const originalDelegation = resolveQuickBooksAutonomousAuthorizationDelegationIdentity(authorizationEvidence, {
+        preparationId: causalitySnapshot.preparationId,
+        providerRequestId: causalitySnapshot.providerRequestId,
+        actorId: causalitySnapshot.actorId,
+        realmId: causalitySnapshot.realmId,
+        preparationPayloadHash: causalitySnapshot.payloadHash,
       });
-      if (!decision.allowed) {
-        throw new AppError("FORBIDDEN", "QuickBooks autonomous ledger authority was denied.", {
+      if (!originalDelegation) {
+        throw new AppError("CONFIGURATION_ERROR", "QuickBooks autonomous authorization delegation identity is invalid.", {
+          httpStatus: 503,
+          details: { failureLayer: "AUTHORIZATION_CAUSALITY", reasonCodes: ["AUTHORIZATION_EVIDENCE_INVALID"] },
+        });
+      }
+      const providerDispatchCanStillBegin = causalitySnapshot.state === "PREPARED" ||
+        (causalitySnapshot.state === "EXECUTING" && !causalitySnapshot.executionAttempt?.dispatchStartedAt);
+      if (providerDispatchCanStillBegin &&
+          (!safeEqual(currentDelegation.delegationId, originalDelegation.delegationId) ||
+            currentDelegation.revision !== originalDelegation.delegationRevision)) {
+        throw new AppError("FORBIDDEN", "QuickBooks original standing delegation changed before the first Provider dispatch.", {
           httpStatus: 403,
           details: {
-            failureLayer: "STANDING_DELEGATION",
-            denyReasons: decision.denyReasons,
-            providerAccessDenyReasons: decision.providerAccessDenyReasons,
-            validationReasonCodes: decision.validationReasonCodes,
+            failureLayer: "AUTHORIZATION_CAUSALITY",
+            reasonCodes: ["ORIGINAL_AUTHORIZATION_DELEGATION_CHANGED_BEFORE_FIRST_DISPATCH"],
+            originalDelegationId: originalDelegation.delegationId,
+            originalDelegationRevision: originalDelegation.delegationRevision,
+            currentDelegationId: currentDelegation.delegationId,
+            currentDelegationRevision: currentDelegation.revision,
           },
         });
       }
@@ -405,12 +562,37 @@ export class QuickBooksMutationService {
         actorId: context.actorId,
         preparation: existing,
         requestId: input.requestId,
-        approvedBy: `standing:${decision.delegation.delegationId}`,
+        approvedBy: originalDelegation.approvedBy,
         humanReview: false,
         authorityMode: "AUTONOMOUS",
         resolved,
       });
-      return { ...result, authorizationReceipt: decision.receipt as unknown as Record<string, unknown> };
+      const reuseEvidenceReceipt = result.idempotentReplay ||
+        authorizationEvidence.originCaseId !== input.caseId ||
+        authorizationEvidence.originCaseVersion !== input.caseVersion ||
+        authorizationEvidence.sourceRevisionHash !== input.sourceRevisionHash
+        ? issueQuickBooksMutationReuseEvidence({
+            authorizationEvidence,
+            providerEntityId: result.providerEntityId,
+            stableOperationKey: input.stableOperationKey,
+            actionId: input.actionId,
+            canonicalPayloadHash,
+            caseId: input.caseId,
+            caseVersion: input.caseVersion,
+            sourceRevisionHash: input.sourceRevisionHash,
+            deterministicValidationReceipt: input.validationReceipt,
+            currentDelegationId: currentDelegation.delegationId,
+            currentDelegationRevision: currentDelegation.revision,
+            currentProviderCapabilityReceiptHash: providerCapabilityReceiptHash,
+            issuedAt: new Date(),
+          })
+        : undefined;
+      return {
+        ...result,
+        authorizationReceipt: authorizationEvidence.authorizationReceipt,
+        authorizationEvidence,
+        ...(reuseEvidenceReceipt ? { reuseEvidenceReceipt } : {}),
+      };
     });
   }
 
@@ -458,6 +640,8 @@ export class QuickBooksMutationService {
       options.approvedBy,
       options.authorityMode,
     );
+    const leaseTokenHash = sha256(randomBytes(32).toString("base64url"));
+    const leaseOwner = `worker:${process.pid}:${randomUUID()}`;
     const claim = options.humanReview
       ? await this.repository.claimForHumanReview({
           preparationId: options.preparation.preparationId,
@@ -465,6 +649,9 @@ export class QuickBooksMutationService {
           sessionHash: options.sessionHash as string,
           csrfHash: options.csrfHash as string,
           approvedBy: options.approvedBy,
+          leaseOwner,
+          leaseTokenHash,
+          leaseDurationMs: QUICKBOOKS_MUTATION_EXECUTION_LEASE_MS,
           now: new Date(),
         })
       : await this.repository.claimForExecution({
@@ -473,18 +660,89 @@ export class QuickBooksMutationService {
           requestId: options.requestId,
           ...(options.confirmationPhraseHash ? { confirmationPhraseHash: options.confirmationPhraseHash } : {}),
           approvedBy: options.approvedBy,
+          leaseOwner,
+          leaseTokenHash,
+          leaseDurationMs: QUICKBOOKS_MUTATION_EXECUTION_LEASE_MS,
           now: new Date(),
         });
+    const command = {
+      entity: claim.preparation.entity,
+      operation: claim.preparation.operation,
+      payload: claim.preparation.payload,
+      ...(claim.preparation.targetId ? { targetId: claim.preparation.targetId } : {}),
+      ...(claim.preparation.syncToken ? { syncToken: claim.preparation.syncToken } : {}),
+      requestId: claim.preparation.providerRequestId,
+    };
+    if (claim.recoveryOnly) {
+      return this.#recoverExactProviderOutcome(claim.preparation, resolved, command);
+    }
     if (!claim.shouldExecute) return this.#terminalResult(claim.preparation, true);
+    if (!claim.preparation.executionAttempt) {
+      throw new AppError("CONFIGURATION_ERROR", "QuickBooks execution claim has no durable attempt lease.", {
+        httpStatus: 503,
+        details: { failureLayer: "EXECUTION_FENCING", reasonCodes: ["EXECUTION_ATTEMPT_LEASE_MISSING"] },
+      });
+    }
+    const attemptId = claim.preparation.executionAttempt.attemptId;
+    const claimedLeaseTokenHash = leaseTokenHash;
     let written: Awaited<ReturnType<typeof resolved.provider.executeMutation>> | undefined;
+    let returnedProviderOutcome: {
+      providerEntityId: string;
+      providerOutcomeReceipt: Record<string, unknown>;
+    } | undefined;
+    let dispatchStarted = false;
     try {
-      written = await resolved.provider.executeMutation({
-        entity: claim.preparation.entity,
-        operation: claim.preparation.operation,
-        payload: claim.preparation.payload,
-        ...(claim.preparation.targetId ? { targetId: claim.preparation.targetId } : {}),
-        ...(claim.preparation.syncToken ? { syncToken: claim.preparation.syncToken } : {}),
-        requestId: claim.preparation.providerRequestId,
+      const providerWritePermit = issueQuickBooksProviderWritePermit({
+        claimedPreparation: claim.preparation,
+      });
+      written = await resolved.provider.executeMutation(command, providerWritePermit, async (outcome) => {
+        const providerOutcomeReceipt = {
+          ...outcome.receipt,
+          evidenceType: "PROVIDER_OUTCOME_CHECKPOINT",
+          realmId: claim.preparation.realmId,
+          bindingRevision: claim.preparation.bindingRevision,
+          entity: claim.preparation.entity,
+          operation: claim.preparation.operation,
+          providerRequestId: claim.preparation.providerRequestId,
+          canonicalPayloadHash: claim.preparation.payloadHash,
+        };
+        // Keep the exact Provider Id in this process until it is durably
+        // checkpointed. Retrying this database CAS is safe; retrying the
+        // Provider write is never safe.
+        returnedProviderOutcome = {
+          providerEntityId: outcome.providerEntityId,
+          providerOutcomeReceipt,
+        };
+        try {
+          await this.repository.recordProviderOutcome({
+            preparationId: claim.preparation.preparationId,
+            attemptId,
+            leaseTokenHash: claimedLeaseTokenHash,
+            providerEntityId: outcome.providerEntityId,
+            providerOutcomeReceipt,
+            now: new Date(),
+          });
+        } catch (error) {
+          throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks returned an exact entity Id, but its durable Provider-outcome checkpoint could not be committed; no write retry is allowed.", {
+            httpStatus: 503, retryable: false,
+            details: {
+              preparationId: claim.preparation.preparationId,
+              providerEntityId: outcome.providerEntityId,
+              providerRequestId: claim.preparation.providerRequestId,
+              providerMutationPossible: true,
+              providerMutationRetried: false,
+            },
+            cause: error,
+          });
+        }
+      }, async () => {
+        await this.repository.markDispatchStarted({
+          preparationId: claim.preparation.preparationId,
+          attemptId,
+          leaseTokenHash: claimedLeaseTokenHash,
+          now: new Date(),
+        });
+        dispatchStarted = true;
       });
       const completed = await this.repository.completeVerified({
         preparationId: claim.preparation.preparationId,
@@ -497,23 +755,212 @@ export class QuickBooksMutationService {
     } catch (error) {
       const safe = toSafeError(error);
       const localCompletionLost = written !== undefined;
-      await this.repository.markFailure(
-        claim.preparation.preparationId,
-        localCompletionLost || safe.code === "WRITE_RESULT_UNKNOWN"
-          ? "WRITE_RESULT_UNKNOWN"
-          : safe.code === "READBACK_MISMATCH"
-            ? "READBACK_MISMATCH"
-            : "BLOCKED_VALIDATION",
-        new Date(),
-      );
+      let persisted = await this.repository.get(claim.preparation.preparationId);
+      if (dispatchStarted && !persisted?.providerEntityId && returnedProviderOutcome) {
+        try {
+          // A failed checkpoint acknowledgement must never induce another
+          // Provider POST. Make one idempotent persistence retry while the
+          // exact Id is still available, then recover by exact GET only.
+          persisted = await this.repository.recordProviderOutcome({
+            preparationId: claim.preparation.preparationId,
+            attemptId,
+            leaseTokenHash: claimedLeaseTokenHash,
+            providerEntityId: returnedProviderOutcome.providerEntityId,
+            providerOutcomeReceipt: returnedProviderOutcome.providerOutcomeReceipt,
+            now: new Date(),
+          });
+        } catch {
+          persisted = await this.repository.get(claim.preparation.preparationId);
+        }
+      }
+      const providerOutcomeRecorded = persisted?.providerEntityId !== undefined;
+      if (dispatchStarted && !providerOutcomeRecorded) {
+        const providerEntityIdHint = returnedProviderOutcome?.providerEntityId ??
+          (typeof safe.details?.providerEntityId === "string" ? safe.details.providerEntityId : undefined);
+        const receipt = unknownNoIdResolutionReceipt({
+          attemptId,
+          providerRequestId: claim.preparation.providerRequestId,
+          reasonCode: "DISPATCH_OUTCOME_NOT_CHECKPOINTED",
+          resolvedAt: new Date(),
+          ...(providerEntityIdHint ? { providerEntityIdHint } : {}),
+        });
+        await this.repository.resolveUnknownNoId({
+          preparationId: claim.preparation.preparationId,
+          attemptId,
+          leaseTokenHash: claimedLeaseTokenHash,
+          resolutionReceipt: receipt,
+          now: new Date(),
+        });
+        throw new AppError(
+          "WRITE_RESULT_UNKNOWN_NO_ID",
+          "QuickBooks Provider dispatch started, but no exact Provider Id was durably checkpointed; operator resolution is required and automatic re-arm is forbidden.",
+          {
+            httpStatus: 503,
+            retryable: false,
+            details: {
+              failureLayer: "PROVIDER_OUTCOME",
+              preparationId: claim.preparation.preparationId,
+              attemptId,
+              providerRequestId: claim.preparation.providerRequestId,
+              providerMutationPossible: true,
+              providerMutationRetried: false,
+              automaticRearmAllowed: false,
+              operatorResolutionRequired: true,
+              recoveryAction: "OPERATOR_RESOLUTION_REQUIRED_NO_AUTOMATIC_REARM",
+              ...(providerEntityIdHint ? { providerEntityIdHint } : {}),
+            },
+            cause: error,
+          },
+        );
+      }
+      if (!dispatchStarted && !providerOutcomeRecorded && !isDefinitivePreDispatchFailure(safe.code)) {
+        if (safe.code === "CONFLICT" && safe.details?.failureLayer === "EXECUTION_FENCING") {
+          throw safe;
+        }
+        try {
+          await this.repository.releasePreDispatchLease({
+            preparationId: claim.preparation.preparationId,
+            attemptId,
+            leaseTokenHash: claimedLeaseTokenHash,
+            now: new Date(),
+          });
+        } catch (leaseError) {
+          throw toSafeError(leaseError);
+        }
+        throw new AppError(safe.code, safe.message, {
+          httpStatus: safe.httpStatus,
+          retryable: safe.retryable || safe.httpStatus >= 500,
+          details: {
+            ...safe.details,
+            failureLayer: "PRE_DISPATCH_TRANSIENT",
+            attemptId,
+            providerRequestId: claim.preparation.providerRequestId,
+            providerMutationPossible: false,
+            providerMutationRetried: false,
+            retrySamePreparation: true,
+            recoveryAction: "RETRY_SAME_PREPARATION_AFTER_LEASE_RELEASE",
+          },
+          cause: error,
+        });
+      }
+      const failureState = safe.code === "READBACK_MISMATCH"
+        ? "READBACK_MISMATCH" as const
+        : localCompletionLost || providerOutcomeRecorded || safe.code === "WRITE_RESULT_UNKNOWN"
+          ? "WRITE_RESULT_UNKNOWN" as const
+          : "BLOCKED_VALIDATION" as const;
+      const failureAt = new Date();
+      await this.repository.markFailure({
+        preparationId: claim.preparation.preparationId,
+        attemptId,
+        leaseTokenHash: claimedLeaseTokenHash,
+        providerRequestId: claim.preparation.providerRequestId,
+        state: failureState,
+        now: failureAt,
+        ...(failureState === "BLOCKED_VALIDATION" ? {
+          resolutionReceipt: resolvedNoWriteReceipt({
+            attemptId,
+            providerRequestId: claim.preparation.providerRequestId,
+            reasonCode: `DEFINITIVE_PRE_DISPATCH_${safe.code}`,
+            resolvedAt: failureAt,
+          }),
+        } : {}),
+      });
+      const exactProviderEntityId = persisted?.providerEntityId ?? written?.providerEntityId;
+      if (safe.code === "READBACK_MISMATCH" && exactProviderEntityId) {
+        throw new AppError("READBACK_MISMATCH", safe.message, {
+          httpStatus: safe.httpStatus,
+          retryable: false,
+          details: {
+            ...safe.details,
+            providerEntityId: exactProviderEntityId,
+            providerMutationPossible: true,
+            providerMutationRetried: false,
+            recoveryAction: "RECOVER_BY_EXACT_PROVIDER_ID_NO_SECOND_WRITE",
+          },
+          cause: error,
+        });
+      }
       if (localCompletionLost) {
         throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks write and readback succeeded, but durable terminal evidence could not be committed.", {
           httpStatus: 503,
           retryable: false,
-          details: { providerEntityId: written?.providerEntityId, preparationId: claim.preparation.preparationId },
+          details: {
+            providerEntityId: exactProviderEntityId,
+            preparationId: claim.preparation.preparationId,
+            providerMutationPossible: true,
+            providerMutationRetried: false,
+            recoveryAction: "RECOVER_BY_EXACT_PROVIDER_ID_NO_SECOND_WRITE",
+          },
           cause: error,
         });
       }
+      if (providerOutcomeRecorded && exactProviderEntityId) {
+        throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks exact Provider outcome is durable, but verified readback did not complete; recover by exact Id without a second write.", {
+          httpStatus: 503,
+          retryable: false,
+          details: {
+            providerEntityId: exactProviderEntityId,
+            preparationId: claim.preparation.preparationId,
+            providerMutationPossible: true,
+            providerMutationRetried: false,
+            recoveryAction: "RECOVER_BY_EXACT_PROVIDER_ID_NO_SECOND_WRITE",
+          },
+          cause: error,
+        });
+      }
+      throw safe;
+    }
+  }
+
+  async #recoverExactProviderOutcome(
+    preparation: QuickBooksMutationPreparation,
+    resolved: Awaited<ReturnType<QuickBooksProviderResolver["resolve"]>>,
+    command: Parameters<QuickBooksProviderCapabilities["recoverMutation"]>[0],
+  ): Promise<QuickBooksMutationExecutionResult> {
+    if (!preparation.providerEntityId || !preparation.providerOutcomeReceipt) {
+      throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks mutation cannot be recovered automatically without a durable exact Provider Id.", {
+        httpStatus: 503, retryable: false, details: { preparationId: preparation.preparationId, providerMutationRetried: false },
+      });
+    }
+    try {
+      const recovered = await resolved.provider.recoverMutation(command, preparation.providerEntityId);
+      if (!safeEqual(recovered.providerEntityId, preparation.providerEntityId)) {
+        throw new AppError("READBACK_MISMATCH", "QuickBooks recovery returned a different Provider entity Id.", {
+          httpStatus: 502, details: { expectedProviderEntityId: preparation.providerEntityId, providerMutationRetried: false },
+        });
+      }
+      const receipt = {
+        ...preparation.providerOutcomeReceipt,
+        verified: true,
+        verification: "DURABLE_PROVIDER_OUTCOME_EXACT_ID_READBACK",
+        recoveryOnly: true,
+        providerMutationRetried: false,
+        recoveryReceipt: recovered.receipt,
+      };
+      const completed = await this.repository.completeVerified({
+        preparationId: preparation.preparationId,
+        providerEntityId: preparation.providerEntityId,
+        receipt,
+        readback: recovered.readback,
+        now: new Date(),
+      });
+      return this.#terminalResult(completed, true);
+    } catch (error) {
+      const safe = toSafeError(error);
+      const attempt = preparation.executionAttempt;
+      if (!attempt) {
+        throw new AppError("CONFIGURATION_ERROR", "QuickBooks exact-Id recovery has no durable execution attempt.", {
+          httpStatus: 503, details: { failureLayer: "EXECUTION_FENCING" }, cause: error,
+        });
+      }
+      await this.repository.markFailure({
+        preparationId: preparation.preparationId,
+        attemptId: attempt.attemptId,
+        leaseTokenHash: attempt.leaseTokenHash,
+        providerRequestId: preparation.providerRequestId,
+        state: safe.code === "READBACK_MISMATCH" ? "READBACK_MISMATCH" : "WRITE_RESULT_UNKNOWN",
+        now: new Date(),
+      });
       throw safe;
     }
   }
@@ -547,6 +994,13 @@ export class QuickBooksMutationService {
     if (!this.#enabledCapabilityKeys().includes(capabilityKey)) {
       throw new AppError("FORBIDDEN", `${capabilityKey} is disabled by the QuickBooks runtime write policy.`, {
         httpStatus: 403, details: { failureLayer: "WRITE_POLICY", denyReasons: ["STATIC_ACTION_NOT_RELEASED"] },
+      });
+    }
+    if (authorityMode === "AUTONOMOUS" &&
+      !this.policy.accountingCaseReleasedCapabilities?.includes(capabilityKey)) {
+      throw new AppError("FORBIDDEN", `${capabilityKey} is not released through the QuickBooks Accounting Case compiler.`, {
+        httpStatus: 403,
+        details: { failureLayer: "WRITE_POLICY", denyReasons: ["ACCOUNTING_CASE_ACTION_NOT_RELEASED"] },
       });
     }
     if (authorityMode !== "AUTONOMOUS" && preparation.executionMode === "RESTRICTED_HUMAN_REVIEW" &&

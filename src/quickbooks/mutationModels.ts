@@ -5,11 +5,15 @@ import type {
   QuickBooksWriteOperation,
   QuickBooksWriteRisk,
 } from "./writePolicy.js";
+import type { QuickBooksAutonomousAuthorizationEvidence } from "./autonomousAuthorizationEvidence.js";
+import type { QuickBooksMutationExecutionAttempt } from "./mutationExecutionAttempt.js";
 
 export type QuickBooksMutationState =
   | "PREPARED"
   | "EXECUTING"
+  | "PROVIDER_OUTCOME_RECORDED"
   | "WRITE_RESULT_UNKNOWN"
+  | "WRITE_RESULT_UNKNOWN_NO_ID"
   | "POSTED_READBACK_VERIFIED"
   | "READBACK_MISMATCH"
   | "BLOCKED_VALIDATION"
@@ -50,6 +54,10 @@ export interface QuickBooksMutationPreparation {
   rejectedBy?: string;
   rejectedAt?: Date;
   providerEntityId?: string;
+  /** Immutable authorization that causally preceded the first Provider dispatch. */
+  autonomousAuthorizationEvidence?: QuickBooksAutonomousAuthorizationEvidence;
+  executionAttempt?: QuickBooksMutationExecutionAttempt;
+  providerOutcomeReceipt?: Record<string, unknown>;
   writeReceipt?: Record<string, unknown>;
   readback?: Record<string, unknown>;
   createdAt: Date;
@@ -60,7 +68,9 @@ export interface QuickBooksMutationPreparation {
 export interface CreateQuickBooksMutationPreparationInput extends Omit<
   QuickBooksMutationPreparation,
   "state" | "approvedBy" | "approvedAt" | "rejectedBy" | "rejectedAt" |
-  "providerEntityId" | "writeReceipt" | "readback" | "createdAt" | "updatedAt"
+  "providerEntityId" | "providerOutcomeReceipt" | "writeReceipt" | "readback" | "createdAt" | "updatedAt"
+  | "autonomousAuthorizationEvidence"
+  | "executionAttempt"
 > {
   now: Date;
 }
@@ -68,6 +78,7 @@ export interface CreateQuickBooksMutationPreparationInput extends Omit<
 export interface QuickBooksMutationClaim {
   preparation: QuickBooksMutationPreparation;
   shouldExecute: boolean;
+  recoveryOnly: boolean;
 }
 
 export interface QuickBooksMutationExecutionResult {

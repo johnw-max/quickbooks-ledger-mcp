@@ -64,8 +64,8 @@ async function tokenRequest(
       signal: AbortSignal.timeout(15_000),
     });
   } catch (error) {
-    throw new AppError("PROVIDER_ERROR", "QuickBooks OAuth could not be reached.", {
-      httpStatus: 502,
+    throw new AppError("PROVIDER_UNAVAILABLE", "QuickBooks OAuth could not be reached.", {
+      httpStatus: 503,
       retryable: true,
       cause: error,
     });
@@ -78,11 +78,31 @@ async function tokenRequest(
     // A safe provider error below is preferable to returning the upstream HTML body.
   }
   if (!response.ok) {
-    throw new AppError(
-      response.status === 400 || response.status === 401 ? "NOT_CONNECTED" : "PROVIDER_ERROR",
-      "QuickBooks OAuth rejected the authorization request; reconnection is required.",
-      { httpStatus: response.status === 400 || response.status === 401 ? 409 : 502 },
-    );
+    if (response.status === 400 || response.status === 401) {
+      throw new AppError("NOT_CONNECTED", "QuickBooks OAuth rejected the authorization grant; reconnection is required.", {
+        httpStatus: 409,
+      });
+    }
+    if (response.status === 403) {
+      throw new AppError("FORBIDDEN", "QuickBooks OAuth denied this application or accounting scope.", {
+        httpStatus: 403,
+      });
+    }
+    if (response.status === 429) {
+      throw new AppError("RATE_LIMITED", "QuickBooks OAuth temporarily rate-limited the request.", {
+        httpStatus: 429,
+        retryable: true,
+      });
+    }
+    if (response.status >= 500) {
+      throw new AppError("PROVIDER_UNAVAILABLE", "QuickBooks OAuth is temporarily unavailable.", {
+        httpStatus: 503,
+        retryable: true,
+      });
+    }
+    throw new AppError("PROVIDER_ERROR", "QuickBooks OAuth rejected the authorization request.", {
+      httpStatus: 502,
+    });
   }
   return parseTokenSet(decoded, now);
 }

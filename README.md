@@ -1,12 +1,14 @@
 # zCloak QuickBooks Ledger MCP
 
-Independent QuickBooks Online MCP for accountant-operated Agents. It is intentionally separate from the Xero MCP and has its own OAuth, database tables, deployment unit, release gate, and write policy.
+Independent QuickBooks Online MCP for accountant-operated Agents. It is intentionally separate from the Xero MCP and has its own OAuth, database tables, deployment unit, release gate, and provider-specific write policy.
+
+It reuses the same provider-neutral ledger-control contract proven by the Xero MCP: typed Accounting Cases, exact ledger targeting, deterministic validation, source and payload hashes, one-shot Provider write permission, durable idempotency, receipt plus exact read-back, and fail-closed recovery. QuickBooks-specific adapters own Realm/Company binding, Intuit OAuth, SyncToken, tax, currency, and entity semantics. The two MCPs never share credentials, tenant data, or mutation state.
 
 ## Product boundary
 
 - The accountant's internal Work Agent connects this MCP. Public Client Intake Agents should not receive ledger credentials.
 - Drive, a database, or WorkStore remains the source-material and collaboration layer. QuickBooks is the formal ledger/system of record.
-- Each Agent2 OAuth consent creates an isolated installation principal and binds it to one active QuickBooks Company. A short-lived `target_session_ref` pins every read and Case write to that exact Company.
+- Each Agent2 or Work OAuth consent creates an isolated installation principal and binds it to one active QuickBooks Company. Each Host is a separate confidential OAuth client with its own secret, exact redirect allowlist, and origin allowlist. A short-lived `target_session_ref` pins every read and Case write to that exact Company.
 - The official Intuit write catalog is exposed as capability information, not as a promise that every action is Agent-released.
 
 ## Agent-facing Accounting Case release (0.6.0)
@@ -35,7 +37,7 @@ Other official Intuit write capabilities remain catalogued but are not executabl
 5. provider receipt and exact read-back;
 6. terminal audit evidence.
 
-Unknown provider outcomes stop in recovery. The Agent must not retry a mutation blindly.
+Every write has one durable execution attempt, a fenced lease, and a dispatch marker written immediately before the first Provider POST. A stale lease may move only before that marker. After dispatch, a missing exact ID becomes `WRITE_RESULT_UNKNOWN_NO_ID`: automatic re-arm is forbidden and an operator resolution is required. If the original fenced callback later supplies the exact ID, the state may move only forward to exact-ID readback recovery; it never permits another POST. Current OAuth/delegation errors cannot overwrite that durable write truth in the Accounting Case.
 
 ## Local setup
 
@@ -48,7 +50,9 @@ npm run migrate:dev
 npm run dev
 ```
 
-The Intuit callback is `${QUICKBOOKS_PUBLIC_BASE_URL}/oauth/quickbooks/callback`. The current shared-domain production target is `https://mcp.jiayuanwang.xyz/oauth/quickbooks/callback`; Agent2's MCP callback remains `https://agent2.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback`.
+The Intuit callback is `${QUICKBOOKS_PUBLIC_BASE_URL}/oauth/quickbooks/callback`. The current shared-domain production target is `https://mcp.jiayuanwang.xyz/oauth/quickbooks/callback`; Agent2's MCP callback remains `https://agent2.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback`. Work's callback must be copied exactly from the newly created Work MCP and registered as a different Host client; never infer it from Agent2.
+
+The Broker currently proves an installation and its exact QuickBooks binding, not the Host's human/workspace identity. Broker principals therefore report `INSTALLATION_ONLY`. This does not bypass the write kill switch, scope, standing-delegation, capability, target-session, idempotency, receipt, or read-back gates. Local synthetic tests use an explicitly constructed `TRUSTED_HOST_CONTEXT`; production must not synthesize that assurance.
 
 Do not commit `.env.local`, Intuit credentials, MCP client secrets, bearer tokens, encryption keys, OAuth tokens, or database passwords.
 

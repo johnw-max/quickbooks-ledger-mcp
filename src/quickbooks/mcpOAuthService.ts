@@ -5,7 +5,10 @@ import type { QuickBooksOAuthConfig } from "../providers/quickbooksTypes.js";
 import { QUICKBOOKS_ACCOUNTING_SCOPE } from "../providers/quickbooksTypes.js";
 import { safeEqual, sha256 } from "../security/hash.js";
 import type { TokenCipher } from "../security/tokenCipher.js";
+import type { ResolvedMcpAccessToken } from "../security/requestContext.js";
 import type { QuickBooksClientManager } from "./clientManager.js";
+import type { QuickBooksMcpOAuthHostClientConfig } from "./config.js";
+import { QuickBooksMcpOAuthHostClientRegistry } from "./mcpOAuthHostClientRegistry.js";
 import type {
   QuickBooksMcpOAuthFlow,
   QuickBooksMcpOAuthRepository,
@@ -21,10 +24,9 @@ export const QUICKBOOKS_MCP_OAUTH_SCOPES = [
 ] as const;
 export const QUICKBOOKS_MCP_REFRESH_RETRY_GRACE_MS = 10_000;
 
-export interface QuickBooksMcpOAuthClientConfig {
-  clientId: string;
-  clientSecret: string;
-  redirectUris: string[];
+export interface QuickBooksMcpOAuthConfig {
+  resourceUri: string;
+  hostClients: readonly QuickBooksMcpOAuthHostClientConfig[];
   accessTokenTtlSeconds: number;
   refreshTokenTtlSeconds: number;
 }
@@ -66,7 +68,8 @@ export class QuickBooksMcpOAuthService {
   readonly #repository: QuickBooksMcpOAuthRepository;
   readonly #manager: QuickBooksClientManager;
   readonly #qbo: QuickBooksOAuthConfig & { request?: typeof fetch };
-  readonly #client: QuickBooksMcpOAuthClientConfig;
+  readonly #config: Omit<QuickBooksMcpOAuthConfig, "hostClients">;
+  readonly #hostClients: QuickBooksMcpOAuthHostClientRegistry;
   readonly #cipher: TokenCipher;
   readonly #clock: () => Date;
   readonly #onActorSecurityRevoked: ((actorId: string) => Promise<void>) | undefined;
@@ -75,7 +78,7 @@ export class QuickBooksMcpOAuthService {
     repository: QuickBooksMcpOAuthRepository;
     manager: QuickBooksClientManager;
     qbo: QuickBooksOAuthConfig & { request?: typeof fetch };
-    client: QuickBooksMcpOAuthClientConfig;
+    config: QuickBooksMcpOAuthConfig;
     cipher: TokenCipher;
     clock?: () => Date;
     onActorSecurityRevoked?: (actorId: string) => Promise<void>;
@@ -83,19 +86,30 @@ export class QuickBooksMcpOAuthService {
     this.#repository = options.repository;
     this.#manager = options.manager;
     this.#qbo = options.qbo;
-    this.#client = options.client;
+    const hostClients = new QuickBooksMcpOAuthHostClientRegistry(options.config.hostClients);
+    this.#config = Object.freeze({
+      resourceUri: options.config.resourceUri,
+      accessTokenTtlSeconds: options.config.accessTokenTtlSeconds,
+      refreshTokenTtlSeconds: options.config.refreshTokenTtlSeconds,
+    });
+    this.#hostClients = hostClients;
     this.#cipher = options.cipher;
     this.#clock = options.clock ?? (() => new Date());
     this.#onActorSecurityRevoked = options.onActorSecurityRevoked;
   }
 
-  get clientId(): string {
-    return this.#client.clientId;
+  get registeredHostClientCount(): number {
+    return this.#hostClients.size;
   }
 
   authenticateClient(clientId: string | undefined, clientSecret: string | undefined): boolean {
-    return exactString(clientId, 256) && exactString(clientSecret, 512) &&
-      safeEqual(clientId, this.#client.clientId) && safeEqual(clientSecret, this.#client.clientSecret);
+    if (!exactString(clientId, 256) || !exactString(clientSecret, 512)) return false;
+    return this.#hostClients.authenticate(clientId, clientSecret);
+  }
+
+  isOriginAllowedForClient(clientId: string, origin: string): boolean {
+    if (!exactString(clientId, 256) || !exactString(origin)) return false;
+    return this.#hostClients.isOriginAllowed(clientId, origin);
   }
 
   async startAuthorization(input: {
@@ -107,10 +121,13 @@ export class QuickBooksMcpOAuthService {
     codeChallenge?: string;
     codeChallengeMethod?: string;
   }): Promise<{ consentUrl: string; browserCookie: string; expiresAt: Date }> {
-    if (!exactString(input.clientId, 256) || !safeEqual(input.clientId, this.#client.clientId)) {
+    if (!exactString(input.clientId, 256)) {
       throw new AppError("AUTH_REQUIRED", "Unknown MCP OAuth client.", { httpStatus: 401 });
     }
-    if (!exactString(input.redirectUri) || !this.#client.redirectUris.some((uri) => safeEqual(uri, input.redirectUri as string))) {
+    if (!this.#hostClients.hasClient(input.clientId)) {
+      throw new AppError("AUTH_REQUIRED", "Unknown MCP OAuth client.", { httpStatus: 401 });
+    }
+    if (!exactString(input.redirectUri) || !this.#hostClients.hasExactRedirect(input.clientId, input.redirectUri)) {
       throw new AppError("VALIDATION_FAILED", "MCP OAuth redirect URI is not registered.", { httpStatus: 400 });
     }
     if (input.responseType !== "code" || !exactString(input.state)) {
@@ -126,9 +143,9 @@ export class QuickBooksMcpOAuthService {
     const requestedScopes = this.#parseScopes(input.scope);
     const now = this.#clock();
     const flowId = `qbf_${randomUUID()}`;
-    // The MCP authorization itself is the installation identity when the host
-    // does not supply a richer Work user tuple. Keep it unique per consent and
-    // structurally compatible with the trusted RequestContext invariant.
+    // The Broker can prove only this consent/install, not a Host human or
+    // workspace identity. Keep the install isolated and label it
+    // INSTALLATION_ONLY when the access token is resolved.
     const workspaceId = `qbo-client-${sha256(input.clientId).slice(0, 20)}`;
     const subjectId = randomUUID();
     const actorId = `${workspaceId}:user:${subjectId}`;
@@ -263,9 +280,9 @@ export class QuickBooksMcpOAuthService {
       clientId: flow.clientId,
       grantedScopes: flow.requestedScopes,
       accessTokenHash: hashSecret("access", accessToken),
-      accessTokenExpiresAt: new Date(now.getTime() + this.#client.accessTokenTtlSeconds * 1_000),
+      accessTokenExpiresAt: new Date(now.getTime() + this.#config.accessTokenTtlSeconds * 1_000),
       refreshTokenHash: hashSecret("refresh", refreshToken),
-      refreshTokenExpiresAt: new Date(now.getTime() + this.#client.refreshTokenTtlSeconds * 1_000),
+      refreshTokenExpiresAt: new Date(now.getTime() + this.#config.refreshTokenTtlSeconds * 1_000),
       refreshVersion: 0,
       createdAt: now,
       updatedAt: now,
@@ -293,9 +310,9 @@ export class QuickBooksMcpOAuthService {
       refreshTokenHash,
       clientId: input.clientId,
       accessTokenHash: hashSecret("access", accessToken),
-      accessTokenExpiresAt: new Date(now.getTime() + this.#client.accessTokenTtlSeconds * 1_000),
+      accessTokenExpiresAt: new Date(now.getTime() + this.#config.accessTokenTtlSeconds * 1_000),
       nextRefreshTokenHash: hashSecret("refresh", nextRefreshToken),
-      refreshTokenExpiresAt: new Date(now.getTime() + this.#client.refreshTokenTtlSeconds * 1_000),
+      refreshTokenExpiresAt: new Date(now.getTime() + this.#config.refreshTokenTtlSeconds * 1_000),
       retryResponseCiphertext,
       retryExpiresAt: new Date(now.getTime() + QUICKBOOKS_MCP_REFRESH_RETRY_GRACE_MS),
       now,
@@ -330,18 +347,9 @@ export class QuickBooksMcpOAuthService {
     return this.#tokenResponse(accessToken, nextRefreshToken, result.token.grantedScopes);
   }
 
-  async verifyAccessToken(accessToken: string): Promise<{
-    tokenId: string;
-    actorId: string;
-    workspaceId: string;
-    subjectId: string;
-    agentId: string;
-    installationId: string;
-    bindingId: string;
-    bindingRevision: number;
-    connectionId: string;
-    scopes: string[];
-  } | undefined> {
+  async verifyAccessToken(accessToken: string): Promise<(
+    ResolvedMcpAccessToken & { actorId: string; allowedOrigins: string[] }
+  ) | undefined> {
     if (!exactString(accessToken, 256)) return undefined;
     const token = await this.#repository.getAccessToken(hashSecret("access", accessToken), this.#clock());
     if (!token) return undefined;
@@ -350,6 +358,7 @@ export class QuickBooksMcpOAuthService {
     const workspaceId = token.actorId.slice(0, separator);
     const subjectId = token.actorId.slice(separator + ":user:".length);
     if (!workspaceId || !subjectId) return undefined;
+    if (!this.#hostClients.hasClient(token.clientId)) return undefined;
     let connection: Awaited<ReturnType<QuickBooksClientManager["resolveSingleConnection"]>>;
     try {
       connection = await this.#manager.resolveSingleConnection(token.actorId);
@@ -359,15 +368,26 @@ export class QuickBooksMcpOAuthService {
     }
     return {
       tokenId: token.tokenId,
+      clientId: token.clientId,
       actorId: token.actorId,
+      resource: this.#config.resourceUri,
+      audience: this.#config.resourceUri,
+      grantedScopes: [...token.grantedScopes],
+      issuedAt: token.createdAt,
+      expiresAt: token.accessTokenExpiresAt,
       workspaceId,
+      subjectType: "USER",
       subjectId,
       agentId: token.clientId,
       installationId: token.tokenId,
       bindingId: `qbob_${sha256(connection.connectionId).slice(0, 32)}`,
       bindingRevision: 1,
       connectionId: connection.connectionId,
-      scopes: token.grantedScopes,
+      authorizationId: `qboa_${sha256(token.tokenId).slice(0, 32)}`,
+      policyId: `qbop_${sha256(token.clientId).slice(0, 32)}`,
+      tenantId: connection.realmId,
+      allowedOrigins: this.#hostClients.allowedOrigins(token.clientId),
+      identityAssurance: "INSTALLATION_ONLY",
     };
   }
 
@@ -408,7 +428,7 @@ export class QuickBooksMcpOAuthService {
     return {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: this.#client.accessTokenTtlSeconds,
+      expires_in: this.#config.accessTokenTtlSeconds,
       refresh_token: refreshToken,
       scope: scopes.join(" "),
     };

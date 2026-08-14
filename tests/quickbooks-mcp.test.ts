@@ -6,6 +6,7 @@ import { createLegacySharedBearerRequestContext } from "../src/security/requestC
 import {
   createQuickBooksMcpServer,
   QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST,
+  QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
   QUICKBOOKS_TOOL_ALLOWLIST,
   QUICKBOOKS_MUTATION_TOOL_ALLOWLIST,
 } from "../src/quickbooks/mcp.js";
@@ -15,6 +16,15 @@ import type { QuickBooksMutationService } from "../src/quickbooks/mutationServic
 import type { QuickBooksAccountingCaseService } from "../src/quickbooks/accountingCaseService.js";
 
 const TARGET_SESSION_REF = `qbts_v1.${"a".repeat(16)}.${"b".repeat(22)}.${"c".repeat(64)}`;
+
+function firstToolText(result: unknown): string {
+  if (!result || typeof result !== "object" || !("content" in result) || !Array.isArray(result.content)) {
+    throw new Error("Expected MCP content array");
+  }
+  const first = result.content[0] as { text?: unknown } | undefined;
+  if (!first || typeof first.text !== "string") throw new Error("Expected MCP text content");
+  return first.text;
+}
 
 describe("QuickBooks MCP surface", () => {
   const closeables: Array<{ close(): Promise<void> }> = [];
@@ -79,16 +89,19 @@ describe("QuickBooks MCP surface", () => {
     );
     const capabilities = await client.callTool({ name: "quickbooks_get_write_capabilities", arguments: {} });
     expect(capabilities.isError).not.toBe(true);
-    const payload = JSON.parse((capabilities.content[0] as { text: string }).text) as {
+    const payload = JSON.parse(firstToolText(capabilities)) as {
       result?: { sourceCoverage?: { total?: number } };
     };
     expect(payload.result?.sourceCoverage?.total).toBe(71);
   });
 
   it("adds high-level Accounting Case tools only when the Case runtime is installed", async () => {
-    const service = {} as QuickBooksWorkflowService;
+    const hashSourceDocument = vi.fn();
+    const prepareSupplierBill = vi.fn();
+    const service = { hashSourceDocument, prepareSupplierBill } as unknown as QuickBooksWorkflowService;
     const mutations = { capabilities: vi.fn().mockReturnValue({ sourceCoverage: { total: 71 } }) } as unknown as QuickBooksMutationService;
-    const accountingCases = {} as QuickBooksAccountingCaseService;
+    const prepare = vi.fn().mockResolvedValue({ state: "PLANNED_NEEDS_PREFLIGHT" });
+    const accountingCases = { prepare } as unknown as QuickBooksAccountingCaseService;
     const context = createLegacySharedBearerRequestContext({
       actorId: "actor-a",
       audience: "https://agent2.zcloak.ai/quickbooks/mcp",
@@ -100,8 +113,68 @@ describe("QuickBooks MCP surface", () => {
     closeables.push(client, server);
     await server.connect(serverTransport as unknown as Transport);
     await client.connect(clientTransport);
-    expect((await client.listTools()).tools.map((tool) => tool.name).sort())
-      .toEqual([...QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST].sort());
+    const listedTools = (await client.listTools()).tools;
+    const names = listedTools.map((tool) => tool.name);
+    expect(names.sort()).toEqual([...QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST].sort());
+    expect(names).toHaveLength(18);
+    expect(names).not.toContain("quickbooks_hash_source_document");
+    expect(names).not.toContain("quickbooks_prepare_supplier_bill");
+    expect(names).not.toContain("quickbooks_prepare_mutation");
+    expect(names).not.toContain("quickbooks_execute_confirmed_mutation");
+    expect(QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST.every((name) => names.includes(name))).toBe(true);
+    const prepareCaseTool = listedTools.find((tool) => tool.name === "quickbooks_prepare_accounting_case");
+    expect(prepareCaseTool?.description).toContain("zero Provider operations");
+    expect(prepareCaseTool?.description).toContain("does not create fact ids");
+    expect(JSON.stringify(prepareCaseTool?.inputSchema)).toContain("source_key");
+    expect(JSON.stringify(prepareCaseTool?.inputSchema)).toContain("The server creates fact ids");
+
+    const hiddenHash = await client.callTool({
+      name: "quickbooks_hash_source_document",
+      arguments: { source_ref: "invoice.txt", content: "USD 148" },
+    });
+    const hiddenBill = await client.callTool({
+      name: "quickbooks_prepare_supplier_bill",
+      arguments: {},
+    });
+    expect(hiddenHash.isError).toBe(true);
+    expect(hiddenBill.isError).toBe(true);
+    expect(JSON.stringify(hiddenHash.content)).toContain("not found");
+    expect(JSON.stringify(hiddenBill.content)).toContain("not found");
+    expect(hashSourceDocument).not.toHaveBeenCalled();
+    expect(prepareSupplierBill).not.toHaveBeenCalled();
+
+    const prepared = await client.callTool({
+      name: "quickbooks_prepare_accounting_case",
+      arguments: {
+        target_session_ref: TARGET_SESSION_REF,
+        case_id: "case-route-001",
+        expected_version: 0,
+        source_set_complete: true,
+        sources: [{
+          source_key: "artifact-route-001",
+          label: "Route test",
+          units: [{
+            unit_key: "unit-route-001",
+            facts: [{
+              kind: "EVIDENCE",
+              origin: "AGENT_ASSERTED",
+              evidence_role: "CONTROL_SUPPORT",
+              note: "Deterministic Case route registration test.",
+            }],
+          }],
+        }],
+      },
+    });
+    expect(prepared.isError).not.toBe(true);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledWith(context, expect.objectContaining({
+      case_id: "case-route-001",
+      facts: [expect.objectContaining({
+        kind: "EVIDENCE",
+        evidenceRole: "CONTROL_SUPPORT",
+        origin: "AGENT_ASSERTED",
+      })],
+    }));
   });
 
   it("does not let mutation prepare scope authorize provider execution", async () => {
@@ -235,7 +308,7 @@ describe("QuickBooks MCP surface", () => {
       name: "quickbooks_get_company",
       arguments: { target_session_ref: TARGET_SESSION_REF },
     });
-    const payload = JSON.parse((response.content[0] as { text: string }).text) as Record<string, unknown>;
+    const payload = JSON.parse(firstToolText(response)) as Record<string, unknown>;
 
     expect(payload).toMatchObject({
       result: { CompanyName: "Sandbox Company A", Country: "SG" },
@@ -282,7 +355,7 @@ describe("QuickBooks MCP surface", () => {
     await client.connect(clientTransport);
 
     const response = await client.callTool({ name: "quickbooks_resolve_target", arguments: {} });
-    const payload = JSON.parse((response.content[0] as { text: string }).text) as {
+    const payload = JSON.parse(firstToolText(response)) as {
       result: Record<string, unknown>;
     };
     expect(payload.result).toMatchObject({
@@ -317,7 +390,7 @@ describe("QuickBooks MCP surface", () => {
     await client.connect(clientTransport);
 
     const response = await client.callTool({ name: "quickbooks_connection_status", arguments: {} });
-    const payload = JSON.parse((response.content[0] as { text: string }).text) as Record<string, unknown>;
+    const payload = JSON.parse(firstToolText(response)) as Record<string, unknown>;
 
     expect(payload).toMatchObject({
       destination_role: "connector_control_plane",

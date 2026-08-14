@@ -216,6 +216,54 @@ describe("QuickBooks connection manager", () => {
     expect(requestedUrls).toEqual([]);
   });
 
+  it("rechecks the stored Intuit accounting scope before every provider call", async () => {
+    const request = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/companyinfo/")) {
+        return new Response(JSON.stringify({ CompanyInfo: { Id: "1", CompanyName: "Sandbox Company" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Provider call must not occur without stored accounting scope: ${url}`);
+    });
+    const repository = new InMemoryQuickBooksConnectionRepository();
+    const manager = new QuickBooksClientManager({
+      repository,
+      cipher: new Aes256GcmTokenCipher(Buffer.alloc(32, 7)),
+      config: {
+        clientId: "client-a",
+        clientSecret: "secret-a",
+        redirectUri: "https://mcp.jiayuanwang.xyz/oauth/quickbooks/callback",
+        environment: "sandbox",
+        request: request as typeof fetch,
+      },
+      logger: logger(),
+    });
+    await manager.connect({
+      actorId: "actor-a",
+      realmId: "934145",
+      grantedScopes: [],
+      token: {
+        accessToken: "access-a",
+        refreshToken: "refresh-a",
+        accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
+        refreshTokenExpiresAt: new Date(Date.now() + 8_640_000_000),
+        tokenType: "bearer",
+      },
+    });
+    request.mockClear();
+
+    await expect(manager.withProvider("actor-a", (provider) => provider.listAccounts())).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      details: {
+        failureLayer: "PROVIDER_AUTHORIZATION",
+        denyReasons: ["INTUIT_ACCOUNTING_SCOPE_MISSING"],
+      },
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("keeps safe binding evidence stable across token refresh and changes it for a company replacement", () => {
     const base = {
       connectionId: "qbc-a",

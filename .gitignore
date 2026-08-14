@@ -4,6 +4,7 @@ dist/
 coverage/
 output/
 test-results/
+tmp/
 *.log
 
 .env

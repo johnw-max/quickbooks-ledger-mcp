@@ -8,13 +8,18 @@
   "scripts": {
     "dev": "tsx watch src/quickbooks/server.ts",
     "build": "tsc -p tsconfig.build.json",
+    "build:harness:synthetic-qbo": "esbuild harness/local-agents/serve-synthetic-quickbooks-mcp.ts --bundle --packages=external --platform=node --format=esm --target=node22 --outfile=tmp/quickbooks-local-agent-runtime/quickbooks-synthetic-mcp-0.6.0.mjs && esbuild harness/local-agents/serve-synthetic-quickbooks-http.ts --bundle --packages=external --platform=node --format=esm --target=node22 --outfile=tmp/quickbooks-local-agent-runtime/quickbooks-synthetic-http-0.6.0.mjs",
+    "start:harness:synthetic-qbo-http": "node tmp/quickbooks-local-agent-runtime/quickbooks-synthetic-http-0.6.0.mjs",
+    "test:harness:synthetic-qbo-http": "node harness/local-agents/smoke-synthetic-quickbooks-http.mjs",
+    "test:harness:real-accountant-local-agent": "node harness/real-accountant/run-local-codex-uat.mjs",
     "migrate": "node dist/quickbooks/migrate.js",
     "migrate:dev": "tsx src/quickbooks/migrate.ts",
     "start": "node dist/quickbooks/server.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck:test",
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:http:required": "TEST_HTTP_LOOPBACK=true vitest run tests/quickbooks-http-app.test.ts",
-    "test:postgres:required": "node scripts/requireTestDatabase.mjs && vitest run tests/postgres-quickbooks-mutation.integration.test.ts tests/quickbooks-accounting-case-postgres.integration.test.ts --maxWorkers=1",
+    "test:postgres:required": "node scripts/requireTestDatabase.mjs && vitest run tests/postgres-quickbooks-mutation.integration.test.ts tests/quickbooks-accounting-case-postgres.integration.test.ts tests/quickbooks-migration-upgrade-postgres.integration.test.ts tests/quickbooks-runtime-readiness-postgres.integration.test.ts --maxWorkers=1",
     "verify:no-secrets": "node scripts/verifyNoSecrets.mjs",
     "verify:release": "node scripts/verifyReleaseGate.mjs"
   },
@@ -28,6 +33,7 @@
     "@types/express": "5.0.3",
     "@types/node": "24.3.0",
     "@types/pg": "8.15.5",
+    "esbuild": "0.25.12",
     "tsx": "4.20.5",
     "typescript": "5.9.2",
     "vitest": "3.2.7"

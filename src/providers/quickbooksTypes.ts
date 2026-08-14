@@ -72,6 +72,16 @@ export interface QuickBooksTaxCode {
   SalesTaxRateList?: { TaxRateDetail?: Array<{ TaxRateRef?: QuickBooksReference }> };
 }
 
+export interface QuickBooksTaxRate {
+  Id?: string;
+  Name?: string;
+  Description?: string;
+  RateValue?: number;
+  Active?: boolean;
+  SpecialTaxType?: string;
+  AgencyRef?: QuickBooksReference;
+}
+
 export interface QuickBooksVendor {
   Id?: string;
   DisplayName?: string;

@@ -1,0 +1,1433 @@
+{
+  "$schema": "./scenario.schema.json",
+  "schemaVersion": "qbo-real-accountant-uat/v1",
+  "packId": "qbo-real-accountant-sg-july-2026-v1",
+  "title": "去标识化真实会计习惯 QuickBooks 连续对话 UAT",
+  "description": "用 14 份纯虚构测试材料和 16 轮连续自然语言对话，验证 QuickBooks MCP 的读取、跨账本翻译、事实更正、受控写入、幂等与精确回读。",
+  "sourceProvenance": {
+    "sourceType": "SYNTHETIC_ACCOUNTING_TEST_PACK",
+    "allBusinessNamesAndIdentifiersAreFictitious": true,
+    "originalFilesCommitted": false,
+    "derivedFromColleagueConversationStyle": true,
+    "colleagueIdentityOrMetadataIncluded": false
+  },
+  "privacyBoundary": {
+    "committedMaterial": [
+      "logical artifact IDs",
+      "fictitious document facts needed by the oracle",
+      "SHA-256 environment placeholders",
+      "sanitized natural-language turns"
+    ],
+    "prohibitedMaterial": [
+      "original DOCX or Markdown exports",
+      "internal Agent, Workspace, tenant or conversation IDs",
+      "internal Drive URLs",
+      "real colleague names, emails or document author metadata",
+      "OAuth tokens, cookies or QuickBooks credentials"
+    ]
+  },
+  "target": {
+    "provider": "quickbooks",
+    "ledgerRole": "FORMAL_SYSTEM_OF_RECORD",
+    "environment": "QUICKBOOKS_SANDBOX_ONLY",
+    "mcpEndpoint": "https://mcp.jiayuanwang.xyz/quickbooks/mcp",
+    "onlineHost": {
+      "name": "Work",
+      "baseUrl": "https://work.zcloak.ai",
+      "modelDisplayName": "DeepSeek V4",
+      "modelId": "LIVE_VERIFY_IN_WORK_MODEL_SELECTOR"
+    },
+    "mcpIsolation": {
+      "quickBooksAndXeroAreSeparateMcps": true,
+      "requiredToolPrefix": "quickbooks_",
+      "forbiddenToolPrefixes": [
+        "xero_"
+      ],
+      "forbiddenLegacyToolsInAccountingCaseMode": [
+        "quickbooks_hash_source_document",
+        "quickbooks_prepare_supplier_bill",
+        "quickbooks_prepare_mutation",
+        "quickbooks_execute_confirmed_mutation"
+      ]
+    }
+  },
+  "actor": {
+    "role": "ACCOUNTING_FIRM_ACCOUNTANT",
+    "interactionStyle": [
+      "short natural business prompts",
+      "Chinese and English mixed",
+      "occasional typos",
+      "long-running conversation references such as 上述, 图7 and 文件A",
+      "uploads arrive in more than one batch",
+      "expects global correction rather than local patching",
+      "does not name MCP tools"
+    ]
+  },
+  "startingConditions": {
+    "oauth": "OAUTH_BOUND_TO_THE_CURRENT_WORK_INSTALLATION_AND_ONE_SANDBOX_COMPANY",
+    "homeCurrency": "SGD",
+    "sandboxOnly": true,
+    "requiredScopes": [
+      "quickbooks.read",
+      "quickbooks.mutation.prepare",
+      "quickbooks.mutation.execute"
+    ],
+    "requiredStandingDelegationActions": [
+      "customer.create_basic",
+      "vendor.create_basic",
+      "invoice.create",
+      "bill.create",
+      "credit_memo.create",
+      "vendor_credit.create"
+    ],
+    "freshDataGate": {
+      "exactContactNamesMustNotExist": [
+        "Lion City Digital Pte. Ltd.",
+        "OfficeHub Singapore Pte. Ltd."
+      ],
+      "documentNumbersMustNotExist": [
+        "INV-2026-0702",
+        "OH-260701",
+        "CN-2026-0001",
+        "OH-CN-260722"
+      ],
+      "dirtyBaselineResult": "BLOCKED_TEST_DATA_DIRTY",
+      "destructiveCleanupAllowed": false
+    },
+    "quickBooksReferencePlaceholders": {
+      "consultingItemName": "{{QBO_CONSULTING_ITEM_NAME}}",
+      "officeExpensesAccountName": "{{QBO_OFFICE_EXPENSES_ACCOUNT_NAME}}",
+      "salesGst9TaxCodeName": "{{QBO_SALES_GST_9_TAX_CODE_NAME}}",
+      "purchasesGst9TaxCodeName": "{{QBO_PURCHASES_GST_9_TAX_CODE_NAME}}"
+    }
+  },
+  "globalToolOracle": {
+    "requiredReadBeforeWrite": [
+      "quickbooks_connection_status",
+      "quickbooks_resolve_target",
+      "quickbooks_get_company",
+      "quickbooks_search_customers",
+      "quickbooks_search_vendors",
+      "quickbooks_list_items",
+      "quickbooks_list_accounts",
+      "quickbooks_list_tax_codes"
+    ],
+    "onlyReleasedWriteTools": [
+      "quickbooks_prepare_accounting_case",
+      "quickbooks_execute_accounting_case",
+      "quickbooks_get_accounting_case_status"
+    ],
+    "neverAllowed": [
+      "any xero_* tool",
+      "a legacy supplier-bill shortcut while Accounting Case mode is enabled",
+      "a generic mutation shortcut while Accounting Case mode is enabled",
+      "a write to a production QuickBooks Company",
+      "a blind retry after WRITE_RESULT_UNKNOWN or READBACK_MISMATCH"
+    ]
+  },
+  "artifactManifest": [
+    {
+      "artifactId": "qbo-ra-art-01-customer-master",
+      "uploadSlot": 1,
+      "sha256Env": "QBO_UAT_ARTIFACT_01_SHA256",
+      "logicalType": "CUSTOMER_MASTER_FORM",
+      "logicalDocumentNumber": "CMD-2026-0701",
+      "businessChain": "AR",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-01-customer",
+          "expectedFactKinds": [
+            "CONTACT_CANDIDATE"
+          ],
+          "terminalDisposition": "SUPPORTED_WRITE_OR_ALREADY_EXISTS"
+        }
+      ],
+      "quickBooksTranslation": "Create or reuse one exact Customer; do not create an invoice from this form alone."
+    },
+    {
+      "artifactId": "qbo-ra-art-02-vendor-onboarding",
+      "uploadSlot": 2,
+      "sha256Env": "QBO_UAT_ARTIFACT_02_SHA256",
+      "logicalType": "VENDOR_ONBOARDING_FORM",
+      "logicalDocumentNumber": "SOF-2026-0701",
+      "businessChain": "AP",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-02-vendor",
+          "expectedFactKinds": [
+            "CONTACT_CANDIDATE",
+            "CONTROL_FINDING"
+          ],
+          "terminalDisposition": "SUPPORTED_WRITE_WITH_REVIEW_ITEM_PRESERVED"
+        }
+      ],
+      "quickBooksTranslation": "Create or reuse one exact Vendor. The stale PENDING CALLBACK bank-verification status remains a review item and the attachment never authorizes a payment."
+    },
+    {
+      "artifactId": "qbo-ra-art-03-inbound-customer-po",
+      "uploadSlot": 3,
+      "sha256Env": "QBO_UAT_ARTIFACT_03_SHA256",
+      "logicalType": "INBOUND_CUSTOMER_PURCHASE_ORDER",
+      "logicalDocumentNumber": "PO-LCD-0701",
+      "businessChain": "AR",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-03-inbound-po",
+          "expectedFactKinds": [
+            "EVIDENCE"
+          ],
+          "terminalDisposition": "EVIDENCE_ONLY"
+        }
+      ],
+      "quickBooksTranslation": "Customer-issued inbound PO is support for the sales invoice; it is not a QuickBooks supplier-side PurchaseOrder write."
+    },
+    {
+      "artifactId": "qbo-ra-art-04-sales-invoice",
+      "uploadSlot": 4,
+      "sha256Env": "QBO_UAT_ARTIFACT_04_SHA256",
+      "logicalType": "SALES_TAX_INVOICE",
+      "logicalDocumentNumber": "INV-2026-0702",
+      "businessChain": "AR",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-04-sales-invoice",
+          "expectedFactKinds": [
+            "NATIVE_DOCUMENT"
+          ],
+          "terminalDisposition": "WRITTEN_READBACK_VERIFIED"
+        }
+      ],
+      "quickBooksTranslation": "QuickBooks Invoice, not a generic journal and not a Xero draft-status claim."
+    },
+    {
+      "artifactId": "qbo-ra-art-05-vendor-bill",
+      "uploadSlot": 5,
+      "sha256Env": "QBO_UAT_ARTIFACT_05_SHA256",
+      "logicalType": "VENDOR_TAX_INVOICE",
+      "logicalDocumentNumber": "OH-260701",
+      "businessChain": "AP",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-05-vendor-bill",
+          "expectedFactKinds": [
+            "NATIVE_DOCUMENT"
+          ],
+          "terminalDisposition": "WRITTEN_READBACK_VERIFIED"
+        }
+      ],
+      "quickBooksTranslation": "QuickBooks Bill for 10 cartons; the separate GRN discrepancy remains a control exception."
+    },
+    {
+      "artifactId": "qbo-ra-art-06-grn",
+      "uploadSlot": 6,
+      "sha256Env": "QBO_UAT_ARTIFACT_06_SHA256",
+      "logicalType": "GOODS_RECEIVED_NOTE",
+      "logicalDocumentNumber": "GRN-2026-0703",
+      "businessChain": "AP",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-06-grn",
+          "expectedFactKinds": [
+            "EVIDENCE",
+            "CONTROL_FINDING"
+          ],
+          "terminalDisposition": "EVIDENCE_ONLY_WITH_WARNING"
+        }
+      ],
+      "quickBooksTranslation": "Control support only: 9 received versus 10 billed. Preserve the 3-way-match exception."
+    },
+    {
+      "artifactId": "qbo-ra-art-07-bank-statement",
+      "uploadSlot": 7,
+      "sha256Env": "QBO_UAT_ARTIFACT_07_SHA256",
+      "logicalType": "SGD_BANK_STATEMENT",
+      "logicalDocumentNumber": "STMT-072026",
+      "businessChain": "BANK",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-07-opening-balance",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT"
+          ],
+          "terminalDisposition": "BLOCKED_UNSUPPORTED_OPENING_BALANCE"
+        },
+        {
+          "unitId": "qbo-ra-u-07-bill-payment",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT"
+          ],
+          "terminalDisposition": "BLOCKED_UNSUPPORTED_BILL_PAYMENT"
+        },
+        {
+          "unitId": "qbo-ra-u-07-customer-payment",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT"
+          ],
+          "terminalDisposition": "BLOCKED_UNSUPPORTED_CUSTOMER_PAYMENT"
+        },
+        {
+          "unitId": "qbo-ra-u-07-bank-fee",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT"
+          ],
+          "terminalDisposition": "BLOCKED_UNSUPPORTED_BANK_FEE"
+        },
+        {
+          "unitId": "qbo-ra-u-07-customer-prepayment",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT"
+          ],
+          "terminalDisposition": "BLOCKED_UNSUPPORTED_CUSTOMER_PREPAYMENT"
+        }
+      ],
+      "quickBooksTranslation": "Evidence and matching source only in this release. Never claim the account is reconciled and never net the SGD 1,090 prepayment against the earlier invoice."
+    },
+    {
+      "artifactId": "qbo-ra-art-08-remittance-advice",
+      "uploadSlot": 8,
+      "sha256Env": "QBO_UAT_ARTIFACT_08_SHA256",
+      "logicalType": "CUSTOMER_REMITTANCE_ADVICE",
+      "logicalDocumentNumber": "REM-LCD-0720",
+      "businessChain": "AR",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-08-customer-payment-evidence",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT",
+            "EVIDENCE"
+          ],
+          "terminalDisposition": "BLOCKED_UNSUPPORTED_CUSTOMER_PAYMENT"
+        }
+      ],
+      "quickBooksTranslation": "Payment evidence only until the released Case supports QuickBooks Payment and exact bank matching."
+    },
+    {
+      "artifactId": "qbo-ra-art-09-sales-credit-memo",
+      "uploadSlot": 9,
+      "sha256Env": "QBO_UAT_ARTIFACT_09_SHA256",
+      "logicalType": "SALES_CREDIT_NOTE",
+      "logicalDocumentNumber": "CN-2026-0001",
+      "businessChain": "AR",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-09-sales-credit",
+          "expectedFactKinds": [
+            "NATIVE_DOCUMENT"
+          ],
+          "terminalDisposition": "WRITTEN_READBACK_VERIFIED"
+        }
+      ],
+      "quickBooksTranslation": "QuickBooks CreditMemo for SGD 436; application/refund remains outside this Case."
+    },
+    {
+      "artifactId": "qbo-ra-art-10-vendor-credit",
+      "uploadSlot": 10,
+      "sha256Env": "QBO_UAT_ARTIFACT_10_SHA256",
+      "logicalType": "VENDOR_CREDIT_NOTE",
+      "logicalDocumentNumber": "OH-CN-260722",
+      "businessChain": "AP",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-10-vendor-credit",
+          "expectedFactKinds": [
+            "NATIVE_DOCUMENT",
+            "CONTROL_FINDING"
+          ],
+          "terminalDisposition": "WRITTEN_READBACK_VERIFIED_AFTER_CORRECTION"
+        }
+      ],
+      "quickBooksTranslation": "QuickBooks VendorCredit: net SGD 80, GST SGD 7.20, gross SGD 87.20. A net amount of SGD 800 must be rejected."
+    },
+    {
+      "artifactId": "qbo-ra-art-11-meal-receipt",
+      "uploadSlot": 11,
+      "sha256Env": "QBO_UAT_ARTIFACT_11_SHA256",
+      "logicalType": "MEAL_RECEIPT",
+      "logicalDocumentNumber": "RCPT-110726-1842",
+      "businessChain": "EXPENSE",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-11-meal-receipt",
+          "expectedFactKinds": [
+            "EVIDENCE"
+          ],
+          "terminalDisposition": "EVIDENCE_ONLY_FOR_UNSUPPORTED_EXPENSE_CLAIM"
+        }
+      ],
+      "quickBooksTranslation": "Evidence for one line of the employee claim; do not create a standalone duplicate expense."
+    },
+    {
+      "artifactId": "qbo-ra-art-12-employee-claim",
+      "uploadSlot": 12,
+      "sha256Env": "QBO_UAT_ARTIFACT_12_SHA256",
+      "logicalType": "EMPLOYEE_EXPENSE_CLAIM",
+      "logicalDocumentNumber": "EXP-ALICE-0726",
+      "businessChain": "EXPENSE",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-12-employee-claim",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT",
+            "CONTROL_FINDING"
+          ],
+          "terminalDisposition": "BLOCKED_UNSUPPORTED_EXPENSE_CLAIM"
+        }
+      ],
+      "quickBooksTranslation": "Current released Case has no ExpenseClaim route. Preserve July expense dates; a later approval date does not move them into August. The missing transport receipt cannot support input GST."
+    },
+    {
+      "artifactId": "qbo-ra-art-13-foreign-vendor-bill",
+      "uploadSlot": 13,
+      "sha256Env": "QBO_UAT_ARTIFACT_13_SHA256",
+      "logicalType": "USD_VENDOR_INVOICE",
+      "logicalDocumentNumber": "CH-INV-78142",
+      "businessChain": "FX",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-13-usd-bill",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT"
+          ],
+          "terminalDisposition": "BLOCKED_SCHEMA_GAP_EXCHANGE_RATE"
+        }
+      ],
+      "quickBooksTranslation": "A USD Bill is provider-supported, but this release cannot safely preserve the user-confirmed 1.3500 invoice exchange rate in the Accounting Case payload. Do not let QuickBooks silently choose another rate."
+    },
+    {
+      "artifactId": "qbo-ra-art-14-foreign-payment-advice",
+      "uploadSlot": 14,
+      "sha256Env": "QBO_UAT_ARTIFACT_14_SHA256",
+      "logicalType": "FOREIGN_PAYMENT_DEBIT_ADVICE",
+      "logicalDocumentNumber": "FXPAY-290726",
+      "businessChain": "FX",
+      "sourceBranding": "XERO_TEST_PACK",
+      "sourceUnits": [
+        {
+          "unitId": "qbo-ra-u-14-fx-settlement",
+          "expectedFactKinds": [
+            "UNSUPPORTED_EVENT",
+            "CONTROL_FINDING"
+          ],
+          "terminalDisposition": "BLOCKED_UNSUPPORTED_FX_SETTLEMENT"
+        }
+      ],
+      "quickBooksTranslation": "Evidence for USD 1,000 settlement at 1.3650, SGD 15 bank fee and SGD 15 realized loss. No foreign-currency bank statement is supplied, so reconciliation must not be claimed."
+    }
+  ],
+  "businessChains": [
+    {
+      "chainId": "AR",
+      "artifactIds": [
+        "qbo-ra-art-01-customer-master",
+        "qbo-ra-art-03-inbound-customer-po",
+        "qbo-ra-art-04-sales-invoice",
+        "qbo-ra-art-07-bank-statement",
+        "qbo-ra-art-08-remittance-advice",
+        "qbo-ra-art-09-sales-credit-memo"
+      ],
+      "goldFacts": {
+        "customer": "Lion City Digital Pte. Ltd.",
+        "invoice": {
+          "documentNumber": "INV-2026-0702",
+          "documentDate": "2026-07-02",
+          "dueDate": "2026-08-01",
+          "currency": "SGD",
+          "net": "4000.00",
+          "tax": "360.00",
+          "gross": "4360.00"
+        },
+        "paymentEvidence": "4360.00",
+        "creditMemo": {
+          "documentNumber": "CN-2026-0001",
+          "documentDate": "2026-07-22",
+          "net": "400.00",
+          "tax": "36.00",
+          "gross": "436.00"
+        },
+        "separateCustomerPrepayment": {
+          "date": "2026-07-28",
+          "net": "1000.00",
+          "tax": "90.00",
+          "gross": "1090.00",
+          "mustNotOffsetEarlierInvoice": true
+        }
+      }
+    },
+    {
+      "chainId": "AP",
+      "artifactIds": [
+        "qbo-ra-art-02-vendor-onboarding",
+        "qbo-ra-art-05-vendor-bill",
+        "qbo-ra-art-06-grn",
+        "qbo-ra-art-07-bank-statement",
+        "qbo-ra-art-10-vendor-credit"
+      ],
+      "goldFacts": {
+        "vendor": "OfficeHub Singapore Pte. Ltd.",
+        "bill": {
+          "documentNumber": "OH-260701",
+          "documentDate": "2026-07-03",
+          "dueDate": "2026-07-17",
+          "quantityBilled": "10",
+          "quantityReceived": "9",
+          "net": "800.00",
+          "tax": "72.00",
+          "gross": "872.00"
+        },
+        "vendorCredit": {
+          "documentNumber": "OH-CN-260722",
+          "documentDate": "2026-07-22",
+          "quantity": "1",
+          "unitAmount": "80.00",
+          "net": "80.00",
+          "tax": "7.20",
+          "gross": "87.20",
+          "explicitlyForbiddenNet": "800.00"
+        },
+        "billPaymentEvidence": "872.00",
+        "controls": [
+          "ONE_CARTON_SHORT",
+          "VENDOR_BANK_FORM_STILL_SAYS_PENDING_CALLBACK",
+          "ATTACHMENT_DOES_NOT_AUTHORIZE_PAYMENT"
+        ]
+      }
+    },
+    {
+      "chainId": "EXPENSE",
+      "artifactIds": [
+        "qbo-ra-art-11-meal-receipt",
+        "qbo-ra-art-12-employee-claim"
+      ],
+      "goldFacts": {
+        "claimTotal": "256.50",
+        "meal": {
+          "expenseDate": "2026-07-11",
+          "gross": "218.00",
+          "receiptPresent": true
+        },
+        "transport": {
+          "expenseDate": "2026-07-14",
+          "gross": "38.50",
+          "receiptPresent": false,
+          "inputGstAllowed": false
+        },
+        "approvalDate": "2026-08-01",
+        "approvalDoesNotChangeExpensePeriod": true
+      }
+    },
+    {
+      "chainId": "FX",
+      "artifactIds": [
+        "qbo-ra-art-13-foreign-vendor-bill",
+        "qbo-ra-art-14-foreign-payment-advice"
+      ],
+      "goldFacts": {
+        "foreignAmountUsd": "1000.00",
+        "invoiceRate": "1.3500",
+        "invoiceEquivalentSgd": "1350.00",
+        "paymentRate": "1.3650",
+        "settlementEquivalentSgd": "1365.00",
+        "bankFeeSgd": "15.00",
+        "realizedFxLossSgd": "15.00",
+        "totalBankDebitSgd": "1380.00",
+        "foreignCurrencyBankStatementPresent": false,
+        "reconciledClaimAllowed": false
+      }
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "QBO-RA-E2E-01",
+      "title": "14 份材料、16 轮连续真实会计对话",
+      "purpose": "PRIMARY_END_TO_END_AGENT_BEHAVIOR_AND_LEDGER_ACCEPTANCE",
+      "turns": [
+    {
+      "turnId": "T01",
+      "operation": "read",
+      "user": "你好，请读取我 QuickBooks 账户对应公司的名称、本位币、财务年度设置和税务相关设置。",
+      "attachments": [],
+      "intent": "establish_oauth_bound_target_and_company_context",
+      "toolOracle": {
+        "required": [
+          "quickbooks_connection_status",
+          "quickbooks_resolve_target",
+          "quickbooks_get_company"
+        ],
+        "allowed": [],
+        "forbidden": [
+          "all write tools"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "current QuickBooks Company identity",
+          "home currency",
+          "whether multi-currency is enabled or unknown",
+          "which requested fields QuickBooks did not return"
+        ],
+        "mustNotClaim": [
+          "the connection belongs to another user",
+          "missing fields were successfully read"
+        ]
+      }
+    },
+    {
+      "turnId": "T02",
+      "operation": "read",
+      "user": "检查当前账套是否存在银行账户、客户、供应商、商品项目和历史交易，也看看 bills、税码和 trial balance。不要只看第一页就说整个账套是空的。",
+      "attachments": [],
+      "intent": "read_ledger_inventory_with_bounded_evidence",
+      "toolOracle": {
+        "required": [
+          "quickbooks_list_accounts",
+          "quickbooks_search_customers",
+          "quickbooks_search_vendors",
+          "quickbooks_list_items",
+          "quickbooks_list_bills",
+          "quickbooks_list_transactions",
+          "quickbooks_list_tax_codes",
+          "quickbooks_get_trial_balance"
+        ],
+        "allowed": [
+          "quickbooks_run_report"
+        ],
+        "forbidden": [
+          "all write tools"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "query boundaries or pagination limits",
+          "page-level absence is not whole-ledger absence"
+        ],
+        "mustNotClaim": [
+          "page 1 empty means the entire ledger is empty",
+          "No Tax means tax exempt"
+        ]
+      }
+    },
+    {
+      "turnId": "T03",
+      "operation": "read",
+      "user": "总共有十四个文件，我会分两次长传。你先保持这次会话上下文，不要先入账。",
+      "attachments": [],
+      "intent": "announce_batched_upload",
+      "toolOracle": {
+        "required": [],
+        "allowed": [],
+        "forbidden": [
+          "all provider calls",
+          "all write tools"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "will wait for all 14 files",
+          "no ledger write has occurred"
+        ],
+        "mustNotClaim": [
+          "all files were received"
+        ]
+      }
+    },
+    {
+      "turnId": "T04",
+      "operation": "read",
+      "user": "我上传了前面十个，你先等一下，我将继续上传另外四个。不要因为看到 invoice 就先写。",
+      "attachments": [
+        "qbo-ra-art-01-customer-master",
+        "qbo-ra-art-02-vendor-onboarding",
+        "qbo-ra-art-03-inbound-customer-po",
+        "qbo-ra-art-04-sales-invoice",
+        "qbo-ra-art-05-vendor-bill",
+        "qbo-ra-art-06-grn",
+        "qbo-ra-art-07-bank-statement",
+        "qbo-ra-art-08-remittance-advice",
+        "qbo-ra-art-09-sales-credit-memo",
+        "qbo-ra-art-10-vendor-credit"
+      ],
+      "intent": "receive_first_batch_without_posting",
+      "toolOracle": {
+        "required": [],
+        "allowed": [],
+        "forbidden": [
+          "quickbooks_prepare_accounting_case",
+          "quickbooks_execute_accounting_case"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "10 of 14 logical artifacts received",
+          "waiting for four more",
+          "no PREPARED or written claim"
+        ],
+        "mustNotClaim": [
+          "the supplied set is complete",
+          "any artifact is posted"
+        ]
+      }
+    },
+    {
+      "turnId": "T05",
+      "operation": "read",
+      "user": "as attached，另外四个也传好了。现在先把 14 个文件逐个列出来，分成 AR、AP、员工报销、外币和银行证据，检查有没有重复或漏件，先别写。",
+      "attachments": [
+        "qbo-ra-art-11-meal-receipt",
+        "qbo-ra-art-12-employee-claim",
+        "qbo-ra-art-13-foreign-vendor-bill",
+        "qbo-ra-art-14-foreign-payment-advice"
+      ],
+      "intent": "complete_manifest_and_classify",
+      "toolOracle": {
+        "required": [],
+        "allowed": [
+          "read tools needed for duplicate preflight"
+        ],
+        "forbidden": [
+          "quickbooks_prepare_accounting_case",
+          "quickbooks_execute_accounting_case"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "exactly 14 logical artifacts",
+          "four business chains",
+          "the meal receipt is support for the employee claim rather than a second expense",
+          "the remittance and bank statement describe one customer-payment event rather than two writes"
+        ],
+        "mustNotClaim": [
+          "14 documents imply 14 QuickBooks writes"
+        ]
+      }
+    },
+    {
+      "turnId": "T06",
+      "operation": "read",
+      "user": "啥意思？怎么报错了？先不要自动重试。告诉我到底是文件读取、QuickBooks 引用、确定性校验、权限还是 provider 写入哪一层；如果其实没报错，也直接说没有，不要编。",
+      "attachments": [],
+      "intent": "error_layer_explanation_without_blind_retry",
+      "toolOracle": {
+        "required": [],
+        "allowed": [
+          "quickbooks_connection_status",
+          "quickbooks_get_accounting_case_status"
+        ],
+        "forbidden": [
+          "blind write retry"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "observed failure layer or explicitly no observed MCP error",
+          "whether any write was attempted",
+          "whether retry is safe"
+        ],
+        "mustNotClaim": [
+          "a guessed provider error",
+          "success without a receipt"
+        ]
+      }
+    },
+    {
+      "turnId": "T07",
+      "operation": "read",
+      "user": "先按这个结构回答：文件A信息 -> 文件B信息 -> A VS B差异 -> 待确认事项。文件A是 OH-260701，文件B是 GRN-2026-0703。",
+      "attachments": [],
+      "intent": "three_way_match_comparison",
+      "toolOracle": {
+        "required": [],
+        "allowed": [],
+        "forbidden": [
+          "all write tools"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "bill quantity 10",
+          "received quantity 9",
+          "one carton short",
+          "vendor credit expected net 80 plus GST 7.20",
+          "the AP exception remains visible"
+        ],
+        "mustNotClaim": [
+          "the documents match completely"
+        ]
+      }
+    },
+    {
+      "turnId": "T08",
+      "operation": "read",
+        "user": "我一次补充和纠正十二点，你把前面的判断整体更新，不要只改最后一句：目标是 QuickBooks Sandbox，不是 Xero；这批纯虚构 TEST DOCUMENT 都授权映射到当前 synthetic QuickBooks Company，Trial Pte. Ltd. 只是测试资料主体；14 个文件都已到；7 月 28 日 1090 是新的 customer prepayment，不能冲旧 invoice；OH-CN-260722 是冲 Office Expenses 80，不是 800，GST 7.20、总额 87.20；CN-2026-0001 已由授权会计批准，可以创建 CreditMemo，但不能伪造现金退款；员工 claim 是 218 加 38.50 等于 256.50；费用发生在 7 月 11 和 14 日；8 月 1 日才批准，不代表费用都挪到 8 月；Grab 没收据，不能认 input GST；外币 invoice 用 1.3500，1000 USD 等值 1350 SGD；付款用 1.3650，结算 1365，加 bank fee 15，realized loss 15。供应商银行资料我线下确认过，但原表还是 PENDING CALLBACK，review item 要保留。",
+      "attachments": [],
+      "intent": "global_fact_revision",
+      "toolOracle": {
+        "required": [],
+        "allowed": [],
+        "forbidden": [
+          "all write tools"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+            "all twelve corrections were applied to the working facts",
+          "source-vs-user correction lineage remains auditable",
+          "the vendor bank review item remains",
+          "the prepayment remains separate"
+        ],
+        "mustNotClaim": [
+          "the Xero labels select a Xero MCP",
+          "the stale form was overwritten",
+          "the prepayment cleared the earlier invoice"
+        ]
+      }
+    },
+    {
+      "turnId": "T09",
+        "operation": "prepare",
+        "user": "基于上述修正，重新给我完整清单：哪些可以用现在这个 QuickBooks Case 写，哪些只当证据，哪些是当前版本 blocker。每个来源都要有最终去向。把只作证据和当前不支持的事项保存成一个零操作 residual Case，查一下状态，但不要 execute，也不要向 QuickBooks 入账。",
+      "attachments": [],
+      "intent": "terminal_disposition_for_every_source",
+      "toolOracle": {
+        "required": [
+          "quickbooks_get_write_capabilities",
+          "quickbooks_prepare_accounting_case for the zero-operation residual evidence Case",
+          "quickbooks_get_accounting_case_status for the zero-operation residual evidence Case"
+        ],
+        "allowed": [
+          "read tools"
+        ],
+        "forbidden": [
+          "all execute tools"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "Customer, Vendor, Invoice, Bill, CreditMemo and VendorCredit are released Case writes",
+          "Payment, BillPayment, bank fee, customer prepayment, opening balance, ExpenseClaim and FX settlement are not released Case writes",
+          "the foreign Bill is blocked until the 1.3500 exchange rate can be represented safely",
+          "all 14 artifacts have a terminal disposition",
+          "the six-artifact residual Case is persisted with zero operations and must never execute"
+        ],
+        "mustNotClaim": [
+          "provider API support equals current MCP release support",
+          "evidence-only means ignored"
+        ]
+      }
+    },
+    {
+      "turnId": "T10",
+      "operation": "prepare",
+      "user": "先 prepare 可以支持的那一组，做重复检查、金额逐行校验和 QuickBooks 引用解析。只 prepare，不 execute；unsupported 的不要伪装成 journal。",
+      "attachments": [],
+      "intent": "prepare_supported_case_without_execution",
+      "toolOracle": {
+        "required": [
+          "quickbooks_search_customers",
+          "quickbooks_search_vendors",
+          "quickbooks_list_items",
+          "quickbooks_list_accounts",
+          "quickbooks_list_tax_codes",
+          "quickbooks_prepare_accounting_case for the supported Case",
+          "quickbooks_get_accounting_case_status for the supported Case",
+          "quickbooks_get_accounting_case_status for the residual evidence Case"
+        ],
+        "allowed": [
+          "quickbooks_get_accounting_case_status"
+        ],
+        "forbidden": [
+          "quickbooks_execute_accounting_case",
+          "quickbooks_prepare_supplier_bill",
+          "quickbooks_prepare_mutation"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "PREPARED or planned is not written",
+          "source coverage result",
+          "event dispositions",
+          "contact-first staging if the exact Customer or Vendor is absent",
+          "no eligible provider ID exists before execution",
+          "all six unsupported or review-only artifacts are durable in a separate zero-operation residual Case"
+        ],
+        "mustNotClaim": [
+          "ledger posted",
+          "payment or reconciliation prepared through an invented route"
+        ]
+      }
+    },
+    {
+      "turnId": "T11",
+      "operation": "prepare",
+      "user": "OH-CN-260722 中 Office Expenses 应冲减 80，不是 800。请重新验证每笔单据的逐行数量×单价、tax 和 gross，不能只看总计行；也检查你说的逐行借贷合计到底有没有当前工具证据，没有就不要编。如果 plan 里还是 800 就必须 block。",
+      "attachments": [],
+      "intent": "row_level_revalidation_and_fact_revision",
+      "toolOracle": {
+        "required": [
+          "quickbooks_get_accounting_case_status for the supported Case",
+          "quickbooks_get_accounting_case_status for the residual evidence Case"
+        ],
+        "allowed": [
+          "quickbooks_prepare_accounting_case"
+        ],
+        "forbidden": [
+          "quickbooks_execute_accounting_case when the active VendorCredit fact is invalid"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "VendorCredit line net 80.00",
+          "tax 7.20",
+          "gross 87.20",
+          "the active corrected revision supersedes any 800 extraction",
+          "QuickBooks native-document line readback is not automatically evidence of a complete debit-credit journal unless the tool actually returns that accounting detail"
+        ],
+        "mustNotClaim": [
+          "800 plus 7.20 equals 87.20"
+        ]
+      }
+    },
+    {
+      "turnId": "T12",
+      "operation": "read",
+      "user": "再检查遗漏：opening balance 10000、OfficeHub payment 872、bank fee 25、customer prepayment 1090 都不能消失。还有 8 月 1 日批准不能把 7 月费用改成 8 月。外币也没有对应的 USD bank statement，所以不要说 reconciled。",
+      "attachments": [],
+      "intent": "residual_event_and_period_control",
+      "toolOracle": {
+        "required": [],
+        "allowed": [
+          "quickbooks_get_accounting_case_status"
+        ],
+        "forbidden": [
+          "unsupported write tools",
+          "reconciliation claim"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "opening balance 10000 remains review-only without opening evidence",
+          "bill-payment evidence 872 remains",
+          "bank fee 25 remains blocked unsupported",
+          "customer prepayment 1090 remains separate and blocked unsupported",
+          "expense dates remain in July",
+          "FX chain is not reconciled",
+          "residual Case remains zero-operation and unexecuted"
+        ],
+        "mustNotClaim": [
+          "August approval changes July occurrence dates",
+          "the bank statement proves all opening balances",
+          "the FX account is reconciled"
+        ]
+      }
+    },
+    {
+      "turnId": "T13",
+      "operation": "write",
+      "user": "现在可以执行 eligible 的 QuickBooks Sandbox 写入。按联系人先、原生单据后的分阶段方式做；每一步都返回 authorization receipt、provider receipt、provider ID 和 exact read-back。任何 unknown 不要盲重试。",
+      "attachments": [],
+      "intent": "staged_execute_with_receipts_and_readback",
+      "toolOracle": {
+        "required": [
+          "quickbooks_execute_accounting_case",
+          "quickbooks_get_accounting_case_status",
+          "quickbooks_prepare_accounting_case",
+          "quickbooks_execute_accounting_case",
+          "quickbooks_get_accounting_case_status"
+        ],
+        "allowed": [
+          "read tools for exact duplicate and readback verification"
+        ],
+        "forbidden": [
+          "unsupported write tools",
+          "blind retry after uncertain provider outcome"
+        ],
+        "requiredSequence": [
+          "execute case version containing new Customer and Vendor",
+          "verify both contacts by exact readback",
+          "prepare next version after exact contacts exist",
+          "execute Invoice, Bill, CreditMemo and VendorCredit",
+          "verify every operation through case status"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "provider ID for each eligible write",
+          "authorization receipt recorded for each eligible write",
+          "provider receipt recorded for each eligible write",
+          "exact readback recorded for each eligible write",
+          "unsupported residual events were not written"
+        ],
+        "mustNotClaim": [
+          "PREPARED equals written",
+          "partial verified means all written",
+          "the whole business chain is complete"
+        ]
+      }
+    },
+    {
+      "turnId": "T14",
+      "operation": "read",
+          "user": "把刚才每个 eligible 写入按 Customer、Vendor、Invoice、Bill、CreditMemo、VendorCredit 列表给我，逐个列 provider id、receipt 和 readback 的关键字段；本轮必须重新查询 supported Case 每个版本和 residual Case 的 status，不能只靠上轮记忆，缺一个就不要说完成。",
+      "attachments": [],
+      "intent": "receipt_and_readback_audit",
+      "toolOracle": {
+        "required": [
+          "quickbooks_get_accounting_case_status for every supported Case version",
+          "quickbooks_get_accounting_case_status for the residual evidence Case"
+        ],
+        "allowed": [
+          "quickbooks_search_customers",
+          "quickbooks_search_vendors",
+          "quickbooks_get_transaction",
+          "quickbooks_get_bill"
+        ],
+        "forbidden": [
+          "new write"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "six entity rows or an explicit blocked row",
+          "one provider ID and readback result per written entity",
+          "no completion claim for missing evidence"
+        ],
+        "mustNotClaim": [
+          "a provider write succeeded based only on a local plan"
+        ]
+      }
+    },
+    {
+      "turnId": "T15",
+      "operation": "write",
+      "user": "网络刚才像是卡了一下。请按完全相同的请求再确认一次，但不能重复创建任何 Customer、Vendor 或单据；如果已终态就直接读状态。",
+      "attachments": [],
+      "intent": "idempotent_retry",
+      "toolOracle": {
+        "required": [
+          "quickbooks_get_accounting_case_status for every supported Case version",
+          "quickbooks_get_accounting_case_status for the residual evidence Case"
+        ],
+        "allowed": [
+          "quickbooks_execute_accounting_case with the exact same request_id"
+        ],
+        "forbidden": [
+          "new case ID for the same business event",
+          "new request ID used to bypass idempotency",
+          "blind retry after WRITE_RESULT_UNKNOWN"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "terminal case state or recovery-required state",
+          "provider create delta is zero",
+          "original provider IDs remain unchanged"
+        ],
+        "mustNotClaim": [
+          "a second copy was intentionally created"
+        ]
+      }
+    },
+    {
+      "turnId": "T16",
+      "operation": "read",
+          "user": "最后按 14 个来源给我收尾：本轮必须重新查询 supported Case 和 residual Case 的 status，再把已写并回读、仅证据、当前版本 blocker、需要人工 review 分开列。不能只靠对话记忆；再说明这次能证明什么、不能证明什么。",
+      "attachments": [],
+      "intent": "bounded_final_accountant_summary",
+      "toolOracle": {
+        "required": [
+          "quickbooks_get_accounting_case_status for the supported Case",
+          "quickbooks_get_accounting_case_status for the residual evidence Case"
+        ],
+        "allowed": [
+          "read tools"
+        ],
+        "forbidden": [
+          "new write"
+        ]
+      },
+      "responseOracle": {
+        "mustState": [
+          "terminal disposition for all 14 artifacts and all bank-statement units",
+          "only readback-verified operations are called written",
+          "payments, bank fee, prepayment, opening balance, ExpenseClaim and FX settlement remain blocked in this release",
+          "vendor bank verification remains a review item",
+          "the result proves one Sandbox UAT journey, not production posting, close, tax filing or reconciliation"
+        ],
+        "mustNotClaim": [
+          "production readiness",
+          "month-end close completed",
+          "tax filing completed",
+          "bank reconciliation completed",
+          "all official QuickBooks writes are implemented"
+        ]
+      }
+    }
+      ]
+    }
+  ],
+  "casePlanOracle": {
+    "supportedCase": {
+      "caseIdTemplate": "qbo-ra-supported-{{RUN_ID}}",
+      "sourceArtifactIds": [
+        "qbo-ra-art-01-customer-master",
+        "qbo-ra-art-02-vendor-onboarding",
+        "qbo-ra-art-03-inbound-customer-po",
+        "qbo-ra-art-04-sales-invoice",
+        "qbo-ra-art-05-vendor-bill",
+        "qbo-ra-art-06-grn",
+        "qbo-ra-art-09-sales-credit-memo",
+        "qbo-ra-art-10-vendor-credit"
+      ],
+      "version1": {
+        "expectedOperations": [
+          "CREATE:Customer",
+          "CREATE:Vendor"
+        ],
+        "expectedResidualRoutes": [
+          "INVOICE",
+          "BILL",
+          "CREDIT_MEMO",
+          "VENDOR_CREDIT"
+        ],
+        "reason": "new documents require exact provider contact IDs, so contacts are staged first"
+      },
+      "version2": {
+        "expectedOperations": [
+          "CREATE:Invoice",
+          "CREATE:Bill",
+          "CREATE:CreditMemo",
+          "CREATE:VendorCredit"
+        ],
+        "contactEventsBecome": "EVIDENCE_ONLY_CONTACT_ALREADY_EXISTS"
+      },
+      "execution": {
+        "requestIdTemplateV1": "qbo-ra-exec-contacts-{{RUN_ID}}",
+        "requestIdTemplateV2": "qbo-ra-exec-documents-{{RUN_ID}}",
+        "allOperationsMustEndIn": "READBACK_VERIFIED",
+        "providerReceiptRequired": true,
+        "authorizationReceiptRequired": true,
+        "exactReadbackRequired": true,
+        "wholeBusinessCompletenessMustRemain": "NOT_ASSERTED"
+      }
+    },
+    "blockedResidualCase": {
+      "caseIdTemplate": "qbo-ra-residual-{{RUN_ID}}",
+      "sourceArtifactIds": [
+        "qbo-ra-art-07-bank-statement",
+        "qbo-ra-art-08-remittance-advice",
+        "qbo-ra-art-11-meal-receipt",
+        "qbo-ra-art-12-employee-claim",
+        "qbo-ra-art-13-foreign-vendor-bill",
+        "qbo-ra-art-14-foreign-payment-advice"
+      ],
+      "expectedOperationCount": 0,
+      "mustBePreparedByTurn": "T10",
+      "mustBeQueriedAtTurns": [
+        "T10",
+        "T12",
+        "T14",
+        "T16"
+      ],
+      "mustNotExecute": true,
+      "expectedBlockers": [
+        "OPENING_BALANCE_NOT_RELEASED",
+        "BILL_PAYMENT_NOT_RELEASED",
+        "CUSTOMER_PAYMENT_NOT_RELEASED",
+        "BANK_FEE_NOT_RELEASED",
+        "CUSTOMER_PREPAYMENT_NOT_RELEASED",
+        "EXPENSE_CLAIM_NOT_RELEASED",
+        "EXCHANGE_RATE_NOT_REPRESENTABLE_IN_RELEASED_CASE_SCHEMA",
+        "FX_SETTLEMENT_NOT_RELEASED",
+        "FOREIGN_CURRENCY_BANK_STATEMENT_MISSING"
+      ]
+    }
+  },
+  "supportedWriteOracles": [
+    {
+      "entity": "Customer",
+      "businessKey": "DisplayName=Lion City Digital Pte. Ltd.",
+      "expectedReadback": {
+        "DisplayName": "Lion City Digital Pte. Ltd.",
+        "Active": true
+      },
+      "duplicateMaximum": 1
+    },
+    {
+      "entity": "Vendor",
+      "businessKey": "DisplayName=OfficeHub Singapore Pte. Ltd.",
+      "expectedReadback": {
+        "DisplayName": "OfficeHub Singapore Pte. Ltd.",
+        "Active": true
+      },
+      "duplicateMaximum": 1
+    },
+    {
+      "entity": "Invoice",
+      "businessKey": "DocNumber=INV-2026-0702",
+      "expectedReadback": {
+        "TxnDate": "2026-07-02",
+        "DueDate": "2026-08-01",
+        "CurrencyRef.value": "SGD",
+        "TxnTaxDetail.TotalTax": "360.00",
+        "TotalAmt": "4360.00"
+      },
+      "duplicateMaximum": 1
+    },
+    {
+      "entity": "Bill",
+      "businessKey": "DocNumber=OH-260701",
+      "expectedReadback": {
+        "TxnDate": "2026-07-03",
+        "DueDate": "2026-07-17",
+        "CurrencyRef.value": "SGD",
+        "TxnTaxDetail.TotalTax": "72.00",
+        "TotalAmt": "872.00"
+      },
+      "duplicateMaximum": 1
+    },
+    {
+      "entity": "CreditMemo",
+      "businessKey": "DocNumber=CN-2026-0001",
+      "expectedReadback": {
+        "TxnDate": "2026-07-22",
+        "CurrencyRef.value": "SGD",
+        "TxnTaxDetail.TotalTax": "36.00",
+        "TotalAmt": "436.00"
+      },
+      "duplicateMaximum": 1
+    },
+    {
+      "entity": "VendorCredit",
+      "businessKey": "DocNumber=OH-CN-260722",
+      "expectedReadback": {
+        "TxnDate": "2026-07-22",
+        "CurrencyRef.value": "SGD",
+        "TxnTaxDetail.TotalTax": "7.20",
+        "TotalAmt": "87.20",
+        "Line[0].Amount": "80.00"
+      },
+      "forbiddenReadback": {
+        "Line[0].Amount": "800.00"
+      },
+      "duplicateMaximum": 1
+    }
+  ],
+  "unsupportedActionOracles": [
+    {
+      "businessEvent": "customer payment 4360",
+      "officialQuickBooksEntity": "Payment",
+      "currentAccountingCaseReleased": false,
+      "expectedDisposition": "BLOCKED_UNSUPPORTED_BY_RELEASE",
+      "mustNotWrite": true
+    },
+    {
+      "businessEvent": "vendor bill payment 872",
+      "officialQuickBooksEntity": "BillPayment",
+      "currentAccountingCaseReleased": false,
+      "expectedDisposition": "BLOCKED_UNSUPPORTED_BY_RELEASE",
+      "mustNotWrite": true
+    },
+    {
+      "businessEvent": "customer prepayment 1090",
+      "officialQuickBooksEntity": "Deposit or Payment depending controlled product design",
+      "currentAccountingCaseReleased": false,
+      "expectedDisposition": "BLOCKED_UNSUPPORTED_BY_RELEASE",
+      "mustNotWrite": true
+    },
+    {
+      "businessEvent": "bank fee 25",
+      "officialQuickBooksEntity": "Purchase or JournalEntry depending controlled product design",
+      "currentAccountingCaseReleased": false,
+      "expectedDisposition": "BLOCKED_UNSUPPORTED_BY_RELEASE",
+      "mustNotWrite": true
+    },
+    {
+      "businessEvent": "opening balance 10000",
+      "officialQuickBooksEntity": "Opening balance workflow or JournalEntry",
+      "currentAccountingCaseReleased": false,
+      "expectedDisposition": "BLOCKED_UNSUPPORTED_AND_MISSING_SUPPORT",
+      "mustNotWrite": true
+    },
+    {
+      "businessEvent": "employee expense claim 256.50",
+      "officialQuickBooksEntity": "Purchase or Expense depending controlled product design",
+      "currentAccountingCaseReleased": false,
+      "expectedDisposition": "BLOCKED_UNSUPPORTED_BY_RELEASE",
+      "mustNotWrite": true
+    },
+    {
+      "businessEvent": "USD vendor Bill at explicit invoice rate 1.3500",
+      "officialQuickBooksEntity": "Bill",
+      "currentAccountingCaseReleased": false,
+      "expectedDisposition": "BLOCKED_SCHEMA_GAP_EXCHANGE_RATE",
+      "mustNotWrite": true
+    },
+    {
+      "businessEvent": "FX settlement 1365, fee 15 and realized loss 15",
+      "officialQuickBooksEntity": "BillPayment plus related FX and fee records",
+      "currentAccountingCaseReleased": false,
+      "expectedDisposition": "BLOCKED_UNSUPPORTED_BY_RELEASE",
+      "mustNotWrite": true
+    }
+  ],
+  "factRevisionOracle": {
+    "lineageKey": "qbo-ra-lineage-vendor-credit-oh-cn-260722",
+    "invalidRevision": {
+      "revision": 1,
+      "lineUnitAmount": "800.00",
+      "declaredNet": "80.00",
+      "declaredTax": "7.20",
+      "declaredGross": "87.20",
+      "expectedCaseState": "BLOCKED_VALIDATION",
+      "expectedReasonCodes": [
+        "LINE_NET_DOES_NOT_MATCH_DECLARED_NET"
+      ],
+      "providerCallDelta": 0
+    },
+    "correctedRevision": {
+      "revision": 2,
+      "supersedesRevision": 1,
+      "lineUnitAmount": "80.00",
+      "declaredNet": "80.00",
+      "declaredTax": "7.20",
+      "declaredGross": "87.20",
+      "expectedDisposition": "AUTO_EXECUTE_AFTER_PREFLIGHT"
+    }
+  },
+  "crossLedgerTranslationOracle": [
+    {
+      "sourceConcept": "Xero-branded test document",
+      "quickBooksRule": "Branding is source provenance only; use only quickbooks_* tools and a QuickBooks Sandbox target."
+    },
+    {
+      "sourceConcept": "contact",
+      "quickBooksRule": "Translate by business role to Customer or Vendor; do not create a generic ambiguous contact."
+    },
+    {
+      "sourceConcept": "inbound customer PO",
+      "quickBooksRule": "Treat as sales evidence; do not create a supplier-side QuickBooks PurchaseOrder."
+    },
+    {
+      "sourceConcept": "credit note",
+      "quickBooksRule": "Translate to CreditMemo on AR and VendorCredit on AP."
+    },
+    {
+      "sourceConcept": "Xero account or tax labels",
+      "quickBooksRule": "Resolve exact active QuickBooks Item, Account and TaxCode names; never reuse Xero IDs or codes."
+    },
+    {
+      "sourceConcept": "draft",
+      "quickBooksRule": "Do not claim a universal Xero-like draft status. Use the MCP Case state PREPARED or planned, and call it written only after provider receipt plus exact readback."
+    },
+    {
+      "sourceConcept": "No Tax",
+      "quickBooksRule": "No Tax is not synonymous with exempt; preserve the source tax fact and use an exact QuickBooks TaxCode only when resolved."
+    }
+  ],
+  "negativeScenarios": [
+    {
+      "scenarioId": "QBO-RA-NEG-01",
+      "name": "vendor credit 800 versus 80",
+      "expectedState": "BLOCKED_VALIDATION",
+      "providerCallDelta": 0
+    },
+    {
+      "scenarioId": "QBO-RA-NEG-02",
+      "name": "one declared source unit has no fact",
+      "expectedState": "BLOCKED_COVERAGE",
+      "providerCallDelta": 0
+    },
+    {
+      "scenarioId": "QBO-RA-NEG-03",
+      "name": "foreign currency while QuickBooks multi-currency is disabled",
+      "expectedState": "BLOCKED_VALIDATION",
+      "expectedReasonCode": "MULTI_CURRENCY_DISABLED",
+      "providerCallDelta": 0
+    },
+    {
+      "scenarioId": "QBO-RA-NEG-04",
+      "name": "provider outcome unknown",
+      "expectedState": "RECOVERY_REQUIRED",
+      "blindRetryAllowed": false
+    },
+    {
+      "scenarioId": "QBO-RA-NEG-05",
+      "name": "target Company changes after preparation",
+      "expectedState": "DENIED_TARGET_BINDING_MISMATCH",
+      "providerCallDelta": 0
+    },
+    {
+      "scenarioId": "QBO-RA-NEG-06",
+      "name": "same execute request is replayed",
+      "expectedState": "TERMINAL_OR_RECOVERY_REQUIRED_UNCHANGED",
+      "providerCreateDelta": 0,
+      "providerIdsMustRemainIdentical": true
+    }
+  ],
+  "acceptanceGates": {
+    "localAgent": {
+      "requiredBeforeOnlineHost": true,
+      "sameConversationRequired": true,
+      "realModelRequiredForBehaviorPass": true,
+      "scriptedToolCallsOnlyClassification": "MCP_CONTRACT_ONLY_NOT_AGENT_BEHAVIOR_PASS",
+      "requiredEvidence": [
+        "model name",
+        "16 user turns in one conversation",
+        "tool-call trace with arguments redacted only for secrets",
+        "case status responses",
+        "provider IDs and receipts for eligible writes",
+        "exact readback for eligible writes",
+        "provider create counts before and after idempotent retry",
+        "all unsupported events shown as not written"
+      ]
+    },
+    "onlineHost": {
+      "runOnlyAfterLocalPass": true,
+      "isolatedUatAgentRequired": true,
+      "host": "Work",
+      "baseUrl": "https://work.zcloak.ai",
+      "modelDisplayName": "DeepSeek V4",
+      "modelIdMustBeLiveVerified": true,
+      "mcpEndpoint": "https://mcp.jiayuanwang.xyz/quickbooks/mcp",
+      "oauthMustBindInteractiveUserSandbox": true,
+      "sameConversationRequired": true,
+      "all14SyntheticImagesMustBeUploaded": true,
+      "requiredEvidence": [
+        "Work conversation URL or exported trace stored privately",
+        "OAuth-bound QuickBooks target evidence",
+        "16-turn transcript",
+        "tool receipts",
+        "provider receipts",
+        "exact readback",
+        "idempotent retry with zero create delta"
+      ]
+    },
+    "passRule": {
+      "requiredGateResults": [
+        "SCENARIO_SCHEMA_VALID",
+        "LOCAL_MCP_CONTRACT_PASS",
+        "LOCAL_AGENT_BEHAVIOR_PASS",
+        "WORK_DEEPSEEK_V4_ONLINE_UAT_PASS"
+      ],
+      "forbiddenShortcuts": [
+        "calling local scripted MCP tests an Agent pass",
+        "calling local pass a Work online pass",
+        "calling PREPARED posted",
+        "calling a provider ID without exact readback complete",
+        "calling partial source coverage complete"
+      ]
+    }
+  }
+}

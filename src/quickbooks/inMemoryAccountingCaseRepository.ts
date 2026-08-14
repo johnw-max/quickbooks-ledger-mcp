@@ -92,7 +92,8 @@ export class InMemoryQuickBooksAccountingCaseRepository implements QuickBooksAcc
 
   async updateOperation(input: Parameters<QuickBooksAccountingCaseRepository["updateOperation"]>[0]) {
     const record = this.#required(input.binding, input.caseId, input.version);
-    if (record.executionRequestId !== input.requestId || record.state !== "EXECUTING") {
+    if (record.executionRequestId !== input.requestId ||
+      (record.state !== "EXECUTING" && record.state !== "RECOVERY_REQUIRED")) {
       throw new AppError("CONFLICT", "Accounting Case execution claim is not owned by this request.", { httpStatus: 409 });
     }
     const operation = record.operations.find((candidate) => candidate.operation.operationId === input.operationId);
@@ -101,7 +102,9 @@ export class InMemoryQuickBooksAccountingCaseRepository implements QuickBooksAcc
       throw new AppError("CONFLICT", `Accounting Case operation cannot transition from ${operation.state}.`, { httpStatus: 409 });
     }
     operation.state = input.state;
-    for (const key of ["preparationId", "mutationRequestId", "providerEntityId", "authorizationReceipt", "writeReceipt", "readback", "errorReceipt"] as const) {
+    for (const key of ["preparationId", "preparationPayloadHash", "operationSourceEvidenceHash", "mutationRequestId",
+      "providerEntityId", "authorizationReceipt", "authorizationEvidence", "reuseEvidenceReceipt",
+      "writeReceipt", "readback", "errorReceipt"] as const) {
       const value = input[key];
       if (value !== undefined) (operation as unknown as Record<string, unknown>)[key] = copy(value);
     }

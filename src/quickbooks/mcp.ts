@@ -9,7 +9,6 @@ import type { QuickBooksAccountingCaseService } from "./accountingCaseService.js
 import {
   quickBooksExecuteAccountingCaseSchema,
   quickBooksGetAccountingCaseStatusSchema,
-  quickBooksPrepareAccountingCaseSchema,
 } from "./accountingCaseSchemas.js";
 import type { QuickBooksMutationService } from "./mutationService.js";
 import { assertInternalQuickBooksCaller } from "./callerPolicy.js";
@@ -31,10 +30,14 @@ import {
   quickBooksPrepareMutationSchema,
   quickBooksExecutePreparedMutationSchema,
 } from "./schemas.js";
+import {
+  normalizeQuickBooksAccountingCaseBusinessIntake,
+  quickBooksAccountingCaseBusinessIntakeSchema,
+} from "./accountingCaseBusinessIntake.js";
 
 export const QUICKBOOKS_RELEASE_VERSION = "0.6.0";
 
-export const QUICKBOOKS_TOOL_ALLOWLIST = [
+export const QUICKBOOKS_READ_TOOL_ALLOWLIST = [
   "quickbooks_connection_status",
   "quickbooks_resolve_target",
   "quickbooks_get_company",
@@ -48,9 +51,18 @@ export const QUICKBOOKS_TOOL_ALLOWLIST = [
   "quickbooks_list_transactions",
   "quickbooks_get_transaction",
   "quickbooks_run_report",
+  "quickbooks_get_trial_balance",
+] as const;
+
+export const QUICKBOOKS_LEGACY_PREPARE_TOOL_ALLOWLIST = [
   "quickbooks_hash_source_document",
   "quickbooks_prepare_supplier_bill",
-  "quickbooks_get_trial_balance",
+] as const;
+
+/** Legacy read + supplier-Bill preparation surface. Accounting Case mode excludes it. */
+export const QUICKBOOKS_TOOL_ALLOWLIST = [
+  ...QUICKBOOKS_READ_TOOL_ALLOWLIST,
+  ...QUICKBOOKS_LEGACY_PREPARE_TOOL_ALLOWLIST,
 ] as const;
 
 export const QUICKBOOKS_MUTATION_TOOL_ALLOWLIST = [
@@ -70,7 +82,7 @@ export const QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST = [
 ] as const;
 
 export const QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST = [
-  ...QUICKBOOKS_TOOL_ALLOWLIST,
+  ...QUICKBOOKS_READ_TOOL_ALLOWLIST,
   ...QUICKBOOKS_CAPABILITY_TOOL_ALLOWLIST,
   ...QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
 ] as const;
@@ -91,8 +103,10 @@ function failure(error: unknown): CallToolResult {
       safe.code === "VALIDATION_FAILED" ? "DETERMINISTIC_VALIDATION" :
         safe.code === "CONFLICT" ? "CONCURRENCY_OR_VERSION" :
           safe.code === "READBACK_MISMATCH" ? "READBACK" :
-            safe.code === "WRITE_RESULT_UNKNOWN" ? "PROVIDER_OUTCOME" :
-              safe.code === "PROVIDER_ERROR" ? "PROVIDER" : "CONFIGURATION";
+            safe.code === "WRITE_RESULT_UNKNOWN" || safe.code === "WRITE_RESULT_UNKNOWN_NO_ID"
+              ? "PROVIDER_OUTCOME" :
+              safe.code === "PROVIDER_ERROR" || safe.code === "PROVIDER_UNAVAILABLE" || safe.code === "RATE_LIMITED"
+                ? "PROVIDER" : "CONFIGURATION";
   const failureLayer = typeof safe.details?.failureLayer === "string" ? safe.details.failureLayer : fallbackLayer;
   const payload = {
     error: {
@@ -100,8 +114,10 @@ function failure(error: unknown): CallToolResult {
       message: safe.message,
       retryable: safe.retryable,
       failure_layer: failureLayer,
-      provider_mutation_possible: safe.code === "WRITE_RESULT_UNKNOWN",
-      recovery_action: safe.code === "WRITE_RESULT_UNKNOWN" ? "READBACK_RECOVERY_ONLY" : "INSPECT_ERROR_AND_STATUS",
+      provider_mutation_possible: safe.code === "WRITE_RESULT_UNKNOWN" || safe.code === "WRITE_RESULT_UNKNOWN_NO_ID",
+      recovery_action: safe.code === "WRITE_RESULT_UNKNOWN_NO_ID"
+        ? "OPERATOR_RESOLUTION_REQUIRED_NO_AUTOMATIC_REARM"
+        : safe.code === "WRITE_RESULT_UNKNOWN" ? "READBACK_RECOVERY_ONLY" : "INSPECT_ERROR_AND_STATUS",
       ...(safe.details ? { details: safe.details } : {}),
     },
   };
@@ -256,7 +272,7 @@ export function createQuickBooksMcpServer(
 
   server.registerTool("quickbooks_search_vendors", {
     title: "Search QuickBooks vendors",
-    description: "Searches active vendors using a bounded text query and returns searchWindow evidence. If complete=false, disclose the requested-limit or 10,000-record scan boundary instead of claiming exhaustive results.",
+    description: "Searches active vendors using a non-empty name/email text query. limit must be 1-100. Returns searchWindow evidence; if complete=false, disclose the requested-limit or 10,000-record scan boundary instead of claiming exhaustive results. This is not an unfiltered list-all tool.",
     inputSchema: quickBooksSearchVendorsSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false },
   }, async (input) => scopedRead({
@@ -268,7 +284,7 @@ export function createQuickBooksMcpServer(
 
   server.registerTool("quickbooks_search_customers", {
     title: "Search QuickBooks customers",
-    description: "Searches active customers in the bound QuickBooks company by name or email and returns searchWindow evidence. If complete=false, do not claim exhaustive results.",
+    description: "Searches active customers by a non-empty name/email text query. limit must be 1-100. Returns searchWindow evidence; if complete=false, do not claim exhaustive results. This is not an unfiltered list-all tool.",
     inputSchema: quickBooksSearchCustomersSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false },
   }, async (input) => scopedRead({
@@ -316,7 +332,7 @@ export function createQuickBooksMcpServer(
 
   server.registerTool("quickbooks_list_transactions", {
     title: "List QuickBooks accounting transactions",
-    description: "Lists bounded invoices, payments, purchases, bill payments, journal entries, credits, or sales receipts. Supports customer/vendor filtering for compatible transaction types and open_only for invoices.",
+    description: "Lists bounded invoices, payments, purchases, bill payments, journal entries, credits, or sales receipts. page_size must be 1-50; follow hasNextPage instead of increasing it beyond 50. Supports customer/vendor filtering for compatible transaction types and open_only for invoices.",
     inputSchema: quickBooksListTransactionsSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false },
   }, async (input) => scopedRead({
@@ -350,27 +366,29 @@ export function createQuickBooksMcpServer(
     action: () => service.runReportRead(actorId, input),
   }));
 
-  server.registerTool("quickbooks_hash_source_document", {
-    title: "Hash supplied accounting source text",
-    description: "Computes a SHA-256 text fingerprint from the exact UTF-8 text supplied by the Agent. This does not read or verify original PDF/image bytes, and it does not prove the identity of the uploaded file. Copy the returned 64-character sha256 and evidenceType exactly into quickbooks_prepare_supplier_bill. The text is limited to 256 KiB and is not stored by this QuickBooks MCP service; upstream host retention is outside this tool's control.",
-    inputSchema: quickBooksHashSourceDocumentSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false },
-  }, async (input) => scoped({
-    context,
-    requiredScope: "quickbooks.bill.prepare",
-    action: async () => service.hashSourceDocument(input),
-  }));
+  if (!accountingCases) {
+    server.registerTool("quickbooks_hash_source_document", {
+      title: "Hash supplied accounting source text",
+      description: "Computes a SHA-256 text fingerprint from the exact UTF-8 text supplied by the Agent. This does not read or verify original PDF/image bytes, and it does not prove the identity of the uploaded file. Copy the returned 64-character sha256 and evidenceType exactly into quickbooks_prepare_supplier_bill. The text is limited to 256 KiB and is not stored by this QuickBooks MCP service; upstream host retention is outside this tool's control.",
+      inputSchema: quickBooksHashSourceDocumentSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false },
+    }, async (input) => scoped({
+      context,
+      requiredScope: "quickbooks.bill.prepare",
+      action: async () => service.hashSourceDocument(input),
+    }));
 
-  server.registerTool("quickbooks_prepare_supplier_bill", {
-    title: "Prepare a QuickBooks supplier bill for review",
-    description: "Validates references and totals, checks both local pending requests and existing QuickBooks Bills for the same vendor document number, then creates a local review request only. It does not write to QuickBooks until a human approves outside Agent tools. Pass the current target_session_ref from quickbooks_resolve_target. For Agent-supplied text, first call quickbooks_hash_source_document and copy its sha256/evidenceType exactly. HOST_PROVIDED provenance additionally requires an opaque source_attestation_ref that the configured WorkStore verifier accepts; the Agent must never invent it. QuickBooks doc_number is limited to 21 characters: never silently truncate it; for a longer number omit doc_number, explain it in missing_doc_number_reason, and preserve the full original in memo. For NON/no-tax bills, use global_tax_calculation=NotApplicable, tax_total=0, and omit line tax_code_id; tax_code_id otherwise must be the numeric Id returned by quickbooks_list_tax_codes.",
-    inputSchema: quickBooksPrepareSupplierBillSchema,
-    annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
-  }, async (input) => scoped({
-    context,
-    requiredScope: "quickbooks.bill.prepare",
-    action: () => service.prepareSupplierBill(actorId, input),
-  }));
+    server.registerTool("quickbooks_prepare_supplier_bill", {
+      title: "Prepare a QuickBooks supplier bill for review",
+      description: "Validates references and totals, checks both local pending requests and existing QuickBooks Bills for the same vendor document number, then creates a local review request only. It does not write to QuickBooks until a human approves outside Agent tools. Pass the current target_session_ref from quickbooks_resolve_target. For Agent-supplied text, first call quickbooks_hash_source_document and copy its sha256/evidenceType exactly. HOST_PROVIDED provenance additionally requires an opaque source_attestation_ref that the configured WorkStore verifier accepts; the Agent must never invent it. QuickBooks doc_number is limited to 21 characters: never silently truncate it; for a longer number omit doc_number, explain it in missing_doc_number_reason, and preserve the full original in memo. For NON/no-tax bills, use global_tax_calculation=NotApplicable, tax_total=0, and omit line tax_code_id; tax_code_id otherwise must be the numeric Id returned by quickbooks_list_tax_codes.",
+      inputSchema: quickBooksPrepareSupplierBillSchema,
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
+    }, async (input) => scoped({
+      context,
+      requiredScope: "quickbooks.bill.prepare",
+      action: () => service.prepareSupplierBill(actorId, input),
+    }));
+  }
 
   server.registerTool("quickbooks_get_trial_balance", {
     title: "Get QuickBooks Trial Balance",
@@ -422,13 +440,13 @@ export function createQuickBooksMcpServer(
   if (accountingCases) {
     server.registerTool("quickbooks_prepare_accounting_case", {
       title: "Prepare a bounded QuickBooks Accounting Case",
-      description: "Compiles typed model-extracted or Agent-asserted facts into a versioned, exact-Company QuickBooks plan. It verifies submitted source-unit coverage, recomputes totals, resolves provider references server-side, stores immutable canonical operations, and performs no provider write.",
-      inputSchema: quickBooksPrepareAccountingCaseSchema,
+      description: "Accepts business-shaped source units and deterministically builds the strict internal typed Case; the Agent does not create fact ids, lineage, source links, or Provider ids. A residual Case can contain only UNSUPPORTED_EVENT, EVIDENCE, or CONTROL_FINDING facts and compile to zero Provider operations. The server verifies coverage, recomputes totals, resolves QuickBooks references, stores immutable canonical operations, and performs no Provider write.",
+      inputSchema: quickBooksAccountingCaseBusinessIntakeSchema,
       annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
     }, async (input) => scoped({
       context,
       requiredScope: "quickbooks.mutation.prepare",
-      action: () => accountingCases.prepare(context, input),
+      action: () => accountingCases.prepare(context, normalizeQuickBooksAccountingCaseBusinessIntake(input)),
     }));
 
     server.registerTool("quickbooks_execute_accounting_case", {

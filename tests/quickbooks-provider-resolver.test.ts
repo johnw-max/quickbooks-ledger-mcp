@@ -77,4 +77,27 @@ describe("QuickBooks provider resolver connection management", () => {
       code: "FORBIDDEN",
     });
   });
+
+  it("reports stored provider-scope denial without inventing an Intuit role", async () => {
+    const connection = {
+      connectionId: "qbc-a",
+      actorId: "actor-a",
+      realmId: "934145",
+      companyName: "Sandbox Company A",
+      grantedScopes: [],
+      tokenCiphertext: "not-used",
+      accessTokenExpiresAt: new Date("2026-08-12T13:00:00.000Z"),
+      refreshTokenExpiresAt: new Date("2026-11-12T13:00:00.000Z"),
+      refreshVersion: 0,
+      status: "ACTIVE" as const,
+      createdAt: new Date("2026-08-12T12:00:00.000Z"),
+      updatedAt: new Date("2026-08-12T12:00:00.000Z"),
+    };
+    const manager = { resolveSingleConnection: vi.fn().mockResolvedValue(connection) } as unknown as QuickBooksClientManager;
+    const resolver = new ServerBoundQuickBooksProviderResolver({ manager });
+
+    await expect(resolver.resolve("actor-a")).resolves.toMatchObject({
+      providerAccessDenyReasons: ["INTUIT_ACCOUNTING_SCOPE_MISSING"],
+    });
+  });
 });

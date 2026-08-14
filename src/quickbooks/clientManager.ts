@@ -22,6 +22,17 @@ interface StoredQuickBooksTokenSet {
   tokenType: string;
 }
 
+export const QUICKBOOKS_PROVIDER_ACCOUNTING_SCOPE_DENY_REASON = "INTUIT_ACCOUNTING_SCOPE_MISSING";
+
+/** Intuit OAuth exposes scopes, not a dynamic accountant/controller role model. */
+export function quickBooksProviderAccessDenyReasons(
+  connection: Pick<QuickBooksConnection, "grantedScopes">,
+): string[] {
+  return connection.grantedScopes.includes(QUICKBOOKS_ACCOUNTING_SCOPE)
+    ? []
+    : [QUICKBOOKS_PROVIDER_ACCOUNTING_SCOPE_DENY_REASON];
+}
+
 export interface QuickBooksClientManagerConfig extends QuickBooksOAuthConfig {
   minorVersion?: number;
   request?: typeof fetch;
@@ -206,6 +217,7 @@ export class QuickBooksClientManager {
   ): Promise<T> {
     return this.#mutex.run(expectedConnectionId, async () => {
       let connection = await this.resolveBoundConnection(actorId, expectedConnectionId, expectedRealmId);
+      this.#assertProviderAccountingScope(connection);
       let currentConnection: QuickBooksConnection = connection;
       let token = this.#decrypt(currentConnection);
       if (token.accessTokenExpiresAt.getTime() <= Date.now() + 60_000) {
@@ -219,6 +231,18 @@ export class QuickBooksClientManager {
         },
       };
       return action(this.#provider(currentConnection.realmId, tokenSource), currentConnection);
+    });
+  }
+
+  #assertProviderAccountingScope(connection: QuickBooksConnection): void {
+    const denyReasons = quickBooksProviderAccessDenyReasons(connection);
+    if (denyReasons.length === 0) return;
+    throw new AppError("FORBIDDEN", "The stored QuickBooks connection does not grant the Intuit accounting scope.", {
+      httpStatus: 403,
+      details: {
+        failureLayer: "PROVIDER_AUTHORIZATION",
+        denyReasons,
+      },
     });
   }
 

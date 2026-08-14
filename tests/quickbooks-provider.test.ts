@@ -3,6 +3,11 @@ import { AppError } from "../src/errors.js";
 import type { QuickBooksApiClient, QuickBooksRequestOptions } from "../src/providers/quickbooksClient.js";
 import { QuickBooksAccountingProvider } from "../src/providers/quickbooksProvider.js";
 import type { QuickBooksSupplierBillInput } from "../src/providers/quickbooksTypes.js";
+import type { QuickBooksProviderMutationCommand } from "../src/security/quickBooksProviderWritePermit.js";
+import {
+  issueQuickBooksProviderWriteTestPermit,
+  issueQuickBooksSupplierBillProviderWriteTestPermit,
+} from "./helpers/quickBooksProviderWritePermit.js";
 
 const input: QuickBooksSupplierBillInput = {
   requestId: "zc.bill.case-001",
@@ -75,6 +80,20 @@ function providerWithRequest(readback = fixtureBill()) {
   });
   const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
   return { provider: new QuickBooksAccountingProvider(client), request };
+}
+
+function executeProviderMutation(
+  provider: QuickBooksAccountingProvider,
+  command: QuickBooksProviderMutationCommand,
+  recordProviderOutcome: (outcome: { providerEntityId: string; receipt: Record<string, unknown> }) => Promise<void> = async () => undefined,
+  markProviderDispatch: () => Promise<void> = async () => undefined,
+) {
+  return provider.executeMutation(
+    command,
+    issueQuickBooksProviderWriteTestPermit(command),
+    recordProviderOutcome,
+    markProviderDispatch,
+  );
 }
 
 describe("QuickBooks accounting provider", () => {
@@ -224,6 +243,26 @@ describe("QuickBooks accounting provider", () => {
     expect(query).toHaveBeenCalledWith("SELECT * FROM Bill WHERE DocNumber = 'inv-001' MAXRESULTS 100");
   });
 
+  it("resolves an exact TaxRate and checks document duplicates by entity, counterparty and DocNumber", async () => {
+    const request = vi.fn().mockResolvedValueOnce({ TaxRate: { Id: "904", Name: "GST 9%", RateValue: 9, Active: true } });
+    const query = vi.fn();
+    const client = { realmId: "934145", request, query } as unknown as QuickBooksApiClient;
+    const provider = new QuickBooksAccountingProvider(client);
+    await expect(provider.getTaxRate("904")).resolves.toMatchObject({ Id: "904", RateValue: 9 });
+    expect(request).toHaveBeenCalledWith("/taxrate/904");
+
+    vi.mocked(query).mockResolvedValueOnce({ QueryResponse: { Invoice: [
+      { Id: "501", DocNumber: " inv-1001 ", CustomerRef: { value: "12" }, TxnDate: "2026-08-10", TotalAmt: 109 },
+      { Id: "502", DocNumber: "INV-1001", CustomerRef: { value: "another" }, TotalAmt: 109 },
+    ] } });
+    await expect(provider.findExistingAccountingDocuments({
+      entity: "Invoice", counterpartyId: "12", docNumber: "INV-1001",
+    })).resolves.toEqual([{
+      entity: "Invoice", providerEntityId: "501", counterpartyId: "12", docNumber: " inv-1001 ",
+      txnDate: "2026-08-10", total: "109.00",
+    }]);
+  });
+
   it("continues vendor search beyond the first 1000 records and matches words in either order", async () => {
     const firstPage = Array.from({ length: 1_000 }, (_, index) => ({ Id: String(index + 1), DisplayName: `Vendor ${index + 1}` }));
     const query = vi.fn(async (statement: string) => {
@@ -271,7 +310,10 @@ describe("QuickBooks accounting provider", () => {
   it("validates references, writes once with requestid, and returns exact verified readback", async () => {
     const { provider, request } = providerWithRequest();
 
-    const result = await provider.createApprovedSupplierBill(input);
+    const result = await provider.createApprovedSupplierBill(
+      input,
+      issueQuickBooksSupplierBillProviderWriteTestPermit(input),
+    );
 
     expect(result.bill).toMatchObject({
       billId: "145",
@@ -303,21 +345,30 @@ describe("QuickBooks accounting provider", () => {
   });
 
   it("executes a generic create once and verifies the exact provider Id by readback", async () => {
+    const sequence: string[] = [];
     const request = vi.fn(async (path: string, options: QuickBooksRequestOptions = {}) => {
       if (path === "/customer" && options.method === "POST") {
+        sequence.push("provider-write");
         return { Customer: { Id: "901", DisplayName: "Harbour Kitchen Pte Ltd" }, time: "2026-08-12T00:00:00Z" };
       }
-      if (path === "/customer/901") return { Customer: { Id: "901", SyncToken: "0", DisplayName: "Harbour Kitchen Pte Ltd" } };
+      if (path === "/customer/901") {
+        sequence.push("exact-readback");
+        return { Customer: { Id: "901", SyncToken: "0", DisplayName: "Harbour Kitchen Pte Ltd" } };
+      }
       throw new Error(`Unexpected request ${path}`);
     });
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await expect(provider.executeMutation({
+    await expect(executeProviderMutation(provider, {
       entity: "Customer",
       operation: "CREATE",
       payload: { DisplayName: "Harbour Kitchen Pte Ltd" },
       requestId: "zc.customer.001",
-    })).resolves.toMatchObject({
+    }, async ({ providerEntityId, receipt }) => {
+      sequence.push("durable-provider-outcome");
+      expect(providerEntityId).toBe("901");
+      expect(receipt).toMatchObject({ requestId: "zc.customer.001", outcome: "PROVIDER_RESPONSE_ACCEPTED" });
+    }, async () => { sequence.push("durable-dispatch-marker"); })).resolves.toMatchObject({
       providerEntityId: "901",
       receipt: { verified: true, verification: "EXACT_ID_READBACK" },
       readback: { Id: "901", DisplayName: "Harbour Kitchen Pte Ltd" },
@@ -329,6 +380,33 @@ describe("QuickBooks accounting provider", () => {
       body: { DisplayName: "Harbour Kitchen Pte Ltd" },
     }));
     expect(request).toHaveBeenNthCalledWith(2, "/customer/901");
+    expect(sequence).toEqual([
+      "durable-dispatch-marker",
+      "provider-write",
+      "durable-provider-outcome",
+      "exact-readback",
+    ]);
+  });
+
+  it("recovers a mutation with one exact-Id GET and never issues another Provider write", async () => {
+    const request = vi.fn(async (path: string, options?: QuickBooksRequestOptions) => {
+      expect(options?.method).not.toBe("POST");
+      if (path === "/customer/901") {
+        return { Customer: { Id: "901", SyncToken: "0", DisplayName: "Harbour Kitchen Pte Ltd" } };
+      }
+      throw new Error(`Unexpected recovery request ${path}`);
+    });
+    const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
+    const provider = new QuickBooksAccountingProvider(client);
+    await expect(provider.recoverMutation({
+      entity: "Customer", operation: "CREATE", payload: { DisplayName: "Harbour Kitchen Pte Ltd" },
+      requestId: "zc.customer.001",
+    }, "901")).resolves.toMatchObject({
+      providerEntityId: "901", receipt: { verification: "RECOVERY_EXACT_ID_READBACK", recoveryOnly: true },
+      readback: { Id: "901", DisplayName: "Harbour Kitchen Pte Ltd" },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("/customer/901");
   });
 
   it("binds update Id and SyncToken outside the Agent payload and verifies readback", async () => {
@@ -342,7 +420,7 @@ describe("QuickBooks accounting provider", () => {
     });
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await provider.executeMutation({
+    await executeProviderMutation(provider, {
       entity: "Vendor",
       operation: "UPDATE",
       targetId: "77",
@@ -370,11 +448,41 @@ describe("QuickBooks accounting provider", () => {
     });
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await expect(provider.executeMutation({
+    await expect(executeProviderMutation(provider, {
       entity: "Invoice",
       operation: "CREATE",
       payload: { CustomerRef: { value: "12" }, TotalAmt: 100, Line: [{ Amount: 100 }] },
       requestId: "zc.invoice.strict.001",
+    })).rejects.toMatchObject({ code: "READBACK_MISMATCH" });
+  });
+
+  it("rejects a tax-excluded readback whose total omits the approved tax", async () => {
+    const request = vi.fn(async (path: string, options: QuickBooksRequestOptions = {}) => {
+      if (path === "/invoice" && options.method === "POST") return { Invoice: { Id: "903" } };
+      if (path === "/invoice/903") return {
+        Invoice: {
+          Id: "903",
+          CustomerRef: { value: "12" },
+          GlobalTaxCalculation: "TaxExcluded",
+          TxnTaxDetail: { TotalTax: 9 },
+          TotalAmt: 100,
+          Line: [{ Amount: 100 }],
+        },
+      };
+      throw new Error(`Unexpected request ${path}`);
+    });
+    const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
+    const provider = new QuickBooksAccountingProvider(client);
+    await expect(executeProviderMutation(provider, {
+      entity: "Invoice",
+      operation: "CREATE",
+      payload: {
+        CustomerRef: { value: "12" },
+        GlobalTaxCalculation: "TaxExcluded",
+        TxnTaxDetail: { TotalTax: 9 },
+        Line: [{ Amount: 100 }],
+      },
+      requestId: "zc.invoice.tax-total.001",
     })).rejects.toMatchObject({ code: "READBACK_MISMATCH" });
   });
 
@@ -390,7 +498,7 @@ describe("QuickBooks accounting provider", () => {
     });
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await expect(provider.executeMutation({
+    await expect(executeProviderMutation(provider, {
       entity: "Invoice",
       operation: "DELETE",
       targetId: "88",
@@ -424,7 +532,7 @@ describe("QuickBooks accounting provider", () => {
     });
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await expect(provider.executeMutation({
+    await expect(executeProviderMutation(provider, {
       entity: "Invoice",
       operation: "DELETE",
       targetId: "89",
@@ -456,7 +564,7 @@ describe("QuickBooks accounting provider", () => {
     });
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await expect(provider.executeMutation({
+    await expect(executeProviderMutation(provider, {
       entity: "Customer",
       operation: "DELETE",
       targetId: "91",
@@ -477,7 +585,7 @@ describe("QuickBooks accounting provider", () => {
     const request = vi.fn(async () => ({ Vendor: { Id: "77", SyncToken: "4", DisplayName: "Changed elsewhere" } }));
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await expect(provider.executeMutation({
+    await expect(executeProviderMutation(provider, {
       entity: "Vendor",
       operation: "UPDATE",
       targetId: "77",
@@ -502,7 +610,7 @@ describe("QuickBooks accounting provider", () => {
     });
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await expect(provider.executeMutation({
+    await expect(executeProviderMutation(provider, {
       entity: "Attachable",
       operation: "CREATE",
       payload: {
@@ -542,7 +650,7 @@ describe("QuickBooks accounting provider", () => {
     });
     const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
     const provider = new QuickBooksAccountingProvider(client);
-    await expect(provider.executeMutation({
+    await expect(executeProviderMutation(provider, {
       entity: "Attachable",
       operation: "UPDATE",
       targetId: "501",
@@ -558,7 +666,10 @@ describe("QuickBooks accounting provider", () => {
   it("rejects a readback that lost the source-document marker", async () => {
     const { provider } = providerWithRequest(fixtureBill("Approved supplier invoice"));
 
-    await expect(provider.createApprovedSupplierBill(input)).rejects.toMatchObject({
+    await expect(provider.createApprovedSupplierBill(
+      input,
+      issueQuickBooksSupplierBillProviderWriteTestPermit(input),
+    )).rejects.toMatchObject({
       code: "READBACK_MISMATCH",
     });
   });
@@ -568,7 +679,10 @@ describe("QuickBooks accounting provider", () => {
     changed.CurrencyRef = { value: "USD" };
     const { provider } = providerWithRequest(changed);
 
-    await expect(provider.createApprovedSupplierBill(input)).rejects.toMatchObject({
+    await expect(provider.createApprovedSupplierBill(
+      input,
+      issueQuickBooksSupplierBillProviderWriteTestPermit(input),
+    )).rejects.toMatchObject({
       code: "READBACK_MISMATCH",
       message: expect.stringContaining("currency"),
     });
@@ -577,7 +691,11 @@ describe("QuickBooks accounting provider", () => {
   it("does not call QuickBooks when local bill validation fails", async () => {
     const { provider, request } = providerWithRequest();
 
-    await expect(provider.createApprovedSupplierBill({ ...input, sourceSha256: "not-a-hash" }))
+    const invalid = { ...input, sourceSha256: "not-a-hash" };
+    await expect(provider.createApprovedSupplierBill(
+      invalid,
+      issueQuickBooksSupplierBillProviderWriteTestPermit(invalid),
+    ))
       .rejects.toMatchObject({ code: "VALIDATION_FAILED" });
     expect(request).not.toHaveBeenCalled();
   });

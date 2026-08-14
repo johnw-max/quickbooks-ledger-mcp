@@ -1,7 +1,12 @@
 import type { Pool, PoolClient } from "pg";
 import { AppError } from "../errors.js";
+import { hashObject } from "../security/hash.js";
 import type { QuickBooksAccountingCaseRecord, QuickBooksCaseBinding, QuickBooksCaseOperationRecord } from "./accountingCase.js";
-import { initialQuickBooksCaseOperations, type QuickBooksAccountingCaseRepository } from "./accountingCaseRepository.js";
+import {
+  initialQuickBooksCaseOperations,
+  quickBooksCaseBindingKey,
+  type QuickBooksAccountingCaseRepository,
+} from "./accountingCaseRepository.js";
 
 const columns = `workspace_id, subject_type, subject_id, agent_id, installation_id, binding_id,
   binding_revision, connection_id, realm_id`;
@@ -25,7 +30,67 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
       const result = await this.pool.query<{ ready: boolean }>(`SELECT
         to_regclass('public.quickbooks_accounting_cases') IS NOT NULL
         AND to_regclass('public.quickbooks_accounting_case_operations') IS NOT NULL
-        AND EXISTS (SELECT 1 FROM schema_migrations WHERE version='027_quickbooks_accounting_case_foundation.sql')
+        AND EXISTS (SELECT 1 FROM schema_migrations WHERE version='029_quickbooks_accounting_case_evidence_linkage.sql')
+        AND EXISTS (SELECT 1 FROM schema_migrations WHERE version='031_quickbooks_accounting_case_preparation_identity.sql')
+        AND EXISTS (SELECT 1 FROM schema_migrations WHERE version='032_quickbooks_cross_case_authorization_causality.sql')
+        AND EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='quickbooks_accounting_case_operations'
+            AND column_name='preparation_payload_hash' AND data_type='text'
+        )
+        AND EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='quickbooks_accounting_case_operations'
+            AND column_name='operation_source_evidence_hash' AND data_type='text'
+        )
+        AND EXISTS (
+          SELECT 1 FROM pg_constraint constraint_meta
+          WHERE constraint_meta.conrelid='public.quickbooks_accounting_case_operations'::regclass
+            AND constraint_meta.conname='quickbooks_accounting_case_preparation_fk'
+            AND constraint_meta.contype='f' AND constraint_meta.convalidated
+        )
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger trigger_meta
+          WHERE trigger_meta.tgrelid='public.quickbooks_accounting_case_operations'::regclass
+            AND trigger_meta.tgname='quickbooks_accounting_case_preparation_link'
+            AND NOT trigger_meta.tgisinternal AND trigger_meta.tgenabled <> 'D'
+        )
+        AND EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='quickbooks_accounting_case_operations'
+            AND column_name='authorization_evidence' AND data_type='jsonb'
+        )
+        AND EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='quickbooks_accounting_case_operations'
+            AND column_name='reuse_evidence_receipt' AND data_type='jsonb'
+        )
+        AND EXISTS (
+          SELECT 1 FROM pg_trigger trigger_meta
+          WHERE trigger_meta.tgrelid='public.quickbooks_accounting_case_operations'::regclass
+            AND trigger_meta.tgname='quickbooks_accounting_case_mutation_causality'
+            AND NOT trigger_meta.tgisinternal AND trigger_meta.tgenabled <> 'D'
+        )
+        AND EXISTS (
+          SELECT 1 FROM pg_class index_class
+          JOIN pg_index index_meta ON index_meta.indexrelid=index_class.oid
+          WHERE index_class.relname='quickbooks_accounting_case_operation_preparation_idx'
+            AND index_meta.indrelid='public.quickbooks_accounting_case_operations'::regclass
+            AND NOT index_meta.indisunique AND index_meta.indisvalid AND index_meta.indisready
+        )
+        AND EXISTS (
+          SELECT 1 FROM pg_class index_class
+          JOIN pg_index index_meta ON index_meta.indexrelid=index_class.oid
+          WHERE index_class.relname='quickbooks_accounting_case_operation_mutation_idx'
+            AND index_meta.indrelid='public.quickbooks_accounting_case_operations'::regclass
+            AND NOT index_meta.indisunique AND index_meta.indisvalid AND index_meta.indisready
+        )
+        AND to_regclass('public.quickbooks_accounting_case_operation_preparation_uq') IS NULL
+        AND to_regclass('public.quickbooks_accounting_case_operation_mutation_uq') IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM quickbooks_accounting_case_operations
+          WHERE state='READBACK_VERIFIED' AND authorization_evidence IS NULL
+        )
         AS ready`);
       return result.rows[0]?.ready === true;
     } catch { return false; }
@@ -35,6 +100,16 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      // SELECT ... FOR UPDATE cannot lock a Case that has no rows yet. A
+      // transaction-scoped advisory lock closes that first-version race and
+      // makes expected_version a real compare-and-swap boundary.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        // The in-memory repository key deliberately uses NUL separators, but
+        // PostgreSQL text values cannot contain NUL bytes. Hash the exact key
+        // before passing it to hashtextextended so the advisory-lock identity
+        // remains deterministic without emitting an invalid UTF-8 string.
+        hashObject({ caseBindingKey: quickBooksCaseBindingKey(input.binding, input.compiled.caseId) }),
+      ]);
       const current = await client.query<{ version: number; compiled_plan_hash: string; state: QuickBooksAccountingCaseRecord["state"] }>(
         `SELECT version, compiled_plan_hash, state FROM quickbooks_accounting_cases WHERE ${whereBinding()} AND case_id=$10
          ORDER BY version DESC LIMIT 1 FOR UPDATE`, [...bindingValues(input.binding), input.compiled.caseId]);
@@ -102,20 +177,28 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
 
   async updateOperation(input: Parameters<QuickBooksAccountingCaseRepository["updateOperation"]>[0]) {
     const result = await this.pool.query(`UPDATE quickbooks_accounting_case_operations SET
-      state=$14,preparation_id=COALESCE($15,preparation_id),mutation_request_id=COALESCE($16,mutation_request_id),
-      provider_entity_id=COALESCE($17,provider_entity_id),authorization_receipt=COALESCE($18::jsonb,authorization_receipt),
-      write_receipt=COALESCE($19::jsonb,write_receipt),readback=COALESCE($20::jsonb,readback),
-      error_receipt=COALESCE($21::jsonb,error_receipt),updated_at=$22
+      state=$14,preparation_id=COALESCE($15,preparation_id),
+      preparation_payload_hash=COALESCE($16,preparation_payload_hash),
+      operation_source_evidence_hash=COALESCE($17,operation_source_evidence_hash),
+      mutation_request_id=COALESCE($18,mutation_request_id),provider_entity_id=COALESCE($19,provider_entity_id),
+      authorization_receipt=COALESCE($20::jsonb,authorization_receipt),
+      authorization_evidence=COALESCE($21::jsonb,authorization_evidence),
+      reuse_evidence_receipt=COALESCE($22::jsonb,reuse_evidence_receipt),
+      write_receipt=COALESCE($23::jsonb,write_receipt),
+      readback=COALESCE($24::jsonb,readback),error_receipt=COALESCE($25::jsonb,error_receipt),updated_at=$26
       WHERE ${whereBinding()} AND case_id=$10 AND case_version=$11 AND operation_id=$12 AND state=ANY($13::text[])
       AND EXISTS (SELECT 1 FROM quickbooks_accounting_cases case_head
         WHERE case_head.workspace_id=$1 AND case_head.subject_type=$2 AND case_head.subject_id=$3
           AND case_head.agent_id=$4 AND case_head.installation_id=$5 AND case_head.binding_id=$6
           AND case_head.binding_revision=$7 AND case_head.connection_id=$8 AND case_head.realm_id=$9
-          AND case_head.case_id=$10 AND case_head.version=$11 AND case_head.state='EXECUTING'
-          AND case_head.execution_request_id=$23)
+          AND case_head.case_id=$10 AND case_head.version=$11 AND case_head.state IN ('EXECUTING','RECOVERY_REQUIRED')
+          AND case_head.execution_request_id=$27)
       RETURNING operation_id`, [...bindingValues(input.binding), input.caseId, input.version, input.operationId,
-        input.expectedStates, input.state, input.preparationId ?? null, input.mutationRequestId ?? null,
-        input.providerEntityId ?? null, input.authorizationReceipt ? JSON.stringify(input.authorizationReceipt) : null,
+        input.expectedStates, input.state, input.preparationId ?? null, input.preparationPayloadHash ?? null,
+        input.operationSourceEvidenceHash ?? null, input.mutationRequestId ?? null, input.providerEntityId ?? null,
+        input.authorizationReceipt ? JSON.stringify(input.authorizationReceipt) : null,
+        input.authorizationEvidence ? JSON.stringify(input.authorizationEvidence) : null,
+        input.reuseEvidenceReceipt ? JSON.stringify(input.reuseEvidenceReceipt) : null,
         input.writeReceipt ? JSON.stringify(input.writeReceipt) : null, input.readback ? JSON.stringify(input.readback) : null,
         input.errorReceipt ? JSON.stringify(input.errorReceipt) : null, input.now, input.requestId]);
     if (result.rowCount !== 1) throw new AppError("CONFLICT", "Accounting Case operation transition failed.", { httpStatus: 409 });
@@ -154,15 +237,20 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
       [...bindingValues(binding), caseId, version]);
     const row = head.rows[0];
     if (!row) return undefined;
-    if (row.target_session_hash !== binding.targetSessionHash) return undefined;
     const ops = await queryable.query<any>(`SELECT * FROM quickbooks_accounting_case_operations WHERE ${whereBinding()}
       AND case_id=$10 AND case_version=$11 ORDER BY operation_id`, [...bindingValues(binding), caseId, version]);
     const operations: QuickBooksCaseOperationRecord[] = ops.rows.map((entry: any) => ({
       operation: entry.operation_json, state: entry.state,
       ...(entry.preparation_id ? { preparationId: entry.preparation_id } : {}),
+      ...(entry.preparation_payload_hash ? { preparationPayloadHash: entry.preparation_payload_hash } : {}),
+      ...(entry.operation_source_evidence_hash
+        ? { operationSourceEvidenceHash: entry.operation_source_evidence_hash }
+        : {}),
       ...(entry.mutation_request_id ? { mutationRequestId: entry.mutation_request_id } : {}),
       ...(entry.provider_entity_id ? { providerEntityId: entry.provider_entity_id } : {}),
       ...(entry.authorization_receipt ? { authorizationReceipt: entry.authorization_receipt } : {}),
+      ...(entry.authorization_evidence ? { authorizationEvidence: entry.authorization_evidence } : {}),
+      ...(entry.reuse_evidence_receipt ? { reuseEvidenceReceipt: entry.reuse_evidence_receipt } : {}),
       ...(entry.write_receipt ? { writeReceipt: entry.write_receipt } : {}),
       ...(entry.readback ? { readback: entry.readback } : {}),
       ...(entry.error_receipt ? { errorReceipt: entry.error_receipt } : {}),

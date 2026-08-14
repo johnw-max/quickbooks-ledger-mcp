@@ -118,6 +118,27 @@ export type LedgerAutonomousAuthorizationDecision = Readonly<
     }
 >;
 
+/**
+ * A reuse decision proves that the current Case may reference an already
+ * authorized durable mutation. It intentionally has no authorization receipt:
+ * only the decision that preceded the original Provider dispatch may own one.
+ */
+export type LedgerAutonomousReuseDecision = Readonly<
+  | {
+      allowed: false;
+      denyReasons: readonly LedgerAutonomousDenyReason[];
+      providerAccessDenyReasons: readonly string[];
+      validationReasonCodes: readonly string[];
+    }
+  | {
+      allowed: true;
+      denyReasons: readonly LedgerAutonomousDenyReason[];
+      providerAccessDenyReasons: readonly string[];
+      validationReasonCodes: readonly string[];
+      delegation: LedgerStandingDelegation;
+    }
+>;
+
 function exactNonEmpty(value: string | undefined): value is string {
   return typeof value === "string" && value.length > 0 && value === value.trim();
 }
@@ -172,10 +193,9 @@ function buildReceipt(
   return Object.freeze({ ...unsigned, receiptHash: hashObject(unsigned) });
 }
 
-/** Provider-neutral, fail-closed authority intersection for one ledger write. */
-export function evaluateAutonomousLedgerWrite(
+function evaluateAutonomousLedgerAuthority(
   input: EvaluateAutonomousLedgerWriteInput,
-): LedgerAutonomousAuthorizationDecision {
+): LedgerAutonomousReuseDecision {
   const denyReasons: LedgerAutonomousDenyReason[] = [];
   if (!input.writeKillSwitchEnabled) denyReasons.push("WRITE_KILL_SWITCH_DISABLED");
   if (!input.staticActionReleased) denyReasons.push("STATIC_ACTION_NOT_RELEASED");
@@ -222,6 +242,39 @@ export function evaluateAutonomousLedgerWrite(
     providerAccessDenyReasons: Object.freeze([]),
     validationReasonCodes: Object.freeze([]),
     delegation,
-    receipt: buildReceipt(input as EvaluateAutonomousLedgerWriteInput & { target: LedgerOperationTarget }, delegation),
+  });
+}
+
+/** Evaluate current authority for a read-only reference to an existing write. */
+export function evaluateAutonomousLedgerReuse(
+  input: EvaluateAutonomousLedgerWriteInput,
+): LedgerAutonomousReuseDecision {
+  return evaluateAutonomousLedgerAuthority(input);
+}
+
+/** Provider-neutral, fail-closed authority intersection for one ledger write. */
+export function evaluateAutonomousLedgerWrite(
+  input: EvaluateAutonomousLedgerWriteInput,
+): LedgerAutonomousAuthorizationDecision {
+  const authority = evaluateAutonomousLedgerAuthority(input);
+  if (!authority.allowed) return authority;
+  if (!input.target) {
+    return Object.freeze({
+      allowed: false,
+      denyReasons: Object.freeze(["TARGET_SESSION_REQUIRED"] as LedgerAutonomousDenyReason[]),
+      providerAccessDenyReasons: Object.freeze([...input.providerAccessDenyReasons]),
+      validationReasonCodes: Object.freeze([...(input.validation.reasonCodes ?? [])]),
+    });
+  }
+  return Object.freeze({
+    allowed: true,
+    denyReasons: Object.freeze([]),
+    providerAccessDenyReasons: Object.freeze([]),
+    validationReasonCodes: Object.freeze([]),
+    delegation: authority.delegation,
+    receipt: buildReceipt(
+      input as EvaluateAutonomousLedgerWriteInput & { target: LedgerOperationTarget },
+      authority.delegation,
+    ),
   });
 }

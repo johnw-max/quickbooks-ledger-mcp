@@ -228,11 +228,14 @@ describe("QuickBooks controlled workflow", () => {
       idempotentReplay: false,
     });
     expect(createApprovedSupplierBill).toHaveBeenCalledOnce();
-    expect(createApprovedSupplierBill).toHaveBeenCalledWith(expect.objectContaining({
-      requestId: stored?.providerRequestId,
-      sourceSha256: "a".repeat(64),
-      lines: [{ accountId: "7", amount: "100.00", description: "Subscription" }],
-    }));
+    expect(createApprovedSupplierBill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: stored?.providerRequestId,
+        sourceSha256: "a".repeat(64),
+        lines: [{ accountId: "7", amount: "100.00", description: "Subscription" }],
+      }),
+      expect.objectContaining({}),
+    );
 
     const replay = await service.approveAndPost({
       actorId: "actor-a",
@@ -286,9 +289,12 @@ describe("QuickBooks controlled workflow", () => {
     const { service } = setup();
     await service.prepareSupplierBill("actor-a", toolInput);
 
+    const [firstLine] = toolInput.lines;
+    if (!firstLine) throw new Error("test fixture requires one bill line");
+
     await expect(service.prepareSupplierBill("actor-a", {
       ...toolInput,
-      lines: [{ ...toolInput.lines[0], amount: "101.00" }],
+      lines: [{ ...firstLine, amount: "101.00" }],
     })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 

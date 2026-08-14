@@ -4,6 +4,7 @@ import type {
   QuickBooksBillListInput,
   QuickBooksBillListResult,
   QuickBooksExistingBillMatch,
+  QuickBooksExistingDocumentMatch,
   QuickBooksReferenceValidationResult,
   QuickBooksSearchResult,
 } from "../providers/quickbooksProvider.js";
@@ -22,9 +23,15 @@ import type {
   QuickBooksItem,
   QuickBooksSupplierBillInput,
   QuickBooksTaxCode,
+  QuickBooksTaxRate,
   QuickBooksVendor,
 } from "../providers/quickbooksTypes.js";
 import { hashObject, safeEqual, sha256 } from "../security/hash.js";
+import type {
+  QuickBooksProviderMutationCommand,
+  QuickBooksProviderWritePermit,
+} from "../security/quickBooksProviderWritePermit.js";
+import { issueQuickBooksSupplierBillProviderWritePermit } from "../security/quickBooksProviderWritePermit.js";
 import type { QuickBooksPreparedPayload, QuickBooksPostingRequest } from "./models.js";
 import type { QuickBooksPostingRepository } from "./repository.js";
 import type {
@@ -39,10 +46,7 @@ import type {
   QuickBooksRunReportInput,
   QuickBooksTrialBalanceInput,
 } from "./schemas.js";
-import type {
-  QuickBooksWritableEntity,
-  QuickBooksWriteOperation,
-} from "./writePolicy.js";
+import type { QuickBooksWritableEntity } from "./writePolicy.js";
 import {
   verifyQuickBooksSourceAttestation,
   type QuickBooksSourceAttestationVerifier,
@@ -66,6 +70,8 @@ export interface ResolvedQuickBooksProvider {
   connectionRefSafe: string;
   boundTargetRefSafe: string;
   bindingRevision: string;
+  /** Provider OAuth deny reasons checked before autonomous authorization. Intuit does not supply dynamic roles. */
+  providerAccessDenyReasons?: readonly string[];
   targetSessionId?: string;
   targetSessionExpiresAt?: Date;
   provider: QuickBooksProviderCapabilities;
@@ -84,6 +90,7 @@ export interface QuickBooksProviderCapabilities {
   getCompanyContext(): Promise<QuickBooksCompanyContext>;
   listAccounts(): Promise<QuickBooksAccount[]>;
   listTaxCodes(): Promise<QuickBooksTaxCode[]>;
+  getTaxRate(taxRateId: string): Promise<QuickBooksTaxRate>;
   searchVendors(search: string, limit?: number): Promise<QuickBooksSearchResult<QuickBooksVendor>>;
   searchCustomers(search: string, limit?: number): Promise<QuickBooksSearchResult<QuickBooksCustomer>>;
   listItems(): Promise<QuickBooksItem[]>;
@@ -93,21 +100,32 @@ export interface QuickBooksProviderCapabilities {
   listBills(input?: QuickBooksBillListInput): Promise<QuickBooksBillListResult>;
   getBill(billId: string): Promise<QuickBooksBillSnapshot>;
   findExistingSupplierBills(input: { vendorId: string; docNumber: string }): Promise<QuickBooksExistingBillMatch[]>;
+  findExistingAccountingDocuments(input: {
+    entity: QuickBooksExistingDocumentMatch["entity"];
+    counterpartyId: string;
+    docNumber: string;
+  }): Promise<QuickBooksExistingDocumentMatch[]>;
   validateSupplierBill(input: QuickBooksSupplierBillInput): Promise<QuickBooksReferenceValidationResult>;
-  createApprovedSupplierBill(input: QuickBooksSupplierBillInput): Promise<{
+  createApprovedSupplierBill(input: QuickBooksSupplierBillInput, permit: QuickBooksProviderWritePermit): Promise<{
     bill: QuickBooksBillSnapshot;
     receipt: Record<string, unknown>;
   }>;
   getTrialBalance(date?: string): Promise<Record<string, unknown>>;
   getMutationTarget(entity: QuickBooksWritableEntity, targetId: string): Promise<Record<string, unknown>>;
-  executeMutation(input: {
-    entity: QuickBooksWritableEntity;
-    operation: QuickBooksWriteOperation;
-    payload: Record<string, unknown>;
-    targetId?: string;
-    syncToken?: string;
-    requestId: string;
-  }): Promise<{
+  executeMutation(
+    input: QuickBooksProviderMutationCommand,
+    permit: QuickBooksProviderWritePermit,
+    recordProviderOutcome: (outcome: {
+      providerEntityId: string;
+      receipt: Record<string, unknown>;
+    }) => Promise<void>,
+    markProviderDispatch: () => Promise<void>,
+  ): Promise<{
+    providerEntityId: string;
+    receipt: Record<string, unknown>;
+    readback: Record<string, unknown>;
+  }>;
+  recoverMutation(input: QuickBooksProviderMutationCommand, providerEntityId: string): Promise<{
     providerEntityId: string;
     receipt: Record<string, unknown>;
     readback: Record<string, unknown>;
@@ -626,8 +644,12 @@ export class QuickBooksWorkflowService {
     }
 
     try {
+      const providerWritePermit = issueQuickBooksSupplierBillProviderWritePermit({
+        claimedPosting: claim.posting,
+      });
       const written = await resolved.provider.createApprovedSupplierBill(
         providerBillInput(claim.posting.payload, claim.posting.providerRequestId),
+        providerWritePermit,
       );
       const completed = await this.#repository.completeVerified({
         postingRequestId: claim.posting.postingRequestId,

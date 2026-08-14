@@ -16,9 +16,16 @@ import type {
   QuickBooksReference,
   QuickBooksSupplierBillInput,
   QuickBooksTaxCode,
+  QuickBooksTaxRate,
   QuickBooksVendor,
 } from "./quickbooksTypes.js";
-import type { QuickBooksWritableEntity, QuickBooksWriteOperation } from "../quickbooks/writePolicy.js";
+import type { QuickBooksWritableEntity } from "../quickbooks/writePolicy.js";
+import {
+  consumeQuickBooksProviderWritePermit,
+  consumeQuickBooksSupplierBillProviderWritePermit,
+  type QuickBooksProviderMutationCommand,
+  type QuickBooksProviderWritePermit,
+} from "../security/quickBooksProviderWritePermit.js";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -45,6 +52,10 @@ interface AccountResponse {
 
 interface TaxCodeResponse {
   TaxCode?: QuickBooksTaxCode;
+}
+
+interface TaxRateResponse {
+  TaxRate?: QuickBooksTaxRate;
 }
 
 interface VendorResponse {
@@ -85,6 +96,38 @@ function expectedSubset(actual: unknown, expected: unknown): boolean {
   if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false;
   return Object.entries(expected as Record<string, unknown>)
     .every(([key, value]) => expectedSubset((actual as Record<string, unknown>)[key], value));
+}
+
+const TOTAL_BEARING_TRANSACTION_ENTITIES = new Set<QuickBooksWritableEntity>([
+  "Invoice", "Bill", "CreditMemo", "VendorCredit",
+]);
+
+function expectedTransactionTotal(payload: Record<string, unknown>): number | undefined {
+  if (typeof payload.TotalAmt === "number" && Number.isFinite(payload.TotalAmt)) return payload.TotalAmt;
+  if (!Array.isArray(payload.Line)) return undefined;
+  let lineTotal = 0;
+  for (const line of payload.Line) {
+    if (!line || typeof line !== "object" || Array.isArray(line)) continue;
+    const amount = (line as Record<string, unknown>).Amount;
+    if (typeof amount === "number" && Number.isFinite(amount)) lineTotal += amount;
+  }
+  const taxDetail = payload.TxnTaxDetail;
+  const totalTax = taxDetail && typeof taxDetail === "object" && !Array.isArray(taxDetail)
+    ? (taxDetail as Record<string, unknown>).TotalTax
+    : undefined;
+  const total = payload.GlobalTaxCalculation === "TaxExcluded" && typeof totalTax === "number" && Number.isFinite(totalTax)
+    ? lineTotal + totalTax
+    : lineTotal;
+  return Math.round((total + Number.EPSILON) * 100) / 100;
+}
+
+function expectedCreateReadback(
+  entity: QuickBooksWritableEntity,
+  providerPayload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!TOTAL_BEARING_TRANSACTION_ENTITIES.has(entity)) return providerPayload;
+  const total = expectedTransactionTotal(providerPayload);
+  return total === undefined ? providerPayload : { ...providerPayload, TotalAmt: total };
 }
 
 const QBO_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -245,6 +288,15 @@ export interface QuickBooksExistingBillMatch {
   txnDate?: string;
   total: string;
   balance?: string;
+}
+
+export interface QuickBooksExistingDocumentMatch {
+  entity: "Invoice" | "Bill" | "CreditMemo" | "VendorCredit";
+  providerEntityId: string;
+  counterpartyId: string;
+  docNumber: string;
+  txnDate?: string;
+  total?: string;
 }
 
 export interface QuickBooksSearchResult<T> {
@@ -618,6 +670,19 @@ export class QuickBooksAccountingProvider {
       .then((taxCodes) => taxCodes.filter((taxCode) => taxCode.Id && taxCode.Name));
   }
 
+  async getTaxRate(taxRateId: string): Promise<QuickBooksTaxRate> {
+    if (!/^[A-Za-z0-9-]{1,64}$/u.test(taxRateId)) {
+      throw new AppError("VALIDATION_FAILED", "QuickBooks TaxRate Id is invalid.", { httpStatus: 400 });
+    }
+    const response = await this.#client.request<TaxRateResponse>(`/taxrate/${encodeURIComponent(taxRateId)}`);
+    if (!response.TaxRate?.Id || response.TaxRate.Id !== taxRateId) {
+      throw new AppError("READBACK_MISMATCH", "QuickBooks TaxRate readback omitted the exact requested Id.", {
+        httpStatus: 502,
+      });
+    }
+    return response.TaxRate;
+  }
+
   async searchVendors(search: string, limit = 25): Promise<QuickBooksSearchResult<QuickBooksVendor>> {
     const normalized = search.trim().toLocaleLowerCase("en-US");
     if (!normalized || normalized.length > 128 || limit < 1 || limit > 100) {
@@ -710,6 +775,42 @@ export class QuickBooksAccountingProvider {
         total: decimal(bill.TotalAmt),
         ...(bill.Balance === undefined ? {} : { balance: decimal(bill.Balance) }),
       }));
+  }
+
+  async findExistingAccountingDocuments(input: {
+    entity: QuickBooksExistingDocumentMatch["entity"];
+    counterpartyId: string;
+    docNumber: string;
+  }): Promise<QuickBooksExistingDocumentMatch[]> {
+    if (!(["Invoice", "Bill", "CreditMemo", "VendorCredit"] as const).includes(input.entity) ||
+        !/^[A-Za-z0-9-]{1,64}$/u.test(input.counterpartyId) || !input.docNumber.trim() ||
+        input.docNumber.length > 21) {
+      throw new AppError("VALIDATION_FAILED", "Document identity is invalid for duplicate checking.", {
+        httpStatus: 400,
+      });
+    }
+    const response = await this.#client.query<Record<string, unknown>>(
+      `SELECT * FROM ${input.entity} WHERE DocNumber = '${queryLiteral(input.docNumber.trim())}' MAXRESULTS 100`,
+    );
+    const normalizedDocNumber = input.docNumber.trim().toLocaleLowerCase("en-US");
+    const referenceField = input.entity === "Invoice" || input.entity === "CreditMemo" ? "CustomerRef" : "VendorRef";
+    return queryArray<Record<string, unknown>>(response, input.entity)
+      .flatMap((document) => {
+        const id = typeof document.Id === "string" ? document.Id : undefined;
+        const docNumber = typeof document.DocNumber === "string" ? document.DocNumber : undefined;
+        const total = document.TotalAmt;
+        const counterparty = document[referenceField] as QuickBooksReference | undefined;
+        if (!id || !docNumber || counterparty?.value !== input.counterpartyId ||
+            docNumber.trim().toLocaleLowerCase("en-US") !== normalizedDocNumber) return [];
+        return [{
+          entity: input.entity,
+          providerEntityId: id,
+          counterpartyId: input.counterpartyId,
+          docNumber,
+          ...(typeof document.TxnDate === "string" ? { txnDate: document.TxnDate } : {}),
+          ...(typeof total === "number" ? { total: decimal(total) } : {}),
+        } satisfies QuickBooksExistingDocumentMatch];
+      });
   }
 
   async listTransactions(input: QuickBooksTransactionListInput): Promise<QuickBooksTransactionListResult> {
@@ -881,10 +982,17 @@ export class QuickBooksAccountingProvider {
     return snapshot(this.#client.realmId, response.Bill);
   }
 
-  async createApprovedSupplierBill(input: QuickBooksSupplierBillInput): Promise<{
+  async createApprovedSupplierBill(
+    input: QuickBooksSupplierBillInput,
+    permit: QuickBooksProviderWritePermit,
+  ): Promise<{
     bill: QuickBooksBillSnapshot;
     receipt: Record<string, unknown>;
   }> {
+    consumeQuickBooksSupplierBillProviderWritePermit(permit, {
+      realmId: this.#client.realmId,
+      input,
+    });
     await this.validateSupplierBill(input);
     const sourceMarker = `zCloak source=${input.sourceRef}; sha256=${input.sourceSha256}`;
     const privateNote = [input.memo?.trim(), sourceMarker].filter(Boolean).join("\n").slice(0, 4_000);
@@ -941,18 +1049,23 @@ export class QuickBooksAccountingProvider {
     };
   }
 
-  async executeMutation(input: {
-    entity: QuickBooksWritableEntity;
-    operation: QuickBooksWriteOperation;
-    payload: Record<string, unknown>;
-    targetId?: string;
-    syncToken?: string;
-    requestId: string;
-  }): Promise<{
+  async executeMutation(
+    input: QuickBooksProviderMutationCommand,
+    permit: QuickBooksProviderWritePermit,
+    recordProviderOutcome: (outcome: {
+      providerEntityId: string;
+      receipt: Record<string, unknown>;
+    }) => Promise<void>,
+    markProviderDispatch: () => Promise<void>,
+  ): Promise<{
     providerEntityId: string;
     receipt: Record<string, unknown>;
     readback: Record<string, unknown>;
   }> {
+    consumeQuickBooksProviderWritePermit(permit, {
+      realmId: this.#client.realmId,
+      command: input,
+    });
     const path = entityPath(input.entity);
     const providerPayload = input.entity === "Attachable" && input.operation === "UPDATE"
       ? {
@@ -1009,6 +1122,10 @@ export class QuickBooksAccountingProvider {
         };
     let invoiceVoidFallback = false;
     let response: Record<string, unknown>;
+    // This is the last awaited boundary before the first raw Provider POST.
+    // The durable marker fences stale workers and makes every later no-Id
+    // failure non-retryable without explicit operator resolution.
+    await markProviderDispatch();
     try {
       response = await this.#client.request<Record<string, unknown>>(attachment ? "/upload" : `/${path}`, {
         method: "POST",
@@ -1028,6 +1145,14 @@ export class QuickBooksAccountingProvider {
         invoiceAfterDelete = entityFromResponse(readAfterDelete, "Invoice");
       } catch (readError) {
         if (readError instanceof AppError && readError.code === "NOT_FOUND") {
+          await recordProviderOutcome({
+            providerEntityId: input.targetId as string,
+            receipt: {
+              provider: "quickbooks-online", realmId: this.#client.realmId, entity: input.entity,
+              operation: input.operation, providerEntityId: input.targetId, requestId: input.requestId,
+              outcome: "EXACT_ID_ABSENT_AFTER_DELETE_ERROR",
+            },
+          });
           return {
             providerEntityId: input.targetId as string,
             receipt: {
@@ -1063,6 +1188,14 @@ export class QuickBooksAccountingProvider {
         });
       }
       if (invoiceAfterDelete.TotalAmt === 0 && invoiceAfterDelete.Balance === 0) {
+        await recordProviderOutcome({
+          providerEntityId: input.targetId as string,
+          receipt: {
+            provider: "quickbooks-online", realmId: this.#client.realmId, entity: input.entity,
+            operation: input.operation, providerEntityId: input.targetId, requestId: input.requestId,
+            outcome: "EXACT_ID_ALREADY_VOID",
+          },
+        });
         return {
           providerEntityId: input.targetId as string,
           receipt: {
@@ -1102,10 +1235,31 @@ export class QuickBooksAccountingProvider {
     if (!providerEntityId) {
       throw new AppError("WRITE_RESULT_UNKNOWN", `QuickBooks accepted ${input.operation} ${input.entity} without returning an Id.`, {
         httpStatus: 502,
-        retryable: true,
-        details: { requestId: input.requestId },
+        retryable: false,
+        details: {
+          requestId: input.requestId,
+          providerMutationPossible: true,
+          providerMutationRetried: false,
+          automaticRearmAllowed: false,
+          operatorResolutionRequired: true,
+          recoveryAction: "OPERATOR_RESOLUTION_REQUIRED_NO_AUTOMATIC_REARM",
+        },
       });
     }
+
+    await recordProviderOutcome({
+      providerEntityId,
+      receipt: {
+        provider: "quickbooks-online",
+        realmId: this.#client.realmId,
+        entity: input.entity,
+        operation: input.operation,
+        providerEntityId,
+        requestId: input.requestId,
+        providerTime: typeof response.time === "string" ? response.time : undefined,
+        outcome: "PROVIDER_RESPONSE_ACCEPTED",
+      },
+    });
 
     if (input.operation === "DELETE" && !softDeactivation && !invoiceVoidFallback) {
       let absenceVerified = false;
@@ -1176,7 +1330,7 @@ export class QuickBooksAccountingProvider {
       });
     }
     const expected = input.operation === "CREATE"
-      ? attachment?.expected ?? providerPayload
+      ? attachment?.expected ?? expectedCreateReadback(input.entity, providerPayload)
       : softDeactivation
         ? { Id: providerEntityId, Active: false }
         : { ...providerPayload, Id: providerEntityId };
@@ -1197,6 +1351,85 @@ export class QuickBooksAccountingProvider {
         providerTime: typeof response.time === "string" ? response.time : undefined,
         verified: true,
           verification: invoiceVoidFallback ? "EXACT_ID_VOID_READBACK" : "EXACT_ID_READBACK",
+      },
+      readback,
+    };
+  }
+
+  async recoverMutation(
+    input: QuickBooksProviderMutationCommand,
+    providerEntityId: string,
+  ): Promise<{
+    providerEntityId: string;
+    receipt: Record<string, unknown>;
+    readback: Record<string, unknown>;
+  }> {
+    const path = entityPath(input.entity);
+    const providerPayload = input.entity === "Attachable" && input.operation === "UPDATE"
+      ? {
+          ...(typeof input.payload.file_name === "string" ? { FileName: input.payload.file_name } : {}),
+          ...(typeof input.payload.content_type === "string" ? { ContentType: input.payload.content_type } : {}),
+          ...(typeof input.payload.note === "string" ? { Note: input.payload.note } : {}),
+          ...(typeof input.payload.category === "string" ? { Category: input.payload.category } : {}),
+          ...(typeof input.payload.FileName === "string" ? { FileName: input.payload.FileName } : {}),
+          ...(typeof input.payload.ContentType === "string" ? { ContentType: input.payload.ContentType } : {}),
+          ...(typeof input.payload.Note === "string" ? { Note: input.payload.Note } : {}),
+          ...(typeof input.payload.Category === "string" ? { Category: input.payload.Category } : {}),
+        }
+      : input.payload;
+    const attachment = input.entity === "Attachable" && input.operation === "CREATE"
+      ? attachmentUpload(input.payload)
+      : undefined;
+    const softDeactivation = input.operation === "DELETE" &&
+      ["Customer", "Employee", "Item", "Vendor"].includes(input.entity);
+    let readback: Record<string, unknown> | undefined;
+    try {
+      const response = await this.#client.request<Record<string, unknown>>(
+        `/${path}/${encodeURIComponent(providerEntityId)}`,
+      );
+      readback = entityFromResponse(response, input.entity);
+    } catch (error) {
+      if (input.operation === "DELETE" && !softDeactivation && error instanceof AppError && error.code === "NOT_FOUND") {
+        return {
+          providerEntityId,
+          receipt: {
+            provider: "quickbooks-online", realmId: this.#client.realmId, entity: input.entity,
+            operation: input.operation, providerEntityId, requestId: input.requestId,
+            verified: true, verification: "RECOVERY_EXACT_ID_ABSENCE", recoveryOnly: true,
+          },
+          readback: { Id: providerEntityId, operation: "DELETE", deleted: true, readbackAvailable: true, verifiedBy: "GET_NOT_FOUND" },
+        };
+      }
+      throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks exact-Id recovery readback could not be completed; no write was retried.", {
+        httpStatus: 502, retryable: false,
+        details: { providerEntityId, requestId: input.requestId, recoveryOnly: true }, cause: error,
+      });
+    }
+    if (!readback || readback.Id !== providerEntityId) {
+      throw new AppError("READBACK_MISMATCH", "QuickBooks exact-Id recovery returned a different or missing entity.", {
+        httpStatus: 502, details: { providerEntityId, recoveryOnly: true },
+      });
+    }
+    const expected = input.operation === "CREATE"
+      ? attachment?.expected ?? expectedCreateReadback(input.entity, providerPayload)
+      : input.operation === "UPDATE"
+        ? { ...providerPayload, Id: providerEntityId }
+        : softDeactivation
+          ? { Id: providerEntityId, Active: false }
+          : input.entity === "Invoice"
+            ? { Id: providerEntityId, TotalAmt: 0, Balance: 0 }
+            : undefined;
+    if (!expected || !expectedSubset(normalizeForMutationReadback(readback), normalizeForMutationReadback(expected))) {
+      throw new AppError("READBACK_MISMATCH", "QuickBooks exact-Id recovery did not match the immutable approved mutation.", {
+        httpStatus: 502, details: { providerEntityId, recoveryOnly: true },
+      });
+    }
+    return {
+      providerEntityId,
+      receipt: {
+        provider: "quickbooks-online", realmId: this.#client.realmId, entity: input.entity,
+        operation: input.operation, providerEntityId, requestId: input.requestId,
+        verified: true, verification: "RECOVERY_EXACT_ID_READBACK", recoveryOnly: true,
       },
       readback,
     };

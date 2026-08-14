@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("QuickBooks Accounting Case migration", () => {
-  it("defines immutable Case and operation tables with unique execution identities", async () => {
+  it("defines immutable Case and operation tables, with historical ownership indexes replaced by shared references", async () => {
     const sql = await readFile(new URL("../migrations/027_quickbooks_accounting_case_foundation.sql", import.meta.url), "utf8");
     expect(sql).toContain("CREATE TABLE quickbooks_accounting_cases");
     expect(sql).toContain("CREATE TABLE quickbooks_accounting_case_operations");
@@ -10,5 +10,54 @@ describe("QuickBooks Accounting Case migration", () => {
     expect(sql).toContain("quickbooks_accounting_case_operation_preparation_uq");
     expect(sql).toContain("quickbooks_accounting_case_operation_mutation_uq");
     expect(sql).not.toMatch(/ON DELETE CASCADE/u);
+  });
+
+  it("allows cross-Case mutation references while preserving original authorization causality", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/032_quickbooks_cross_case_authorization_causality.sql",
+      import.meta.url,
+    ), "utf8");
+    expect(sql).toContain("DROP INDEX IF EXISTS quickbooks_accounting_case_operation_preparation_uq");
+    expect(sql).toContain("DROP INDEX IF EXISTS quickbooks_accounting_case_operation_mutation_uq");
+    expect(sql).toContain("CREATE INDEX quickbooks_accounting_case_operation_preparation_idx");
+    expect(sql).toContain("autonomous_authorization_evidence");
+    expect(sql).toContain("QuickBooks autonomous Provider dispatch requires durable prior authorization evidence");
+    expect(sql).toContain("QuickBooks cross-Case terminal replay requires deterministic reuse evidence");
+    expect(sql).toContain("existing QuickBooks autonomous writes require external audit archive");
+  });
+
+  it("binds autonomous authorization evidence to its original standing-delegation claim", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/034_quickbooks_autonomous_authorization_claim_binding.sql",
+      import.meta.url,
+    ), "utf8");
+    expect(sql).toContain("quickbooks_mutation_autonomous_authorization_claim_binding");
+    expect(sql).toContain("approved_by = ('standing:' || (autonomous_authorization_evidence");
+    expect(sql).toContain("can only be claimed by its original standing delegation");
+    expect(sql).toContain("autonomous authorization claim history is inconsistent");
+  });
+
+  it("links every prepared Case operation to immutable preparation and source evidence hashes", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/029_quickbooks_accounting_case_evidence_linkage.sql",
+      import.meta.url,
+    ), "utf8");
+    expect(sql).toContain("preparation_payload_hash");
+    expect(sql).toContain("operation_source_evidence_hash");
+    expect(sql).toContain("QuickBooks prepared Case operation requires linked payload and source evidence");
+    expect(sql).toContain("migration 029 blocked: QuickBooks Accounting Case preparation evidence cannot be linked");
+    expect(sql).toContain("quickbooks_accounting_case_preparation_fk");
+    expect(sql).toContain("preparation.payload_hash = NEW.preparation_payload_hash");
+    expect(sql).toContain("legacy QuickBooks Accounting Case requires external audit archive and controlled disposition");
+  });
+
+  it("binds a linked preparation to the same immutable Case actor and Realm", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/031_quickbooks_accounting_case_preparation_identity.sql",
+      import.meta.url,
+    ), "utf8");
+    expect(sql).toContain("preparation.actor_id = case_row.actor_id");
+    expect(sql).toContain("preparation.realm_id = NEW.realm_id");
+    expect(sql).toContain("preparation.payload_hash = NEW.preparation_payload_hash");
   });
 });

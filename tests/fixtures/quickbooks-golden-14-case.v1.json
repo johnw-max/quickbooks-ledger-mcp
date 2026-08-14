@@ -1,0 +1,150 @@
+{
+  "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "case_id": "golden-14-quickbooks-2026-07",
+  "expected_version": 0,
+  "sources": [
+    { "artifactId": "doc-01", "label": "Customer setup - Lion City Digital", "units": [{ "unitId": "doc-01", "expectedFactKinds": ["CONTACT_CANDIDATE"] }] },
+    { "artifactId": "doc-02", "label": "Vendor setup - OfficeHub Singapore", "units": [{ "unitId": "doc-02", "expectedFactKinds": ["CONTACT_CANDIDATE", "CONTROL_FINDING"] }] },
+    { "artifactId": "doc-03", "label": "Inbound customer purchase order", "units": [{ "unitId": "doc-03", "expectedFactKinds": ["EVIDENCE"] }] },
+    { "artifactId": "doc-04", "label": "Sales invoice INV-2026-0702", "units": [{ "unitId": "doc-04", "expectedFactKinds": ["NATIVE_DOCUMENT"] }] },
+    { "artifactId": "doc-05", "label": "Vendor bill OH-260701", "units": [{ "unitId": "doc-05", "expectedFactKinds": ["NATIVE_DOCUMENT"] }] },
+    { "artifactId": "doc-06", "label": "Goods received note", "units": [{ "unitId": "doc-06", "expectedFactKinds": ["EVIDENCE", "CONTROL_FINDING"] }] },
+    { "artifactId": "doc-07", "label": "DBS bank statement", "units": [
+      { "unitId": "doc-07:opening", "expectedFactKinds": ["UNSUPPORTED_EVENT"] },
+      { "unitId": "doc-07:customer-payment", "expectedFactKinds": ["UNSUPPORTED_EVENT"] },
+      { "unitId": "doc-07:bill-payment", "expectedFactKinds": ["UNSUPPORTED_EVENT"] },
+      { "unitId": "doc-07:bank-fee", "expectedFactKinds": ["UNSUPPORTED_EVENT"] },
+      { "unitId": "doc-07:prepayment", "expectedFactKinds": ["UNSUPPORTED_EVENT"] }
+    ] },
+    { "artifactId": "doc-08", "label": "Customer remittance advice", "units": [{ "unitId": "doc-08", "expectedFactKinds": ["EVIDENCE"] }] },
+    { "artifactId": "doc-09", "label": "Customer credit memo", "units": [{ "unitId": "doc-09", "expectedFactKinds": ["NATIVE_DOCUMENT"] }] },
+    { "artifactId": "doc-10", "label": "Vendor credit", "units": [{ "unitId": "doc-10", "expectedFactKinds": ["NATIVE_DOCUMENT"] }] },
+    { "artifactId": "doc-11", "label": "Meal receipt", "units": [{ "unitId": "doc-11", "expectedFactKinds": ["EVIDENCE"] }] },
+    { "artifactId": "doc-12", "label": "Alice expense claim", "units": [{ "unitId": "doc-12", "expectedFactKinds": ["UNSUPPORTED_EVENT", "CONTROL_FINDING"] }] },
+    { "artifactId": "doc-13", "label": "CloudHost USD vendor invoice", "units": [{ "unitId": "doc-13", "expectedFactKinds": ["UNSUPPORTED_EVENT"] }] },
+    { "artifactId": "doc-14", "label": "CloudHost FX payment advice", "units": [{ "unitId": "doc-14", "expectedFactKinds": ["UNSUPPORTED_EVENT"] }] }
+  ],
+  "facts": [
+    {
+      "factId": "contact-lion-v1", "lineageKey": "contact-lion", "eventKey": "contact-lion",
+      "sourceUnitIds": ["doc-01"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "CONTACT_CANDIDATE", "role": "CUSTOMER", "displayName": "Lion City Digital Pte. Ltd.", "email": "ap@lioncitydigital.example"
+    },
+    {
+      "factId": "contact-officehub-v1", "lineageKey": "contact-officehub", "eventKey": "contact-officehub",
+      "sourceUnitIds": ["doc-02"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "CONTACT_CANDIDATE", "role": "VENDOR", "displayName": "OfficeHub Singapore Pte. Ltd.", "email": "billing@officehub.example"
+    },
+    {
+      "factId": "officehub-bank-control-v1", "lineageKey": "officehub-bank-control", "eventKey": "contact-officehub",
+      "sourceUnitIds": ["doc-02"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "CONTROL_FINDING", "severity": "WARNING", "code": "BANK_DETAILS_SOURCE_STALE",
+      "note": "Source form says callback pending; independent verification is asserted but the stale source remains a review item."
+    },
+    {
+      "factId": "inbound-po-v1", "lineageKey": "inbound-po", "eventKey": "sales-invoice",
+      "sourceUnitIds": ["doc-03"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "EVIDENCE", "evidenceRole": "CONTROL_SUPPORT", "relatedEventKey": "sales-invoice",
+      "note": "Customer purchase order supports the sale and is not a QuickBooks purchase transaction."
+    },
+    {
+      "factId": "sales-invoice-v1", "lineageKey": "sales-invoice", "eventKey": "sales-invoice",
+      "sourceUnitIds": ["doc-04"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "NATIVE_DOCUMENT", "documentType": "INVOICE", "counterpartyName": "Lion City Digital Pte. Ltd.",
+      "documentDate": "2026-07-02", "dueDate": "2026-08-01", "documentNumber": "INV-2026-0702",
+      "currency": "SGD", "taxMode": "TAX_EXCLUDED",
+      "lines": [{ "lineId": "consulting", "description": "Consulting services - July 2026", "quantity": "20", "unitAmount": "200.00", "sourceTax": "360.00", "codingType": "ITEM", "codingName": "Consulting", "taxCodeName": "GST 9%" }],
+      "declaredNet": "4000.00", "declaredTax": "360.00", "declaredGross": "4360.00", "businessReason": "Record the supplied sales invoice in the QuickBooks Sandbox."
+    },
+    {
+      "factId": "officehub-bill-v1", "lineageKey": "officehub-bill", "eventKey": "officehub-bill",
+      "sourceUnitIds": ["doc-05"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "NATIVE_DOCUMENT", "documentType": "BILL", "counterpartyName": "OfficeHub Singapore Pte. Ltd.",
+      "documentDate": "2026-07-03", "dueDate": "2026-07-17", "documentNumber": "OH-260701",
+      "currency": "SGD", "taxMode": "TAX_EXCLUDED",
+      "lines": [{ "lineId": "paper", "description": "Ten cartons of premium copier paper", "quantity": "10", "unitAmount": "80.00", "sourceTax": "72.00", "codingType": "ACCOUNT", "codingName": "Office Expenses", "taxCodeName": "GST 9%" }],
+      "declaredNet": "800.00", "declaredTax": "72.00", "declaredGross": "872.00", "businessReason": "Record the supplied OfficeHub vendor bill."
+    },
+    {
+      "factId": "goods-receipt-v1", "lineageKey": "goods-receipt", "eventKey": "officehub-three-way-match",
+      "sourceUnitIds": ["doc-06"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "EVIDENCE", "evidenceRole": "CONTROL_SUPPORT", "note": "Nine cartons received against ten billed."
+    },
+    {
+      "factId": "three-way-control-v1", "lineageKey": "three-way-control", "eventKey": "officehub-three-way-match",
+      "sourceUnitIds": ["doc-06"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "CONTROL_FINDING", "severity": "WARNING", "code": "THREE_WAY_MATCH_EXCEPTION", "note": "Retain the ten-billed versus nine-received exception."
+    },
+    {
+      "factId": "opening-v1", "lineageKey": "opening", "eventKey": "bank-opening",
+      "sourceUnitIds": ["doc-07:opening"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "UNSUPPORTED_EVENT", "eventType": "OPENING_BALANCE", "date": "2026-07-01", "currency": "SGD", "amount": "10000.00", "note": "Opening balance lacks independent opening evidence."
+    },
+    {
+      "factId": "customer-payment-v1", "lineageKey": "customer-payment", "eventKey": "customer-payment",
+      "sourceUnitIds": ["doc-07:customer-payment"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "UNSUPPORTED_EVENT", "eventType": "PAYMENT", "date": "2026-07-20", "currency": "SGD", "amount": "4360.00", "counterpartyName": "Lion City Digital Pte. Ltd.", "note": "Customer receipt for INV-2026-0702."
+    },
+    {
+      "factId": "bill-payment-v1", "lineageKey": "bill-payment", "eventKey": "bill-payment",
+      "sourceUnitIds": ["doc-07:bill-payment"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "UNSUPPORTED_EVENT", "eventType": "BILL_PAYMENT", "date": "2026-07-18", "currency": "SGD", "amount": "872.00", "counterpartyName": "OfficeHub Singapore Pte. Ltd.", "note": "Cleared payment for OH-260701."
+    },
+    {
+      "factId": "bank-fee-v1", "lineageKey": "bank-fee", "eventKey": "bank-fee",
+      "sourceUnitIds": ["doc-07:bank-fee"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "UNSUPPORTED_EVENT", "eventType": "BANK_FEE", "date": "2026-07-25", "currency": "SGD", "amount": "25.00", "note": "DBS bank fee."
+    },
+    {
+      "factId": "prepayment-v1", "lineageKey": "prepayment", "eventKey": "customer-prepayment",
+      "sourceUnitIds": ["doc-07:prepayment"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "UNSUPPORTED_EVENT", "eventType": "PREPAYMENT", "date": "2026-07-28", "currency": "SGD", "amount": "1090.00", "counterpartyName": "Lion City Digital Pte. Ltd.", "note": "Separate customer prepayment; do not offset the prior invoice."
+    },
+    {
+      "factId": "remittance-v1", "lineageKey": "remittance", "eventKey": "customer-payment",
+      "sourceUnitIds": ["doc-08"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "EVIDENCE", "evidenceRole": "CORRESPONDENCE", "relatedEventKey": "customer-payment", "note": "Supports the receipt and must not create a duplicate payment."
+    },
+    {
+      "factId": "customer-credit-v1", "lineageKey": "customer-credit", "eventKey": "customer-credit",
+      "sourceUnitIds": ["doc-09"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "NATIVE_DOCUMENT", "documentType": "CREDIT_MEMO", "counterpartyName": "Lion City Digital Pte. Ltd.",
+      "documentDate": "2026-07-22", "documentNumber": "CN-2026-0001", "currency": "SGD", "taxMode": "TAX_EXCLUDED",
+      "lines": [{ "lineId": "disputed-hours", "description": "Two disputed consulting hours", "quantity": "2", "unitAmount": "200.00", "sourceTax": "36.00", "codingType": "ITEM", "codingName": "Consulting", "taxCodeName": "GST 9%" }],
+      "declaredNet": "400.00", "declaredTax": "36.00", "declaredGross": "436.00", "businessReason": "Record the unallocated customer credit memo."
+    },
+    {
+      "factId": "vendor-credit-v1", "lineageKey": "vendor-credit", "eventKey": "vendor-credit",
+      "sourceUnitIds": ["doc-10"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "NATIVE_DOCUMENT", "documentType": "VENDOR_CREDIT", "counterpartyName": "OfficeHub Singapore Pte. Ltd.",
+      "documentDate": "2026-07-22", "documentNumber": "OH-CN-260722", "currency": "SGD", "taxMode": "TAX_EXCLUDED",
+      "lines": [{ "lineId": "undelivered-carton", "description": "One undelivered carton", "quantity": "1", "unitAmount": "80.00", "sourceTax": "7.20", "codingType": "ACCOUNT", "codingName": "Office Expenses", "taxCodeName": "GST 9%" }],
+      "declaredNet": "80.00", "declaredTax": "7.20", "declaredGross": "87.20", "businessReason": "Record the unallocated OfficeHub vendor credit."
+    },
+    {
+      "factId": "meal-receipt-v1", "lineageKey": "meal-receipt", "eventKey": "alice-expense",
+      "sourceUnitIds": ["doc-11"], "origin": "MODEL_EXTRACTED", "revision": 1,
+      "kind": "EVIDENCE", "evidenceRole": "SOURCE_DOCUMENT", "relatedEventKey": "alice-expense", "note": "Meal receipt SGD 218 forms part of one employee claim."
+    },
+    {
+      "factId": "alice-expense-v1", "lineageKey": "alice-expense", "eventKey": "alice-expense",
+      "sourceUnitIds": ["doc-12"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "UNSUPPORTED_EVENT", "eventType": "EXPENSE_CLAIM", "date": "2026-07-18", "currency": "SGD", "amount": "256.50", "counterpartyName": "Alice Tan", "note": "Expense dates remain in July despite approval on 1 August."
+    },
+    {
+      "factId": "alice-control-v1", "lineageKey": "alice-control", "eventKey": "alice-expense",
+      "sourceUnitIds": ["doc-12"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "CONTROL_FINDING", "severity": "WARNING", "code": "MISSING_GRAB_RECEIPT", "note": "No input GST may be claimed on the SGD 38.50 Grab line."
+    },
+    {
+      "factId": "cloudhost-bill-v1", "lineageKey": "cloudhost-bill", "eventKey": "cloudhost-bill",
+      "sourceUnitIds": ["doc-13"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "UNSUPPORTED_EVENT", "eventType": "FOREIGN_CURRENCY_BILL", "date": "2026-07-10", "currency": "USD", "amount": "1000.00", "counterpartyName": "CloudHost Inc.", "note": "CH-INV-78142 uses the supplied 1.3500 invoice rate, but the current released compiler cannot bind that rate into the immutable QuickBooks Bill payload."
+    },
+    {
+      "factId": "fx-settlement-v1", "lineageKey": "fx-settlement", "eventKey": "fx-settlement",
+      "sourceUnitIds": ["doc-14"], "origin": "AGENT_ASSERTED", "revision": 1,
+      "kind": "UNSUPPORTED_EVENT", "eventType": "FX_SETTLEMENT", "date": "2026-07-29", "currency": "SGD", "amount": "1380.00", "counterpartyName": "CloudHost Inc.", "note": "USD 1000 settled at 1.3650 plus SGD 15 bank fee; missing multicurrency statement means not reconciled."
+    }
+  ]
+}

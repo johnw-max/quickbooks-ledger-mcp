@@ -1,5 +1,8 @@
 import { z } from "zod/v4";
-import { QUICKBOOKS_ACCOUNTING_FACT_KINDS } from "./accountingCase.js";
+import {
+  QUICKBOOKS_ACCOUNTING_FACT_KINDS,
+  QUICKBOOKS_UNSUPPORTED_EVENT_TYPES,
+} from "./accountingCase.js";
 
 const id = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._:/-]+$/u);
 const targetSessionRef = z.string().startsWith("qbts_v1.").max(2_048);
@@ -13,19 +16,55 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).refine(isRealDate, "must b
 const currency = z.string().regex(/^[A-Z]{3}$/u);
 const decimal4 = z.string().regex(/^(?:0|[1-9]\d{0,15})(?:\.\d{1,4})?$/u);
 const money = z.string().regex(/^(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$/u);
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/u).refine((value) => !/^0{64}$/u.test(value), "must not be all zeroes");
 const positiveDecimal4 = decimal4.refine((value) => Number(value) > 0, "must be greater than zero");
 
 const sourceUnit = z.object({
-  unitId: id,
+  unitId: id.describe("Stable id for one accounting source unit. Use this exact id in every fact that covers the unit."),
   expectedFactKinds: z.array(z.enum(QUICKBOOKS_ACCOUNTING_FACT_KINDS)).min(1)
-    .refine((values) => new Set(values).size === values.length, "expected fact kinds must be unique"),
-}).strict();
+    .refine((values) => new Set(values).size === values.length, "expected fact kinds must be unique")
+    .describe("Fact kinds required to give this source unit complete typed coverage."),
+}).strict().describe("One typed source unit. Do not pass a bare string.");
 
 const sourceArtifact = z.object({
   artifactId: id,
   label: z.string().trim().min(1).max(256),
-  units: z.array(sourceUnit).min(1).max(256),
-}).strict();
+  units: z.array(sourceUnit).min(1).max(256)
+    .describe("Objects shaped as {unitId, expectedFactKinds}; bare string unit ids are invalid."),
+  sourceRef: z.string().trim().min(1).max(2_048).optional(),
+  sourceSha256: sha256.optional(),
+  sourceDigestProvenance: z.enum([
+    "AGENT_SUPPLIED_TEXT_FINGERPRINT",
+    "HOST_PROVIDED_ORIGINAL_FILE_SHA256",
+    "EXTERNALLY_SUPPLIED_UNVERIFIED_SHA256",
+  ]).optional(),
+  sourceAttestationRef: z.string().trim().min(1).max(2_048).optional()
+    .describe("Use only with HOST_PROVIDED_ORIGINAL_FILE_SHA256 and a server-verifiable host attestation. Never invent this for chat images."),
+}).strict().superRefine((value, context) => {
+  const identityCount = [value.sourceRef, value.sourceSha256, value.sourceDigestProvenance]
+    .filter((candidate) => candidate !== undefined).length;
+  if (identityCount !== 0 && identityCount !== 3) {
+    context.addIssue({
+      code: "custom",
+      path: ["sourceRef"],
+      message: "sourceRef, sourceSha256 and sourceDigestProvenance must be supplied together",
+    });
+  }
+  if (value.sourceDigestProvenance === "HOST_PROVIDED_ORIGINAL_FILE_SHA256" && !value.sourceAttestationRef) {
+    context.addIssue({
+      code: "custom",
+      path: ["sourceAttestationRef"],
+      message: "host-provided source identity requires a server-verifiable attestation reference",
+    });
+  }
+  if (value.sourceDigestProvenance !== "HOST_PROVIDED_ORIGINAL_FILE_SHA256" && value.sourceAttestationRef) {
+    context.addIssue({
+      code: "custom",
+      path: ["sourceAttestationRef"],
+      message: "sourceAttestationRef is only valid for host-provided source identity",
+    });
+  }
+});
 
 const factBase = {
   factId: id,
@@ -92,6 +131,17 @@ const document = z.object({
   }
 });
 
+const unsupportedEvent = z.object({
+  ...factBase,
+  kind: z.literal("UNSUPPORTED_EVENT"),
+  eventType: z.enum(QUICKBOOKS_UNSUPPORTED_EVENT_TYPES),
+  date,
+  currency,
+  amount: money,
+  counterpartyName: z.string().trim().min(1).max(255).optional(),
+  note: z.string().trim().min(1).max(1_000),
+}).strict();
+
 const evidence = z.object({
   ...factBase,
   kind: z.literal("EVIDENCE"),
@@ -109,14 +159,21 @@ const control = z.object({
   note: z.string().trim().min(1).max(1_000),
 }).strict();
 
-export const quickBooksAccountingFactSchema = z.discriminatedUnion("kind", [contact, document, evidence, control]);
+export const quickBooksAccountingFactSchema = z.discriminatedUnion("kind", [
+  contact,
+  document,
+  unsupportedEvent,
+  evidence,
+  control,
+]);
 
 export const quickBooksPrepareAccountingCaseSchema = z.object({
   target_session_ref: targetSessionRef,
   case_id: id,
   expected_version: z.number().int().min(0),
   sources: z.array(sourceArtifact).min(1).max(1_000),
-  facts: z.array(quickBooksAccountingFactSchema).min(1).max(10_000),
+  facts: z.array(quickBooksAccountingFactSchema).min(1).max(10_000)
+    .describe("Typed facts covering the declared units. A residual Case may compile to zero operations, but it still requires UNSUPPORTED_EVENT, EVIDENCE, or CONTROL_FINDING facts; never send an empty facts array."),
 }).strict().superRefine((value, context) => {
   const artifactIds = value.sources.map((source) => source.artifactId);
   if (new Set(artifactIds).size !== artifactIds.length) {

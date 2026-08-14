@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -6,7 +6,11 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { AppError, toSafeError } from "../errors.js";
 import type { Logger } from "../logging.js";
 import { hashObject, safeEqual } from "../security/hash.js";
-import { createLegacySharedBearerRequestContext, type RequestContext } from "../security/requestContext.js";
+import {
+  createLegacySharedBearerRequestContext,
+  createOAuthRequestContext,
+  type RequestContext,
+} from "../security/requestContext.js";
 import type { QuickBooksConnectionTicketService } from "./connectionTicketService.js";
 import type { QuickBooksRuntimeConfig } from "./config.js";
 import {
@@ -23,6 +27,11 @@ import type { QuickBooksWorkflowService } from "./service.js";
 import type { QuickBooksMutationService } from "./mutationService.js";
 import type { QuickBooksAccountingCaseService } from "./accountingCaseService.js";
 import { QUICKBOOKS_CASE_ATTESTATION } from "./accountingCaseService.js";
+import {
+  QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS,
+  QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES,
+} from "./accountingCase.js";
+import type { QuickBooksRuntimeReadiness } from "./runtimeReadiness.js";
 import { LEDGER_CONTROL_KERNEL_VERSION } from "../ledger-control/ledgerControlKernel.js";
 import { LEDGER_DETERMINISTIC_VALIDATOR_VERSION } from "../ledger-control/deterministicValidation.js";
 
@@ -69,43 +78,6 @@ function jsonRpcError(response: Response, status: number, message: string): void
   });
 }
 
-function oauthBearerRequestContext(options: {
-  actorId: string;
-  workspaceId: string;
-  subjectId: string;
-  agentId: string;
-  installationId: string;
-  bindingId: string;
-  bindingRevision: number;
-  connectionId: string;
-  audience: string;
-  scopes: string[];
-  tokenId: string;
-}): RequestContext {
-  return Object.freeze({
-    requestId: randomUUID(),
-    actorId: options.actorId,
-    workspaceId: options.workspaceId,
-    subjectType: "USER" as const,
-    subjectId: options.subjectId,
-    userId: options.subjectId,
-    agentId: options.agentId,
-    oauthInstallationId: options.installationId,
-    bindingId: options.bindingId,
-    bindingRevision: options.bindingRevision,
-    connectionId: options.connectionId,
-    scopes: Object.freeze([...options.scopes]),
-    roles: Object.freeze([] as string[]),
-    authn: Object.freeze({
-      issuer: "urn:quickbooks-accounting-mcp:oauth",
-      subject: `quickbooks-installation:${options.actorId}`,
-      audience: options.audience,
-      tokenId: options.tokenId,
-    }),
-    legacyDemo: false,
-  });
-}
-
 function oauthClientCredentials(request: Request): { clientId?: string; clientSecret?: string } {
   const authorization = request.headers.authorization;
   if (authorization?.startsWith("Basic ")) {
@@ -115,6 +87,7 @@ function oauthClientCredentials(request: Request): { clientId?: string; clientSe
       if (separator > 0) {
         return { clientId: decoded.slice(0, separator), clientSecret: decoded.slice(separator + 1) };
       }
+      return {};
     } catch {
       return {};
     }
@@ -209,10 +182,11 @@ export function createQuickBooksHttpApp(options: {
   mcpOAuth?: QuickBooksMcpOAuthService;
   reviews: QuickBooksReviewService;
   tickets: QuickBooksConnectionTicketService;
-  readiness: () => Promise<boolean>;
+  readiness: () => Promise<boolean | QuickBooksRuntimeReadiness>;
   logger: Logger;
 }) {
   const { config, workflow, mutations, accountingCases, oauth, mcpOAuth, reviews, tickets, readiness, logger } = options;
+  const legacyReviewRoutesEnabled = !accountingCases;
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -226,30 +200,97 @@ export function createQuickBooksHttpApp(options: {
   app.use(express.json({ limit: config.requestBodyLimitBytes }));
   app.use(express.urlencoded({ extended: false, limit: config.requestBodyLimitBytes }));
 
-  app.get("/healthz", (_, response) => {
+  const readinessState = async (): Promise<{ ready: boolean; attestation: QuickBooksRuntimeReadiness | null }> => {
+    try {
+      const result = await readiness();
+      return typeof result === "boolean"
+        ? { ready: result, attestation: null }
+        : { ready: result.ready, attestation: result };
+    } catch {
+      return { ready: false, attestation: null };
+    }
+  };
+
+  app.get("/healthz", async (_, response) => {
     const toolset = accountingCases
       ? QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST
       : mutations
         ? [...QUICKBOOKS_TOOL_ALLOWLIST, ...QUICKBOOKS_MUTATION_TOOL_ALLOWLIST]
         : QUICKBOOKS_TOOL_ALLOWLIST;
+    const runtime = await readinessState();
+    const promotionReasons = [
+      ...(runtime.ready ? [] : ["RUNTIME_NOT_READY"]),
+      ...(accountingCases ? [] : ["ACCOUNTING_CASE_RUNTIME_DISABLED"]),
+      ...(mcpOAuth ? [] : ["PER_USER_MCP_OAUTH_DISABLED"]),
+      ...(config.writeEnabled ? [] : ["WRITE_KILL_SWITCH_DISABLED"]),
+      ...(config.standingDelegationEnabled ? [] : ["STANDING_DELEGATION_DISABLED"]),
+      "ONLINE_AGENT_UAT_REQUIRED",
+    ];
     response.json({
-      status: "ok",
+      status: runtime.ready ? "ok" : "degraded",
       provider: "quickbooks-online",
+      providerEnvironment: config.oauth.environment,
       version: QUICKBOOKS_RELEASE_VERSION,
       toolCount: toolset.length,
       toolsetHash: hashObject(toolset),
       writeEnabled: config.writeEnabled,
       perUserOAuthEnabled: Boolean(mcpOAuth),
+      registeredHostClientCount: mcpOAuth?.registeredHostClientCount ?? 0,
       kernelVersion: LEDGER_CONTROL_KERNEL_VERSION,
       validatorVersion: LEDGER_DETERMINISTIC_VALIDATOR_VERSION,
       compilerVersion: QUICKBOOKS_CASE_ATTESTATION.compilerVersion,
       policyVersion: QUICKBOOKS_CASE_ATTESTATION.policyVersion,
       accountingCaseEnabled: Boolean(accountingCases),
+      readiness: runtime.attestation ?? {
+        ready: runtime.ready,
+        persistence: { status: runtime.ready ? "READY" : "NOT_READY", source: "UNSTRUCTURED_CALLBACK" },
+        migrations: { status: "NOT_ATTESTED" },
+      },
+      writeControl: {
+        enabled: config.writeEnabled,
+        targetMode: config.writeTargetMode,
+        exactTargetConfigured: Boolean(config.allowedRealmId),
+        ...(config.allowedRealmId ? {
+          exactTargetHash: hashObject({ provider: "quickbooks", realmId: config.allowedRealmId }),
+        } : {}),
+      },
+      releasedActions: {
+        count: QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS.length,
+        hash: hashObject(QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS),
+      },
+      releasedCapabilities: {
+        count: QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES.length,
+        hash: hashObject(QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES),
+      },
+      standingDelegation: {
+        enabled: config.standingDelegationEnabled,
+        status: !config.standingDelegationEnabled
+          ? "DISABLED"
+          : config.writeEnabled
+            ? "ACTIVE"
+            : "INACTIVE_WRITE_DISABLED",
+        revision: config.standingDelegationEnabled ? 1 : null,
+        configuredActionHash: hashObject([...config.standingDelegationActions].sort()),
+      },
+      providerAuthorizationModel: {
+        requiredOAuthScope: "com.intuit.quickbooks.accounting",
+        dynamicProviderRolesAvailable: false,
+        roleAuthoritySource: "PLATFORM_POLICY_NOT_INTUIT_ROLE",
+      },
+      promotionAssertion: {
+        status: promotionReasons.length === 1 ? "RUNTIME_PREREQUISITES_ATTESTED" : "NOT_ASSERTED",
+        scope: "RUNTIME_CONFIGURATION_AND_PERSISTENCE_ONLY",
+        reasonCodes: promotionReasons,
+        onlineAgentUatRequired: true,
+      },
     });
   });
   app.get("/readyz", async (_, response) => {
-    const ready = await readiness();
-    response.status(ready ? 200 : 503).json({ status: ready ? "ready" : "not_ready", version: QUICKBOOKS_RELEASE_VERSION });
+    const runtime = await readinessState();
+    response.status(runtime.ready ? 200 : 503).json({
+      status: runtime.ready ? "ready" : "not_ready",
+      version: QUICKBOOKS_RELEASE_VERSION,
+    });
   });
 
   app.all("/quickbooks/mcp", async (request, response, next) => {
@@ -284,18 +325,13 @@ export function createQuickBooksHttpApp(options: {
         jsonRpcError(response, 401, "Unauthorized");
         return;
       }
-      response.locals.requestContext = oauthBearerRequestContext({
-        actorId: verified.actorId,
-        workspaceId: verified.workspaceId,
-        subjectId: verified.subjectId,
-        agentId: verified.agentId,
-        installationId: verified.installationId,
-        bindingId: verified.bindingId,
-        bindingRevision: verified.bindingRevision,
-        connectionId: verified.connectionId,
-        audience: `${config.publicBaseUrl}/quickbooks/mcp`,
-        scopes: verified.scopes,
-        tokenId: verified.tokenId,
+      if (origin && !verified.allowedOrigins.includes(origin)) {
+        jsonRpcError(response, 403, "Forbidden Origin");
+        return;
+      }
+      response.locals.requestContext = createOAuthRequestContext({
+        issuer: `${config.publicBaseUrl}/quickbooks/oauth`,
+        resolvedToken: verified,
       });
     }
     next();
@@ -338,8 +374,14 @@ export function createQuickBooksHttpApp(options: {
       });
     });
     app.get("/quickbooks/oauth/authorize", async (request, response) => {
+      const clientId = typeof request.query.client_id === "string" ? request.query.client_id : undefined;
+      const origin = request.headers.origin;
+      if (origin && (!clientId || !config.allowedOrigins.includes(origin) || !mcpOAuth.isOriginAllowedForClient(clientId, origin))) {
+        sendOAuthError(response, 403, "invalid_request", "OAuth authorization Origin is not registered for this Host client.");
+        return;
+      }
       const started = await mcpOAuth.startAuthorization({
-        ...(typeof request.query.client_id === "string" ? { clientId: request.query.client_id } : {}),
+        ...(clientId ? { clientId } : {}),
         ...(typeof request.query.redirect_uri === "string" ? { redirectUri: request.query.redirect_uri } : {}),
         ...(typeof request.query.response_type === "string" ? { responseType: request.query.response_type } : {}),
         ...(typeof request.query.state === "string" ? { state: request.query.state } : {}),
@@ -523,6 +565,9 @@ export function createQuickBooksHttpApp(options: {
   });
 
   app.get("/quickbooks/review/:postingRequestId", async (request, response) => {
+    if (!legacyReviewRoutesEnabled) {
+      throw new AppError("NOT_FOUND", "Legacy QuickBooks supplier-Bill review is not available in Accounting Case mode.", { httpStatus: 404 });
+    }
     const postingRequestId = request.params.postingRequestId;
     const rawSession = parseCookie(request, REVIEW_COOKIE);
     if (typeof postingRequestId !== "string" || !rawSession) {
@@ -548,6 +593,9 @@ export function createQuickBooksHttpApp(options: {
   };
 
   app.post("/quickbooks/review/:postingRequestId/approve", sameOrigin, async (request, response) => {
+    if (!legacyReviewRoutesEnabled) {
+      throw new AppError("NOT_FOUND", "Legacy QuickBooks supplier-Bill review is not available in Accounting Case mode.", { httpStatus: 404 });
+    }
     const postingRequestId = request.params.postingRequestId;
     const rawSession = parseCookie(request, REVIEW_COOKIE);
     const csrfToken = typeof request.body?.csrf_token === "string" ? request.body.csrf_token : undefined;
@@ -585,6 +633,9 @@ export function createQuickBooksHttpApp(options: {
   });
 
   app.post("/quickbooks/review/:postingRequestId/reject", sameOrigin, async (request, response) => {
+    if (!legacyReviewRoutesEnabled) {
+      throw new AppError("NOT_FOUND", "Legacy QuickBooks supplier-Bill review is not available in Accounting Case mode.", { httpStatus: 404 });
+    }
     const postingRequestId = request.params.postingRequestId;
     const rawSession = parseCookie(request, REVIEW_COOKIE);
     const csrfToken = typeof request.body?.csrf_token === "string" ? request.body.csrf_token : undefined;
@@ -614,6 +665,9 @@ export function createQuickBooksHttpApp(options: {
   });
 
   app.get("/quickbooks/mutation-review/:preparationId", async (request, response) => {
+    if (!legacyReviewRoutesEnabled) {
+      throw new AppError("NOT_FOUND", "Generic QuickBooks mutation review is not available in Accounting Case mode.", { httpStatus: 404 });
+    }
     if (!mutations) throw new AppError("CONFIGURATION_ERROR", "QuickBooks mutation runtime is not configured.", { httpStatus: 503 });
     const preparationId = request.params.preparationId;
     const rawSession = parseCookie(request, REVIEW_COOKIE);
@@ -632,6 +686,9 @@ export function createQuickBooksHttpApp(options: {
   });
 
   app.post("/quickbooks/mutation-review/:preparationId/approve", sameOrigin, async (request, response) => {
+    if (!legacyReviewRoutesEnabled) {
+      throw new AppError("NOT_FOUND", "Generic QuickBooks mutation review is not available in Accounting Case mode.", { httpStatus: 404 });
+    }
     if (!mutations) throw new AppError("CONFIGURATION_ERROR", "QuickBooks mutation runtime is not configured.", { httpStatus: 503 });
     const preparationId = request.params.preparationId;
     const rawSession = parseCookie(request, REVIEW_COOKIE);
@@ -671,6 +728,9 @@ export function createQuickBooksHttpApp(options: {
   });
 
   app.post("/quickbooks/mutation-review/:preparationId/reject", sameOrigin, async (request, response) => {
+    if (!legacyReviewRoutesEnabled) {
+      throw new AppError("NOT_FOUND", "Generic QuickBooks mutation review is not available in Accounting Case mode.", { httpStatus: 404 });
+    }
     if (!mutations) throw new AppError("CONFIGURATION_ERROR", "QuickBooks mutation runtime is not configured.", { httpStatus: 503 });
     const preparationId = request.params.preparationId;
     const rawSession = parseCookie(request, REVIEW_COOKIE);
