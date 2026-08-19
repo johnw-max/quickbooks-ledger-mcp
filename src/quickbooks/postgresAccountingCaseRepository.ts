@@ -22,6 +22,39 @@ function whereBinding(offset = 1): string {
     AND binding_revision=$${offset + 6} AND connection_id=$${offset + 7} AND realm_id=$${offset + 8}`;
 }
 
+/**
+ * A guard trigger or CHECK constraint refusing a transition is a durable,
+ * deterministic refusal by this service's own persistence kernel. Left unmapped
+ * it reaches `toSafeError` as an unknown error and is relabelled a *retryable*
+ * `PROVIDER_ERROR`, telling the calling Agent that QuickBooks failed and that
+ * retrying the write path is safe. Every guard message in `migrations/` is an
+ * authored constant carrying no row data, so it is safe to surface verbatim;
+ * CHECK violations name their constraint instead.
+ */
+async function withDurableGuardRefusal<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const sqlState = (error as { code?: unknown }).code;
+    if (typeof sqlState !== "string" || !sqlState.startsWith("23")) throw error;
+    const constraint = (error as { constraint?: unknown }).constraint;
+    const message = (error as { message?: unknown }).message;
+    const guard = typeof constraint === "string" && constraint.length > 0 ? constraint
+      : typeof message === "string" ? message : undefined;
+    throw new AppError("CONFLICT", "A QuickBooks persistence guard refused this Accounting Case transition.", {
+      httpStatus: 409,
+      retryable: false,
+      details: {
+        failureLayer: "PERSISTENCE",
+        reasonCodes: ["DURABLE_GUARD_REFUSED"],
+        sqlState,
+        ...(guard ? { guard } : {}),
+      },
+      cause: error,
+    });
+  }
+}
+
 export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAccountingCaseRepository {
   constructor(private readonly pool: Pool) {}
 
@@ -97,6 +130,10 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
   }
 
   async createOrAdvance(input: Parameters<QuickBooksAccountingCaseRepository["createOrAdvance"]>[0]) {
+    return withDurableGuardRefusal(() => this.#createOrAdvance(input));
+  }
+
+  async #createOrAdvance(input: Parameters<QuickBooksAccountingCaseRepository["createOrAdvance"]>[0]) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -149,6 +186,10 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
   }
 
   async claimExecution(input: Parameters<QuickBooksAccountingCaseRepository["claimExecution"]>[0]) {
+    return withDurableGuardRefusal(() => this.#claimExecution(input));
+  }
+
+  async #claimExecution(input: Parameters<QuickBooksAccountingCaseRepository["claimExecution"]>[0]) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -176,6 +217,10 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
   }
 
   async updateOperation(input: Parameters<QuickBooksAccountingCaseRepository["updateOperation"]>[0]) {
+    return withDurableGuardRefusal(() => this.#updateOperation(input));
+  }
+
+  async #updateOperation(input: Parameters<QuickBooksAccountingCaseRepository["updateOperation"]>[0]) {
     const result = await this.pool.query(`UPDATE quickbooks_accounting_case_operations SET
       state=$14,preparation_id=COALESCE($15,preparation_id),
       preparation_payload_hash=COALESCE($16,preparation_payload_hash),
@@ -206,6 +251,10 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
   }
 
   async finalize(input: Parameters<QuickBooksAccountingCaseRepository["finalize"]>[0]) {
+    return withDurableGuardRefusal(() => this.#finalize(input));
+  }
+
+  async #finalize(input: Parameters<QuickBooksAccountingCaseRepository["finalize"]>[0]) {
     const operationGate = input.state === "RECOVERY_REQUIRED"
       ? `AND EXISTS (SELECT 1 FROM quickbooks_accounting_case_operations operation_row
           WHERE operation_row.workspace_id=$1 AND operation_row.subject_type=$2 AND operation_row.subject_id=$3

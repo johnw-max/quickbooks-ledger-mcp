@@ -48,7 +48,7 @@ describeWithPostgres("QuickBooks structured runtime readiness", () => {
       },
       migrations: {
         status: "READY",
-        latestExpected: "034_quickbooks_autonomous_authorization_claim_binding.sql",
+        latestExpected: "035_quickbooks_mcp_scope_predispatch_rearm.sql",
         missingCount: 0,
         unexpectedCount: 0,
         checksumMismatchCount: 0,

@@ -437,4 +437,137 @@ describeWithPostgres("Postgres QuickBooks Accounting Case integration", () => {
     });
     expect(Number(evidence.rows[0]?.reuse_count)).toBeGreaterThanOrEqual(1);
   });
+
+  it("re-arms a pre-dispatch MCP-scope rejection through the real trigger and refuses every other shape", async () => {
+    if (!repository || !pool) throw new Error("TEST_DATABASE_URL is required");
+    const suffix = randomUUID();
+    const binding = {
+      actorId: `ws-${suffix}:user:user-${suffix}`,
+      workspaceId: `ws-${suffix}`,
+      subjectType: "USER" as const,
+      subjectId: `user-${suffix}`,
+      agentId: `agent-${suffix}`,
+      installationId: `installation-${suffix}`,
+      bindingId: `binding-${suffix}`,
+      bindingRevision: 1,
+      connectionId: `connection-${suffix}`,
+      realmId: "9341457701636490",
+      targetSessionHash: hashObject({ suffix, target: "scope-rearm" }),
+    };
+    const draft = compileQuickBooksAccountingCase({
+      caseId: `case-${suffix}`,
+      expectedVersion: 0,
+      sources: [{ artifactId: `source-${suffix}`, label: "contact", units: [{
+        unitId: `unit-${suffix}`, expectedFactKinds: ["CONTACT_CANDIDATE"],
+      }] }],
+      facts: [{
+        factId: `fact-${suffix}`, lineageKey: `contact-${suffix}`, eventKey: `event-${suffix}`,
+        sourceUnitIds: [`unit-${suffix}`], origin: "AGENT_ASSERTED", revision: 1,
+        kind: "CONTACT_CANDIDATE", role: "CUSTOMER", displayName: `Customer ${suffix}`,
+      }],
+    });
+    const payload = { DisplayName: `Customer ${suffix}` };
+    const operation = draft.operationCandidates[0];
+    if (!operation) throw new Error("expected operation");
+    const validationReceipt = issueDeterministicValidationReceipt({
+      actionId: operation.actionId,
+      canonicalPayloadHash: hashObject(payload),
+      sourceRevisionHash: draft.sourceRevisionHash,
+      caseId: draft.caseId,
+      caseVersion: draft.version,
+      policyVersion: draft.policyVersion,
+      compilerVersion: draft.compilerVersion,
+      checks: [{ code: "TEST", evidence: { passed: true } }],
+      now: new Date(),
+    });
+    const compiled = {
+      ...draft,
+      realmId: binding.realmId,
+      companyName: "Sandbox",
+      baseCurrency: "SGD",
+      operations: [{
+        ...operation,
+        canonicalPayload: payload,
+        canonicalPayloadHash: hashObject(payload),
+        validationReceipt,
+      }],
+    };
+    const compiledPlanHash = hashObject({ schemaVersion: "quickbooks-accounting-case-plan:v1", binding, compiled });
+    await repository.createOrAdvance({ binding, compiled, compiledPlanHash, now: new Date() });
+    const requestId = `execute-${suffix}`;
+    await repository.claimExecution({
+      binding, caseId: compiled.caseId, version: 1, requestId, expectedPlanHash: compiledPlanHash, now: new Date(),
+    });
+
+    // A transport-scope denial happens before any Provider permit is issued, so
+    // the durable mutation is still a clean, never-dispatched preparation.
+    const preparationId = `qbm_${suffix.replaceAll("-", "").slice(0, 32)}`;
+    const preparationPayloadHash = hashObject(payload);
+    await pool.query(`INSERT INTO quickbooks_mutation_preparations(
+      preparation_id,actor_id,realm_id,connection_ref_safe,bound_target_ref_safe,binding_revision,
+      entity,operation,risk,execution_mode,provider_effect,client_request_id,provider_request_id,
+      payload,payload_hash,business_reason,confirmation_phrase_hash,state,created_at,expires_at,updated_at
+    ) VALUES($1,$2,$3,'qbc-test','qbt-test','qbr-test','Customer','CREATE','LOW','EXPLICIT_CONFIRMATION',
+      'MASTER_DATA',$4,$5,$6::jsonb,$7,'Postgres MCP-scope re-arm integration test',$8,'PREPARED',$9,$10,$9)`, [
+      preparationId, binding.actorId, binding.realmId, `client-${suffix}`, `provider-${suffix}`,
+      JSON.stringify(payload), preparationPayloadHash, hashObject({ confirmation: suffix }),
+      new Date(), new Date(Date.now() + 60_000),
+    ]);
+    await repository.updateOperation({
+      binding, caseId: compiled.caseId, version: 1, operationId: operation.operationId,
+      requestId, expectedStates: ["PENDING"], state: "PREPARED", preparationId,
+      preparationPayloadHash, operationSourceEvidenceHash: operation.sourceEvidenceHash, now: new Date(),
+    });
+    const scopeRejection = {
+      code: "FORBIDDEN",
+      details: { failureLayer: "MCP_SCOPE", denyReasons: ["TRANSPORT_SCOPE_MISSING"] },
+    };
+    const reject = async (errorReceipt: Record<string, unknown>) => repository.updateOperation({
+      binding, caseId: compiled.caseId, version: 1, operationId: operation.operationId,
+      requestId, expectedStates: ["PREPARED", "PROVIDER_REJECTED"], state: "PROVIDER_REJECTED",
+      errorReceipt, now: new Date(),
+    });
+    const rearm = async () => repository.updateOperation({
+      binding, caseId: compiled.caseId, version: 1, operationId: operation.operationId,
+      requestId, expectedStates: ["PROVIDER_REJECTED"], state: "PREPARED", now: new Date(),
+    });
+
+    await reject(scopeRejection);
+    // The service performs exactly this transition once the installation regains
+    // quickbooks.mutation.execute; the deployed trigger must permit it.
+    const rearmed = await rearm();
+    expect(rearmed.operations[0]).toMatchObject({ state: "PREPARED", preparationId });
+
+    // The database, not the application, is the layer that refuses. Each of the
+    // following would be permitted by a text-only or in-memory double. The
+    // refusal must reach the caller as a deterministic, non-retryable guard
+    // result rather than as a retryable upstream-QuickBooks failure.
+    const refusedByTrigger = {
+      code: "CONFLICT",
+      retryable: false,
+      details: {
+        failureLayer: "PERSISTENCE",
+        reasonCodes: ["DURABLE_GUARD_REFUSED"],
+        sqlState: "23514",
+        guard: expect.stringContaining("invalid QuickBooks Accounting Case operation transition"),
+      },
+    };
+
+    // A rejection from any other layer stays terminal even with a clean preparation.
+    await reject({ code: "PROVIDER_ERROR", details: { failureLayer: "PROVIDER", denyReasons: ["PROVIDER_REFUSED"] } });
+    await expect(rearm()).rejects.toMatchObject(refusedByTrigger);
+    await reject({ code: "FORBIDDEN", details: { failureLayer: "AUTHORIZATION", denyReasons: ["TRANSPORT_SCOPE_MISSING"] } });
+    await expect(rearm()).rejects.toMatchObject(refusedByTrigger);
+
+    // Correct rejection shape, but the durable mutation no longer proves that no
+    // Provider attempt exists. Re-arming must stay closed.
+    await reject(scopeRejection);
+    await pool.query(`UPDATE quickbooks_mutation_preparations
+      SET state='REJECTED',rejected_by=$2,rejected_at=$3 WHERE preparation_id=$1`,
+      [preparationId, binding.actorId, new Date()]);
+    await expect(rearm()).rejects.toMatchObject(refusedByTrigger);
+    await pool.query(`UPDATE quickbooks_mutation_preparations
+      SET state='PREPARED',rejected_by=NULL,rejected_at=NULL WHERE preparation_id=$1`, [preparationId]);
+    await expect(rearm()).resolves.toMatchObject({ operations: [{ state: "PREPARED" }] });
+  });
 });
