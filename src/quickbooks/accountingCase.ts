@@ -91,6 +91,16 @@ export interface QuickBooksContactCandidateFact extends QuickBooksFactBase {
   displayName: string;
   email?: string;
   companyName?: string;
+  /**
+   * Never part of the public intake schema and never Agent-supplied. The
+   * compiler alone derives this from the NATIVE_DOCUMENT facts in the same
+   * Case that reference this contact (see reconcileContactCurrencies in
+   * accountingCaseCompiler.ts) and fills it in here so downstream payload
+   * construction has one place to read it. Left undefined when no document
+   * in the Case references this contact. A Customer/Vendor's CurrencyRef is
+   * immutable after creation in QuickBooks.
+   */
+  currency?: string;
 }
 
 export type QuickBooksNativeDocumentType = "INVOICE" | "BILL" | "CREDIT_MEMO" | "VENDOR_CREDIT";

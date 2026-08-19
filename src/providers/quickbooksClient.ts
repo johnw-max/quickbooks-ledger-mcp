@@ -1,4 +1,5 @@
 import { AppError } from "../errors.js";
+import { classifyQuickBooksProviderWriteFailure } from "./quickbooksWriteOutcome.js";
 import type {
   QuickBooksEnvironment,
   QuickBooksQueryResponse,
@@ -53,56 +54,87 @@ function safeFaultDetails(body: QuickBooksFaultBody): Record<string, unknown> | 
   };
 }
 
-function errorForResponse(status: number, body: QuickBooksFaultBody): AppError {
-  const details = safeFaultDetails(body);
+/**
+ * Every error built here comes from a Provider HTTP response that was received
+ * and parsed: the request reached the far side, it answered, and the answer
+ * carried a status. This is the only place in the client that observes that, so
+ * this is where the write outcome is decided and stamped as evidence for the
+ * durable ledger. Transport failures, aborts and timeouts never reach this
+ * function and are never anything but UNKNOWN.
+ *
+ * The evidence is deliberately independent of the AppError code. VALIDATION_-
+ * FAILED, NOT_FOUND and FORBIDDEN are all raised locally as well, so a caller
+ * that keyed on the code would eventually call a local failure a Provider
+ * refusal.
+ */
+function errorForResponse(
+  status: number,
+  body: QuickBooksFaultBody,
+  options: QuickBooksRequestOptions,
+): AppError {
+  const faultRecognised = Array.isArray(body.Fault?.Error) && body.Fault.Error.length > 0;
+  const details = {
+    ...safeFaultDetails(body),
+    providerResponseCompleted: true,
+    providerHttpStatus: status,
+    providerFaultRecognised: faultRecognised,
+    ...(options.isWrite ? {
+      providerWriteOutcome: classifyQuickBooksProviderWriteFailure({
+        responseCompleted: true,
+        httpStatus: status,
+        faultRecognised,
+        uploadEndpoint: options.multipart !== undefined,
+      }),
+    } : {}),
+  };
   if (status === 401) {
     return new AppError("NOT_CONNECTED", "QuickBooks authorization is no longer valid; reconnection is required.", {
       httpStatus: 409,
-      ...(details ? { details } : {}),
+      details,
     });
   }
   if (status === 403) {
     return new AppError("FORBIDDEN", "QuickBooks denied access to this company or accounting capability.", {
       httpStatus: 403,
-      ...(details ? { details } : {}),
+      details,
     });
   }
   if (status === 404) {
     return new AppError("NOT_FOUND", "The requested QuickBooks record was not found.", {
       httpStatus: 404,
-      ...(details ? { details } : {}),
+      details,
     });
   }
   if (status === 400) {
     return new AppError("VALIDATION_FAILED", "QuickBooks rejected the accounting request.", {
       httpStatus: 400,
-      ...(details ? { details } : {}),
+      details,
     });
   }
   if (status === 409) {
     return new AppError("CONFLICT", "QuickBooks rejected the request because the record changed.", {
       httpStatus: 409,
-      ...(details ? { details } : {}),
+      details,
     });
   }
   if (status === 429) {
     return new AppError("RATE_LIMITED", "QuickBooks temporarily rate-limited the accounting request.", {
       httpStatus: 429,
       retryable: true,
-      ...(details ? { details } : {}),
+      details,
     });
   }
   if (status >= 500) {
     return new AppError("PROVIDER_UNAVAILABLE", "QuickBooks is temporarily unavailable.", {
       httpStatus: 503,
       retryable: true,
-      ...(details ? { details } : {}),
+      details,
     });
   }
   return new AppError("PROVIDER_ERROR", "QuickBooks could not complete the accounting request.", {
     httpStatus: 502,
     retryable: status === 429 || status >= 500,
-    ...(details ? { details } : {}),
+    details,
   });
 }
 
@@ -136,12 +168,12 @@ export class QuickBooksApiClient {
     const accessToken = await this.#tokenSource.accessToken();
     const first = await this.#send<T>(path, options, accessToken);
     if (first.kind === "success") return first.value;
-    if (first.status !== 401) throw errorForResponse(first.status, first.body);
+    if (first.status !== 401) throw errorForResponse(first.status, first.body, options);
 
     const refreshedAccessToken = await this.#tokenSource.refreshAccessToken();
     const second = await this.#send<T>(path, options, refreshedAccessToken);
     if (second.kind === "success") return second.value;
-    throw errorForResponse(second.status, second.body);
+    throw errorForResponse(second.status, second.body, options);
   }
 
   async #send<T>(
@@ -182,6 +214,10 @@ export class QuickBooksApiClient {
           retryable: false,
           details: {
             requestId: options.requestId ?? "missing",
+            // No response cycle completed, so nothing is known about Intuit's
+            // ledger. Stated rather than left absent, so the durable layer
+            // reads one vocabulary everywhere.
+            providerWriteOutcome: "UNKNOWN",
             providerMutationPossible: true,
             automaticRearmAllowed: false,
           },
@@ -209,6 +245,8 @@ export class QuickBooksApiClient {
         details: {
           requestId: options.requestId ?? "missing",
           providerStatus: response.status,
+          // Intuit answered, but a 5xx can follow a write that was applied.
+          providerWriteOutcome: "UNKNOWN",
           providerMutationPossible: true,
           automaticRearmAllowed: false,
         },

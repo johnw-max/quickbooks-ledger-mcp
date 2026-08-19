@@ -84,6 +84,13 @@ const contact = z.object({
   displayName: z.string().trim().min(1).max(255),
   email: z.string().email().optional(),
   companyName: z.string().trim().min(1).max(255).optional(),
+  // No currency field: a Customer/Vendor's CurrencyRef is immutable after
+  // creation, and the Case always also stages (or already has) the document
+  // that determines it. The compiler derives it from the NATIVE_DOCUMENT
+  // facts in this Case that reference this contact instead of asking the
+  // Agent to state it -- a second, independently-stated field here could
+  // only ever be redundant with that derived value or contradict it. See
+  // reconcileContactCurrencies in accountingCaseCompiler.ts.
 }).strict();
 
 const documentLine = z.object({

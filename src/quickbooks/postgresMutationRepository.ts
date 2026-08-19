@@ -796,14 +796,16 @@ export class QuickBooksPostgresMutationRepository implements QuickBooksMutationR
          updated_at=$3
        WHERE preparation_id=$1 AND execution_attempt_id=$5 AND execution_lease_token_hash=$6
          AND state <> 'POSTED_READBACK_VERIFIED'
-         AND ($2<>'BLOCKED_VALIDATION' OR dispatch_started_at IS NULL)`,
+         AND ($2<>'BLOCKED_VALIDATION' OR dispatch_started_at IS NULL OR $7::boolean)
+         AND ($7::boolean IS NOT TRUE OR provider_entity_id IS NULL)`,
       [input.preparationId, input.state, input.now,
         JSON.stringify(input.resolutionReceipt ?? resolvedNoWriteReceipt({
           attemptId: input.attemptId,
           providerRequestId: input.providerRequestId,
           reasonCode: "DEFINITIVE_PRE_DISPATCH_FAILURE",
           resolvedAt: input.now,
-        })), input.attemptId, input.leaseTokenHash],
+        })), input.attemptId, input.leaseTokenHash,
+        input.providerConfirmedNotWritten === true],
     );
     if (result.rowCount === 1) return;
     const existing = await this.get(input.preparationId);

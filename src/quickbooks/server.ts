@@ -83,7 +83,7 @@ async function main(): Promise<void> {
         }];
       },
     } : {}),
-  }, controlRepository);
+  }, controlRepository, undefined, undefined, logger);
   const accountingCases = new QuickBooksAccountingCaseService(accountingCaseRepository, resolver, mutations);
   const oauth = new QuickBooksOAuthService({
     states: controlRepository,

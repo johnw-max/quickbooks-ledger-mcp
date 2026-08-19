@@ -12,6 +12,8 @@ import {
   type QuickBooksSourceArtifact,
 } from "./accountingCase.js";
 
+const CONTACT_DOCUMENT_CURRENCY_MISMATCH = "CONTACT_DOCUMENT_CURRENCY_MISMATCH";
+
 const SCALE = 10_000n;
 
 function scaled(value: string): bigint {
@@ -84,6 +86,63 @@ function stableFacts(facts: readonly QuickBooksAccountingFact[]): QuickBooksAcco
     .map((fact) => ({ ...fact, sourceUnitIds: uniqueSorted(fact.sourceUnitIds) }))
     .sort((left, right) => left.lineageKey.localeCompare(right.lineageKey, "en") || left.revision - right.revision ||
       left.factId.localeCompare(right.factId, "en"));
+}
+
+function contactRoleForDocument(fact: QuickBooksNativeDocumentFact): "CUSTOMER" | "VENDOR" {
+  return fact.documentType === "INVOICE" || fact.documentType === "CREDIT_MEMO" ? "CUSTOMER" : "VENDOR";
+}
+
+function contactCurrencyKey(role: "CUSTOMER" | "VENDOR", displayName: string): string {
+  return `${role}:${displayName.trim().toLocaleLowerCase("en")}`;
+}
+
+/**
+ * A Customer/Vendor's CurrencyRef is set once at creation and is immutable in
+ * QuickBooks afterwards; QuickBooks refuses any document whose currency
+ * differs from its contact's. There is no separate agent-stated currency for
+ * a contact candidate to ask for or get wrong: a contact is only ever staged
+ * because some document in the Case references it, and that document already
+ * carries the currency. So this always derives, never asks -- it fills in
+ * each contact's currency purely from the NATIVE_DOCUMENT facts in this Case
+ * that reference it (matched by role and exact display name):
+ *
+ *  - No referencing document: leave the contact's currency undefined. A
+ *    contact-only Case (no document staged yet) is legitimate and QuickBooks
+ *    will default the new contact to the company's home currency.
+ *  - Referencing documents that agree on one currency: that is the
+ *    contact's currency.
+ *  - Referencing documents that name two or more distinct currencies: this
+ *    is genuinely impossible in QuickBooks, since one contact can hold only
+ *    one currency. The contact is left without a derived currency and its
+ *    factId is reported as conflicted so the caller can block that contact's
+ *    event pre-dispatch with CONTACT_DOCUMENT_CURRENCY_MISMATCH, before any
+ *    write is attempted, while it is still cleanly recoverable.
+ */
+function reconcileContactCurrencies(facts: readonly QuickBooksAccountingFact[]): {
+  facts: QuickBooksAccountingFact[];
+  conflictedContactFactIds: Set<string>;
+} {
+  const documentCurrenciesByContact = new Map<string, Set<string>>();
+  for (const fact of facts) {
+    if (fact.kind !== "NATIVE_DOCUMENT") continue;
+    const key = contactCurrencyKey(contactRoleForDocument(fact), fact.counterpartyName);
+    const currencies = documentCurrenciesByContact.get(key) ?? new Set<string>();
+    currencies.add(fact.currency);
+    documentCurrenciesByContact.set(key, currencies);
+  }
+  const conflictedContactFactIds = new Set<string>();
+  const reconciled = facts.map((fact): QuickBooksAccountingFact => {
+    if (fact.kind !== "CONTACT_CANDIDATE") return fact;
+    const referenced = documentCurrenciesByContact.get(contactCurrencyKey(fact.role, fact.displayName));
+    if (!referenced || referenced.size === 0) return fact;
+    if (referenced.size > 1) {
+      conflictedContactFactIds.add(fact.factId);
+      return fact;
+    }
+    const [derivedCurrency] = [...referenced];
+    return derivedCurrency === undefined ? fact : { ...fact, currency: derivedCurrency };
+  });
+  return { facts: reconciled, conflictedContactFactIds };
 }
 
 function documentValidation(fact: QuickBooksNativeDocumentFact): string[] {
@@ -252,7 +311,7 @@ export function compileQuickBooksAccountingCase(input: {
   facts: readonly QuickBooksAccountingFact[];
 }): QuickBooksCaseCompilationDraft {
   const version = input.expectedVersion + 1;
-  const activeFacts = stableFacts(input.facts);
+  const { facts: activeFacts, conflictedContactFactIds } = reconcileContactCurrencies(stableFacts(input.facts));
   const sortedSources = [...input.sources].sort((left, right) => left.artifactId.localeCompare(right.artifactId, "en"))
     .map((source) => ({
       ...source,
@@ -308,6 +367,9 @@ export function compileQuickBooksAccountingCase(input: {
         reasons.push(`UNSUPPORTED_EVENT_${primary.eventType}`);
       } else {
         if (primary.kind === "NATIVE_DOCUMENT") reasons.push(...documentValidation(primary));
+        if (primary.kind === "CONTACT_CANDIDATE" && conflictedContactFactIds.has(primary.factId)) {
+          reasons.push(CONTACT_DOCUMENT_CURRENCY_MISMATCH);
+        }
         disposition = blockingControls.length > 0 || reasons.some((reason) => !reason.startsWith("CONTROL_WARNING_"))
           ? "BLOCKED_VALIDATION"
           : "AUTO_EXECUTE";

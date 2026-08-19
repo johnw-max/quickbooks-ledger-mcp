@@ -126,4 +126,74 @@ describe("QuickBooks Accounting Case compiler", () => {
     ];
     expect(quickBooksPrepareAccountingCaseSchema.safeParse({ ...clean, facts: branched }).success).toBe(false);
   });
+
+  // A Customer/Vendor's CurrencyRef is frozen at creation in QuickBooks. There
+  // is no Agent-stated currency field on CONTACT_CANDIDATE to get wrong: the
+  // compiler derives it purely from the NATIVE_DOCUMENT facts in the same
+  // Case that reference the contact. These three cover the three shapes that
+  // derivation can take.
+  const contactFact = (overrides: Record<string, unknown> = {}) => ({
+    factId: "vendor-v1", lineageKey: "vendor", eventKey: "vendor", sourceUnitIds: ["page-1"],
+    origin: "AGENT_ASSERTED" as const, revision: 1, kind: "CONTACT_CANDIDATE" as const,
+    role: "VENDOR" as const, displayName: "OfficeHub",
+    ...overrides,
+  });
+
+  it("leaves a contact-only Case's currency undefined and its event unblocked", () => {
+    const parsed = quickBooksPrepareAccountingCaseSchema.parse({
+      target_session_ref,
+      case_id: "case-contact-only-001",
+      expected_version: 0,
+      sources: [{ artifactId: "contact.txt", label: "New vendor", units: [{ unitId: "page-1", expectedFactKinds: ["CONTACT_CANDIDATE" as const] }] }],
+      facts: [contactFact()],
+    });
+    const compiled = compileParsed(parsed);
+    expect(compiled).toMatchObject({
+      status: "PLANNED_NEEDS_PREFLIGHT",
+      events: [{ disposition: "AUTO_EXECUTE", route: "CONTACT_CREATE" }],
+    });
+    const [contact] = compiled.activeFacts;
+    expect(contact).toMatchObject({ kind: "CONTACT_CANDIDATE" });
+    expect((contact as { currency?: string }).currency).toBeUndefined();
+  });
+
+  it("derives a new contact's currency from the one document in the Case that references it", () => {
+    const parsed = quickBooksPrepareAccountingCaseSchema.parse({
+      ...clean,
+      sources: [...clean.sources, { artifactId: "contact.txt", label: "New vendor", units: [{ unitId: "page-2", expectedFactKinds: ["CONTACT_CANDIDATE" as const] }] }],
+      facts: [...clean.facts, contactFact({ sourceUnitIds: ["page-2"] })],
+    });
+    const compiled = compileParsed(parsed);
+    const contactEvent = compiled.events.find((event) => event.route === "CONTACT_CREATE");
+    expect(contactEvent).toMatchObject({ disposition: "AUTO_EXECUTE" });
+    const contact = compiled.activeFacts.find((fact) => fact.kind === "CONTACT_CANDIDATE");
+    expect((contact as { currency?: string } | undefined)?.currency).toBe("SGD");
+  });
+
+  it("blocks a contact referenced by documents that disagree on currency, before any dispatch", () => {
+    const secondBill = {
+      ...clean.facts[0],
+      factId: "fact-invoice-v1-usd", lineageKey: "invoice-usd", eventKey: "invoice-usd",
+      sourceUnitIds: ["page-3"], documentNumber: "OH-1002", currency: "USD", exchangeRate: "1.34",
+    };
+    const parsed = quickBooksPrepareAccountingCaseSchema.parse({
+      ...clean,
+      sources: [
+        ...clean.sources,
+        { artifactId: "contact.txt", label: "New vendor", units: [{ unitId: "page-2", expectedFactKinds: ["CONTACT_CANDIDATE" as const] }] },
+        { artifactId: "invoice2.pdf", label: "Second OfficeHub bill", units: [{ unitId: "page-3", expectedFactKinds: ["NATIVE_DOCUMENT" as const] }] },
+      ],
+      facts: [...clean.facts, contactFact({ sourceUnitIds: ["page-2"] }), secondBill],
+    });
+    const compiled = compileParsed(parsed);
+    expect(compiled.status).toBe("BLOCKED_VALIDATION");
+    const contactEvent = compiled.events.find((event) => event.route === "CONTACT_CREATE");
+    expect(contactEvent).toMatchObject({
+      disposition: "BLOCKED_VALIDATION",
+      reasonCodes: ["CONTACT_DOCUMENT_CURRENCY_MISMATCH"],
+    });
+    const contact = compiled.activeFacts.find((fact) => fact.kind === "CONTACT_CANDIDATE");
+    expect((contact as { currency?: string } | undefined)?.currency).toBeUndefined();
+    expect(compiled.operationCandidates.some((candidate) => candidate.entity === "Vendor")).toBe(false);
+  });
 });

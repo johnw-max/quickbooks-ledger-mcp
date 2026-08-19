@@ -406,4 +406,114 @@ describeWithPostgres("Postgres QuickBooks governed mutation integration", () => 
       preparation: { providerEntityId: `late-customer-${suffix}` },
     });
   });
+
+  it("durably records CONFIRMED_NOT_WRITTEN after dispatch, and refuses it without that proof", async () => {
+    if (!repository || !pool) throw new Error("TEST_DATABASE_URL is required");
+    const suffix = randomUUID();
+    const now = new Date();
+    const confirmationPhraseHash = randomBytes(32).toString("hex");
+    const leaseTokenHash = randomBytes(32).toString("hex");
+    const input = {
+      preparationId: `qbm_${randomBytes(16).toString("hex")}`,
+      actorId: `actor-${suffix}`,
+      realmId: "9341457701636490",
+      connectionRefSafe: `qbc-${suffix}`,
+      boundTargetRefSafe: `qbt-${suffix}`,
+      bindingRevision: `qbr-${suffix}`,
+      entity: "Bill" as const,
+      operation: "CREATE" as const,
+      risk: "HIGH" as const,
+      executionMode: "EXPLICIT_CONFIRMATION" as const,
+      providerEffect: "POSTING_TRANSACTION" as const,
+      clientRequestId: `qbo.bill.${suffix}`,
+      providerRequestId: `zc.${randomBytes(16).toString("hex")}`,
+      payload: { VendorRef: { value: "63" }, CurrencyRef: { value: "SGD" } },
+      payloadHash: randomBytes(32).toString("hex"),
+      businessReason: "Post the SGD bill that Intuit refuses for a USD vendor.",
+      confirmationPhraseHash,
+      expiresAt: new Date(now.getTime() + 30 * 60_000),
+      now,
+    };
+    await repository.createOrGet(input);
+    const claimed = await repository.claimForExecution({
+      preparationId: input.preparationId, actorId: input.actorId, requestId: input.clientRequestId,
+      confirmationPhraseHash, approvedBy: input.actorId,
+      leaseOwner: `pg-worker-${suffix}`, leaseTokenHash, leaseDurationMs: 120_000,
+      now: new Date(now.getTime() + 1_000),
+    });
+    const attemptId = claimed.preparation.executionAttempt?.attemptId as string;
+    await repository.markDispatchStarted({
+      preparationId: input.preparationId, attemptId, leaseTokenHash,
+      now: new Date(now.getTime() + 2_000),
+    });
+
+    // Without the proof, a post-dispatch non-write claim stays refused.
+    await expect(repository.markFailure({
+      preparationId: input.preparationId, attemptId, leaseTokenHash,
+      providerRequestId: input.providerRequestId, state: "BLOCKED_VALIDATION",
+      now: new Date(now.getTime() + 3_000),
+    })).rejects.toMatchObject({
+      code: "CONFLICT", details: { failureLayer: "EXECUTION_FENCING" },
+    });
+
+    // With it, the durable row records what QuickBooks' ledger actually holds.
+    // Migration 033's shape CHECK already permits this row: BLOCKED_VALIDATION
+    // with RESOLVED_NO_WRITE and a resolution receipt carries no
+    // dispatch_started_at IS NULL requirement.
+    await repository.markFailure({
+      preparationId: input.preparationId, attemptId, leaseTokenHash,
+      providerRequestId: input.providerRequestId, state: "BLOCKED_VALIDATION",
+      providerConfirmedNotWritten: true,
+      resolutionReceipt: {
+        evidenceType: "QUICKBOOKS_EXECUTION_RESOLUTION", evidenceVersion: "1.0",
+        resolution: "RESOLVED_NO_WRITE", attemptId, providerRequestId: input.providerRequestId,
+        reasonCode: "PROVIDER_CONFIRMED_NOT_WRITTEN_HTTP_400",
+        providerMutationPossible: false, automaticRearmAllowed: false,
+        resolvedAt: new Date(now.getTime() + 4_000).toISOString(),
+      },
+      now: new Date(now.getTime() + 4_000),
+    });
+    const durable = await repository.get(input.preparationId);
+    expect(durable).toMatchObject({
+      state: "BLOCKED_VALIDATION",
+      executionAttempt: {
+        state: "RESOLVED_NO_WRITE",
+        resolutionReceipt: { providerMutationPossible: false },
+      },
+    });
+    expect(durable?.providerEntityId).toBeUndefined();
+    // The dispatch marker is untouched: crash safety is unchanged.
+    expect(durable?.executionAttempt?.dispatchStartedAt).toBeInstanceOf(Date);
+    // And the row is out of EXECUTING, so no sweep can turn it back into a
+    // possible write.
+    await expect(repository.reconcileStaleExecutionAttempts(new Date(now.getTime() + 20 * 60_000)))
+      .resolves.toMatchObject({ transitionedToUnknownNoId: 0 });
+
+    // The two structural limits, pinned so they are not rediscovered by
+    // surprise. A dispatched preparation cannot be re-armed for a second POST:
+    // migration 033's shape CHECK forbids PREPARED with attempt columns set,
+    // and its immutability trigger forbids clearing dispatch_started_at or
+    // moving the lease. Re-issuing the identical content therefore needs a new
+    // preparation row, which UNIQUE(actor_id, realm_id, entity, operation,
+    // client_request_id) does not allow either.
+    await expect(pool.query(
+      `UPDATE quickbooks_mutation_preparations
+         SET state='PREPARED', execution_attempt_id=NULL, execution_attempt_state=NULL,
+             execution_claim_sequence=NULL, execution_lease_owner=NULL,
+             execution_lease_token_hash=NULL, execution_lease_until=NULL,
+             dispatch_started_at=NULL, execution_resolution_receipt=NULL,
+             execution_attempt_created_at=NULL, approved_by=NULL, approved_at=NULL
+       WHERE preparation_id=$1`,
+      [input.preparationId],
+    )).rejects.toMatchObject({
+      code: "23514",
+      message: expect.stringContaining("is immutable"),
+    });
+    await expect(pool.query(
+      "UPDATE quickbooks_mutation_preparations SET execution_lease_until=$2 WHERE preparation_id=$1",
+      [input.preparationId, new Date(now.getTime() + 30 * 60_000)],
+    )).rejects.toMatchObject({
+      message: expect.stringContaining("execution lease cannot move after Provider dispatch"),
+    });
+  });
 });

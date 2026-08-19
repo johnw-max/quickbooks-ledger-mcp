@@ -9,6 +9,10 @@ import { InMemoryQuickBooksMutationRepository } from "../src/quickbooks/inMemory
 import { QuickBooksMutationService } from "../src/quickbooks/mutationService.js";
 import { QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES } from "../src/quickbooks/accountingCase.js";
 import type { QuickBooksProviderCapabilities, QuickBooksProviderResolver } from "../src/quickbooks/service.js";
+import {
+  quickBooksFaultResponse,
+  quickBooksWriteFailure,
+} from "./helpers/quickBooksCompletedProviderResponse.js";
 
 const targetSessionRef = `qbts_v1.${"a".repeat(16)}.${"b".repeat(22)}.${"c".repeat(64)}`;
 const rotatedTargetSessionRef = `qbts_v1.${"d".repeat(16)}.${"e".repeat(22)}.${"f".repeat(64)}`;
@@ -57,12 +61,17 @@ function fixture(options: {
   beforeProviderDispatch?: () => Promise<void>;
   afterProviderDispatch?: () => Promise<void>;
   executeScopeAllowed?: boolean;
+  /** Share one durable mutation ledger across Cases, as production does. */
+  mutationRepository?: InMemoryQuickBooksMutationRepository;
+  /** Completed Provider refusal raised after the durable dispatch marker. */
+  refuseAfterDispatchWithStatus?: number;
 } = {}) {
   let customerExists = !options.customerInitiallyMissing;
   let delegationActions = options.delegationActions ?? ["invoice.create"];
   const documents = new Map<string, { entity: string; counterpartyId: string; docNumber: string; providerEntityId: string }>();
   let crashAfterProviderOutcome = options.crashAfterProviderOutcome ?? false;
   let executeScopeAllowed = options.executeScopeAllowed ?? true;
+  let refuseAfterDispatchWithStatus = options.refuseAfterDispatchWithStatus;
   const executeMutation = vi.fn(async (
     mutation: { entity: string; requestId: string; payload?: Record<string, unknown> },
     _permit: unknown,
@@ -73,6 +82,12 @@ function fixture(options: {
     if (options.beforeProviderDispatch) await options.beforeProviderDispatch();
     await markProviderDispatch();
     if (options.afterProviderDispatch) await options.afterProviderDispatch();
+    if (refuseAfterDispatchWithStatus !== undefined) {
+      throw await quickBooksWriteFailure(
+        async () => quickBooksFaultResponse(refuseAfterDispatchWithStatus as number),
+        "9341457701636490",
+      );
+    }
     if (options.unknown) {
       throw new AppError("WRITE_RESULT_UNKNOWN", "Provider outcome has no exact Id.", {
         httpStatus: 503, retryable: false,
@@ -121,8 +136,9 @@ function fixture(options: {
       targetSessionId: "target-session-1", targetSessionExpiresAt: new Date("2026-08-13T04:15:00.000Z"), provider,
     })),
   };
+  const mutationRepository = options.mutationRepository ?? new InMemoryQuickBooksMutationRepository();
   const mutations = new QuickBooksMutationService(
-    new InMemoryQuickBooksMutationRepository(), resolver,
+    mutationRepository, resolver,
     {
       writeEnabled: options.writeEnabled ?? true,
       writeTargetMode: "exact_allowlist",
@@ -144,9 +160,10 @@ function fixture(options: {
   const repository = new InMemoryQuickBooksAccountingCaseRepository();
   const service = new QuickBooksAccountingCaseService(repository, resolver, mutations, { clock: () => now });
   return {
-    service, repository, executeMutation, recoverMutation, provider, documents,
+    service, repository, mutationRepository, executeMutation, recoverMutation, provider, documents,
     setDelegationActions: (actions: string[]) => { delegationActions = [...actions]; },
     setExecuteScopeAllowed: (allowed: boolean) => { executeScopeAllowed = allowed; },
+    setRefuseAfterDispatchWithStatus: (status: number | undefined) => { refuseAfterDispatchWithStatus = status; },
   };
 }
 
@@ -865,6 +882,29 @@ describe("QuickBooks Accounting Case service", () => {
     expect(executeMutation).toHaveBeenCalledTimes(1);
   });
 
+  it("terminalizes a completed Provider refusal as blocked, and never as an unrecoverable possible write", async () => {
+    const { service } = fixture({ refuseAfterDispatchWithStatus: 400 });
+    await service.prepare(context, input);
+
+    await expect(service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: input.case_id, case_version: 1, request_id: "execute-refused",
+    })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      details: { providerErrors: [{ code: "6000", element: "CurrencyRef" }] },
+    });
+
+    // Before this change the Case parked in RECOVERY_REQUIRED / WRITE_UNCERTAIN
+    // and there is no implemented operator-resolution path, so it could never
+    // reach TERMINAL again.
+    await expect(service.status(context, {
+      target_session_ref: targetSessionRef, case_id: input.case_id, case_version: 1,
+    })).resolves.toMatchObject({
+      state: "TERMINAL",
+      operations: [{ state: "BLOCKED_VALIDATION" }],
+      completion_claim: { ledger_write_claim: "NOT_WRITTEN" },
+    });
+  });
+
   it("allows only one execution request to own a Case and never duplicates the Provider write", async () => {
     const { service, executeMutation } = fixture();
     await service.prepare(context, input);
@@ -880,5 +920,107 @@ describe("QuickBooks Accounting Case service", () => {
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     expect(rejected?.reason).toMatchObject({ code: "CONFLICT" });
     expect(executeMutation).toHaveBeenCalledTimes(1);
+  });
+
+  // A Customer/Vendor's CurrencyRef is frozen at creation in QuickBooks and
+  // QuickBooks refuses any document whose currency differs from its
+  // contact's. There is no Agent-stated currency on CONTACT_CANDIDATE to get
+  // wrong: the compiler derives it purely from the NATIVE_DOCUMENT facts in
+  // the same Case that reference the contact (see reconcileContactCurrencies
+  // in accountingCaseCompiler.ts), and #contactPayload turns that derived
+  // currency into CurrencyRef only when the company can actually hold it.
+  const newForeignVendorCase = (documentOverrides: Record<string, unknown> = {}) => quickBooksPrepareAccountingCaseSchema.parse({
+    target_session_ref: targetSessionRef,
+    case_id: `case-new-vendor-currency-${Math.random().toString(36).slice(2)}`,
+    expected_version: 0,
+    sources: [{
+      artifactId: "bill.pdf",
+      label: "Marina Bay Consulting bill",
+      units: [
+        { unitId: "contact-1", expectedFactKinds: ["CONTACT_CANDIDATE"] },
+        { unitId: "page-1", expectedFactKinds: ["NATIVE_DOCUMENT"] },
+      ],
+    }],
+    facts: [{
+      factId: "vendor-v1", lineageKey: "vendor", eventKey: "vendor", sourceUnitIds: ["contact-1"],
+      origin: "AGENT_ASSERTED", revision: 1, kind: "CONTACT_CANDIDATE", role: "VENDOR",
+      displayName: "Marina Bay Consulting Pte Ltd",
+    }, {
+      factId: "bill-v1", lineageKey: "bill", eventKey: "bill", sourceUnitIds: ["page-1"],
+      origin: "MODEL_EXTRACTED", revision: 1, kind: "NATIVE_DOCUMENT", documentType: "BILL",
+      counterpartyName: "Marina Bay Consulting Pte Ltd", documentDate: "2026-08-10",
+      documentNumber: "MB-1001", currency: "SGD", taxMode: "NO_TAX",
+      lines: [{
+        lineId: "line-1", description: "Advisory services", quantity: "1", unitAmount: "500.00",
+        sourceTax: "0.00", codingType: "ACCOUNT", codingName: "Office Expenses",
+      }],
+      declaredNet: "500.00", declaredTax: "0.00", declaredGross: "500.00",
+      businessReason: "Record the Marina Bay Consulting advisory bill.",
+      ...documentOverrides,
+    }],
+  });
+
+  it("derives a new Vendor's currency from the one foreign-currency Bill that references it, and names CurrencyRef", async () => {
+    const { service, executeMutation, provider } = fixture({
+      delegationActions: ["vendor.create_basic", "bill.create"],
+    });
+    vi.mocked(provider.listAccounts).mockResolvedValue([{ Id: "9", Name: "Office Expenses", Active: true }]);
+    const staged = newForeignVendorCase({ currency: "USD", exchangeRate: "1.34" });
+
+    const prepared = await service.prepare(context, staged);
+    expect(prepared).toMatchObject({
+      state: "PLANNED_WITH_EXCEPTIONS",
+      operations: [{ entity: "Vendor", state: "PENDING" }],
+    });
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ route: "BILL", disposition: "REVIEW_REQUIRED", reason_codes: ["REFERENCE_NOT_FOUND"] }),
+    ]));
+
+    await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-vendor-currency-v1",
+    });
+    expect(executeMutation.mock.calls.at(-1)?.[0]).toMatchObject({
+      entity: "Vendor",
+      payload: { DisplayName: "Marina Bay Consulting Pte Ltd", CurrencyRef: { value: "USD" } },
+    });
+  });
+
+  it("never names CurrencyRef for a new contact when the company has not turned multicurrency on", async () => {
+    const { service, executeMutation, provider } = fixture({
+      delegationActions: ["vendor.create_basic", "bill.create"],
+    });
+    vi.mocked(provider.getCompanyContext).mockResolvedValue({
+      CompanyName: "Sandbox", HomeCurrency: { value: "SGD" }, MultiCurrencyEnabled: false,
+    } as never);
+    vi.mocked(provider.listAccounts).mockResolvedValue([{ Id: "9", Name: "Office Expenses", Active: true }]);
+    const staged = newForeignVendorCase();
+
+    await service.prepare(context, staged);
+    await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-vendor-home-v1",
+    });
+    const payload = executeMutation.mock.calls.at(-1)?.[0].payload;
+    expect(payload).toMatchObject({ DisplayName: "Marina Bay Consulting Pte Ltd" });
+    expect(payload).not.toHaveProperty("CurrencyRef");
+  });
+
+  it("reports an existing contact's frozen currency as unfixable when a referencing document needs a different one", async () => {
+    const { service, provider } = fixture({
+      delegationActions: ["vendor.create_basic", "bill.create"],
+    });
+    vi.mocked(provider.searchVendors).mockResolvedValue({
+      records: [{ Id: "77", DisplayName: "Marina Bay Consulting Pte Ltd", Active: true, CurrencyRef: { value: "USD" } }],
+      searchWindow: {} as never,
+    });
+    vi.mocked(provider.listAccounts).mockResolvedValue([{ Id: "9", Name: "Office Expenses", Active: true }]);
+    const staged = newForeignVendorCase();
+
+    const prepared = await service.prepare(context, staged);
+    const contactEvent = prepared.events.find((event) => event.route === "CONTACT_CREATE");
+    expect(contactEvent).toMatchObject({
+      disposition: "REVIEW_REQUIRED",
+      reason_codes: ["EXISTING_CONTACT_CURRENCY_MISMATCH"],
+    });
+    expect(prepared.operations.some((operation) => (operation as { entity?: string }).entity === "Vendor")).toBe(false);
   });
 });

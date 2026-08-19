@@ -475,9 +475,14 @@ export class InMemoryQuickBooksMutationRepository implements QuickBooksMutationR
     const preparation = this.#preparations.get(input.preparationId);
     if (!preparation || preparation.state === "POSTED_READBACK_VERIFIED") return;
     const attempt = preparation.executionAttempt;
+    // Mirrors the Postgres predicate. BLOCKED_VALIDATION asserts a non-write,
+    // so after dispatch it is admitted only on a proven Provider refusal, and
+    // never over a row that already holds an exact Provider Id.
     if (!attempt || !safeEqual(attempt.attemptId, input.attemptId) ||
       !safeEqual(attempt.leaseTokenHash, input.leaseTokenHash) ||
-      (input.state === "BLOCKED_VALIDATION" && attempt.dispatchStartedAt)) {
+      (input.state === "BLOCKED_VALIDATION" && attempt.dispatchStartedAt &&
+        !input.providerConfirmedNotWritten) ||
+      (input.providerConfirmedNotWritten === true && preparation.providerEntityId)) {
       throw new AppError("CONFLICT", "QuickBooks execution failure cannot cross the durable attempt fence.", {
         httpStatus: 409,
         details: { failureLayer: "EXECUTION_FENCING", reasonCodes: ["EXECUTION_LEASE_INVALID"] },

@@ -119,5 +119,13 @@ export interface QuickBooksMutationRepository {
     state: Extract<QuickBooksMutationState, "WRITE_RESULT_UNKNOWN" | "READBACK_MISMATCH" | "BLOCKED_VALIDATION">;
     now: Date;
     resolutionReceipt?: Record<string, unknown>;
+    /**
+     * BLOCKED_VALIDATION asserts that QuickBooks' ledger holds nothing, so by
+     * default it is refused once the dispatch marker is set: after dispatch the
+     * caller normally cannot know. Set this only for a CONFIRMED_NOT_WRITTEN
+     * outcome decided by the Provider adapter from a completed response cycle
+     * (see classifyQuickBooksProviderWriteFailure). Anything less stays UNKNOWN.
+     */
+    providerConfirmedNotWritten?: boolean;
   }): Promise<void>;
 }

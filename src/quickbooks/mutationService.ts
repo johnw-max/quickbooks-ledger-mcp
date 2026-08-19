@@ -1,5 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { AppError, toSafeError } from "../errors.js";
+import type { Logger } from "../logging.js";
+import {
+  quickBooksProviderWriteOutcome,
+  type QuickBooksProviderWriteOutcome,
+} from "../providers/quickbooksWriteOutcome.js";
 import { hashObject, safeEqual, sha256 } from "../security/hash.js";
 import {
   evaluateAutonomousLedgerReuse,
@@ -75,6 +80,16 @@ function isDefinitivePreDispatchFailure(code: AppError["code"]): boolean {
     code === "FORBIDDEN" || code === "NOT_FOUND";
 }
 
+/** Intuit fault codes from a confirmed refusal, for the operator-facing log. */
+function providerFaultCodes(error: AppError): string[] {
+  const providerErrors = error.details?.providerErrors;
+  if (!Array.isArray(providerErrors)) return [];
+  return providerErrors
+    .map((entry) => (entry as { code?: unknown }).code)
+    .filter((code): code is string => typeof code === "string")
+    .slice(0, 5);
+}
+
 function confirmationPhrase(
   input: QuickBooksPrepareMutationInput,
   boundTargetRefSafe: string,
@@ -82,6 +97,32 @@ function confirmationPhrase(
 ): string {
   const target = input.target_id ? ` ${input.target_id}` : "";
   return `CONFIRM QUICKBOOKS ${input.operation} ${input.entity}${target} IN ${boundTargetRefSafe} PAYLOAD ${payloadHash}`;
+}
+
+/**
+ * The most generations one logical operation may open. Each one costs a refused
+ * Provider write, so a document that has burned this many is not being corrected
+ * — it is looping, and an operator should look at it rather than the ledger
+ * accumulating rejected attempts.
+ */
+export const QUICKBOOKS_MAX_WRITE_GENERATIONS = 10;
+
+/**
+ * True only when the durable row proves QuickBooks did not write. Every clause
+ * reads a column that is immutable once set, so unlike an error receipt this
+ * cannot be talked out of by a later unrelated failure — the lesson migration
+ * 037 exists to record.
+ */
+export function quickBooksPreparationConfirmedNotWritten(
+  preparation: QuickBooksMutationPreparation,
+): boolean {
+  return preparation.state === "BLOCKED_VALIDATION" &&
+    preparation.providerEntityId === undefined &&
+    preparation.providerOutcomeReceipt === undefined &&
+    preparation.writeReceipt === undefined &&
+    preparation.readback === undefined &&
+    preparation.executionAttempt?.state === "RESOLVED_NO_WRITE" &&
+    preparation.executionAttempt.resolutionReceipt?.providerMutationPossible === false;
 }
 
 function preparationWarnings(
@@ -118,7 +159,37 @@ export class QuickBooksMutationService {
     private readonly audit?: MutationAuditRepository,
     private readonly sourceAttestationVerifier?: QuickBooksSourceAttestationVerifier,
     private readonly clock: () => Date = () => new Date(),
+    private readonly logger?: Logger,
   ) {}
+
+  /**
+   * The most serious states in this system used to leave no trace at all: a
+   * post-dispatch failure was decided silently and the container logs held
+   * nothing for the window. Record the decision and the evidence behind it.
+   *
+   * Every key used here is on the safeContextKeys allowlist in logging.ts. A
+   * key that is not on that list is emitted as "[REDACTED]" in production while
+   * tests still pass, because tests inject a mock logger that never redacts.
+   */
+  #logPostDispatchFailure(input: {
+    preparationId: string;
+    attemptId: string;
+    providerRequestId: string;
+    providerWriteOutcome: QuickBooksProviderWriteOutcome;
+    error: AppError;
+  }): void {
+    const faultCodes = providerFaultCodes(input.error);
+    const providerHttpStatus = input.error.details?.providerHttpStatus;
+    this.logger?.warn("QuickBooks provider dispatch failed after the durable dispatch marker.", {
+      preparationId: input.preparationId,
+      attemptId: input.attemptId,
+      providerRequestId: input.providerRequestId,
+      providerWriteOutcome: input.providerWriteOutcome,
+      errorCode: input.error.code,
+      ...(typeof providerHttpStatus === "number" ? { providerHttpStatus } : {}),
+      ...(faultCodes.length > 0 ? { providerFaultCodes: faultCodes } : {}),
+    });
+  }
 
   capabilities(input: QuickBooksGetWriteCapabilitiesInput = {}) {
     const summary = quickBooksWriteCapabilitySummary();
@@ -174,13 +245,24 @@ export class QuickBooksMutationService {
       entity: input.entity,
       operation: input.operation,
       payload_hash: hashObject(input.payload),
-    }, () => this.#prepare(actorId, input, { allowVerifiedTerminalReplay: true }));
+    }, () => this.#prepare(actorId, input, {
+      allowVerifiedTerminalReplay: true,
+      allowSupersedeConfirmedNotWritten: true,
+    }));
   }
 
   async #prepare(
     actorId: string,
     input: QuickBooksPrepareMutationInput,
-    options: { allowVerifiedTerminalReplay?: boolean } = {},
+    options: {
+      allowVerifiedTerminalReplay?: boolean;
+      /**
+       * Only the Case path opts in. The generic agent-facing prepare keeps the
+       * strict one-preparation-per-request-id contract, because there the
+       * request id is the caller's own and a fresh one is theirs to choose.
+       */
+      allowSupersedeConfirmedNotWritten?: boolean;
+    } = {},
   ) {
     const capability = quickBooksWriteCapability(input.operation, input.entity);
     if (!capability) {
@@ -225,9 +307,8 @@ export class QuickBooksMutationService {
       beforeImage,
     });
     const phrase = confirmationPhrase(input, resolved.boundTargetRefSafe, payloadHash);
-    const providerRequestId = `zc.${sha256(`${resolved.realmId}:${input.request_id}:${payloadHash}`).slice(0, 47)}`;
     const now = new Date();
-    const created = await this.repository.createOrGet({
+    const prepareGeneration = (clientRequestId: string) => this.repository.createOrGet({
       preparationId: `qbm_${randomBytes(16).toString("hex")}`,
       actorId,
       realmId: resolved.realmId,
@@ -239,8 +320,11 @@ export class QuickBooksMutationService {
       risk: capability.risk,
       executionMode: capability.executionMode,
       providerEffect: capability.providerEffect,
-      clientRequestId: input.request_id,
-      providerRequestId,
+      clientRequestId,
+      // Intuit's idempotency key moves with the generation. Reusing it would
+      // offer the Provider a replay of the very write this generation exists
+      // to re-attempt.
+      providerRequestId: `zc.${sha256(`${resolved.realmId}:${clientRequestId}:${payloadHash}`).slice(0, 47)}`,
       ...(input.target_id ? { targetId: input.target_id } : {}),
       ...(input.sync_token ? { syncToken: input.sync_token } : {}),
       ...(beforeImage ? { beforeImage } : {}),
@@ -256,6 +340,31 @@ export class QuickBooksMutationService {
       expiresAt: new Date(now.getTime() + QUICKBOOKS_PREPARATION_TTL_MS),
       now,
     });
+    // A Case operation's request id is a content hash of the document, so it is
+    // deliberately invariant across corrections: the same supplier invoice is
+    // the same document however it is restated. That is what stops a document
+    // being posted twice, and it also means the remedies for a refused write —
+    // reconnect an expired token, grant a missing scope, add the currency, fix
+    // the contact record — never change the id. Without a generation the first
+    // refusal would make the document unbookable forever.
+    //
+    // A generation is therefore opened only against proof the Provider never
+    // wrote: no Provider id, no outcome receipt, no write receipt, no readback,
+    // and a resolution receipt asserting the mutation was not possible. The
+    // double-post guarantee is untouched, because a row that could have written
+    // is never superseded.
+    let created = await prepareGeneration(input.request_id);
+    if (options.allowSupersedeConfirmedNotWritten === true) {
+      for (
+        let generation = 2;
+        generation <= QUICKBOOKS_MAX_WRITE_GENERATIONS &&
+          !created.created &&
+          quickBooksPreparationConfirmedNotWritten(created.preparation);
+        generation += 1
+      ) {
+        created = await prepareGeneration(`${input.request_id}.g${generation}`);
+      }
+    }
     if (!created.created && !safeEqual(created.preparation.payloadHash, payloadHash)) {
       throw new AppError("CONFLICT", "request_id was already used with a different QuickBooks mutation payload.", {
         httpStatus: 409,
@@ -808,7 +917,27 @@ export class QuickBooksMutationService {
         }
       }
       const providerOutcomeRecorded = persisted?.providerEntityId !== undefined;
+      // The third outcome of Provider dispatch. The adapter already decided
+      // what QuickBooks' ledger holds and stamped it as evidence; this layer
+      // only reads it. CONFIRMED_NOT_WRITTEN means Intuit answered, refused in
+      // its own Fault structure, and created nothing — recording that as "may
+      // have mutated, operator must resolve by hand" is simply false, and with
+      // no operator-resolution path it strands a correctable mistake forever.
+      const providerWriteOutcome: QuickBooksProviderWriteOutcome = localCompletionLost
+        ? "CONFIRMED_WRITTEN"
+        : quickBooksProviderWriteOutcome(safe);
+      const confirmedNotWritten = dispatchStarted && !providerOutcomeRecorded &&
+        providerWriteOutcome === "CONFIRMED_NOT_WRITTEN";
       if (dispatchStarted && !providerOutcomeRecorded) {
+        this.#logPostDispatchFailure({
+          preparationId: claim.preparation.preparationId,
+          attemptId,
+          providerRequestId: claim.preparation.providerRequestId,
+          providerWriteOutcome: confirmedNotWritten ? "CONFIRMED_NOT_WRITTEN" : "UNKNOWN",
+          error: safe,
+        });
+      }
+      if (dispatchStarted && !providerOutcomeRecorded && !confirmedNotWritten) {
         const providerEntityIdHint = returnedProviderOutcome?.providerEntityId ??
           (typeof safe.details?.providerEntityId === "string" ? safe.details.providerEntityId : undefined);
         const receipt = unknownNoIdResolutionReceipt({
@@ -890,11 +1019,22 @@ export class QuickBooksMutationService {
         providerRequestId: claim.preparation.providerRequestId,
         state: failureState,
         now: failureAt,
+        // The pre-dispatch path releases the lease by expiring it and leaving
+        // the row claimable. After dispatch that is not available: migration
+        // 033's immutability trigger forbids moving execution_lease_until, and
+        // its shape CHECK forbids returning to PREPARED once dispatch_started_at
+        // is set. What is available, and what this reuses, is the same durable
+        // evidence the pre-dispatch path writes — RESOLVED_NO_WRITE plus a
+        // resolvedNoWriteReceipt — which takes the row out of EXECUTING so it is
+        // no longer in flight and is never swept into unknown-no-Id.
+        ...(confirmedNotWritten ? { providerConfirmedNotWritten: true } : {}),
         ...(failureState === "BLOCKED_VALIDATION" ? {
           resolutionReceipt: resolvedNoWriteReceipt({
             attemptId,
             providerRequestId: claim.preparation.providerRequestId,
-            reasonCode: `DEFINITIVE_PRE_DISPATCH_${safe.code}`,
+            reasonCode: confirmedNotWritten
+              ? `PROVIDER_CONFIRMED_NOT_WRITTEN_HTTP_${String(safe.details?.providerHttpStatus)}`
+              : `DEFINITIVE_PRE_DISPATCH_${safe.code}`,
             resolvedAt: failureAt,
           }),
         } : {}),

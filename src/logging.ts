@@ -9,6 +9,18 @@ const order = { debug: 10, info: 20, warn: 30, error: 40 } as const;
 
 const safeContextKeys = new Set([
   "actorId",
+  // What is known about the Provider's ledger after a dispatched write, and
+  // the evidence behind it. Without these on the allowlist the one log line
+  // covering the most serious states in the system is all "[REDACTED]", and no
+  // test notices, because tests inject a mock logger that never redacts. None
+  // of them is user content: opaque internal identifiers, an HTTP status, the
+  // outcome vocabulary, and Intuit's own fault codes.
+  "attemptId",
+  "preparationId",
+  "providerFaultCodes",
+  "providerHttpStatus",
+  "providerRequestId",
+  "providerWriteOutcome",
   "auditCompletionStatus",
   "batches",
   "callId",

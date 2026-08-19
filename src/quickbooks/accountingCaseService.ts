@@ -983,7 +983,7 @@ export class QuickBooksAccountingCaseService {
     fact: QuickBooksAccountingFact,
     company: QuickBooksCompanyContext,
   ): Promise<Record<string, unknown>> {
-    if (fact.kind === "CONTACT_CANDIDATE") return this.#contactPayload(resolved, fact);
+    if (fact.kind === "CONTACT_CANDIDATE") return this.#contactPayload(resolved, fact, company);
     if (fact.kind !== "NATIVE_DOCUMENT") {
       throw new AppError("VALIDATION_FAILED", "Evidence-only facts cannot create QuickBooks operations.", { httpStatus: 422 });
     }
@@ -993,6 +993,7 @@ export class QuickBooksAccountingCaseService {
   async #contactPayload(
     resolved: ResolvedQuickBooksProvider,
     fact: QuickBooksContactCandidateFact,
+    company: QuickBooksCompanyContext,
   ): Promise<Record<string, unknown>> {
     const records = fact.role === "CUSTOMER"
       ? (await resolved.provider.searchCustomers(fact.displayName, 100)).records
@@ -1000,6 +1001,34 @@ export class QuickBooksAccountingCaseService {
     const exactActive = records.filter((entry) => entry.Active !== false &&
       entry.DisplayName?.trim().toLocaleLowerCase("en") === fact.displayName.toLocaleLowerCase("en"));
     if (exactActive.length === 1) {
+      // A Customer/Vendor's CurrencyRef is frozen at creation in QuickBooks
+      // and can never be edited afterwards. fact.currency here is never
+      // Agent-stated -- it is derived purely from the NATIVE_DOCUMENT facts
+      // in this Case that reference this contact (see
+      // reconcileContactCurrencies in accountingCaseCompiler.ts). When that
+      // derived currency disagrees with the currency the contact that
+      // already exists in QuickBooks was actually created in, no document in
+      // the derived currency can ever be posted to it: re-preparing this
+      // same Case can never fix that, only a different contact record can.
+      // That is reported distinctly from the plain CONTACT_ALREADY_EXISTS
+      // case below, which is otherwise fine to treat as already satisfied.
+      const existingCurrency = exactActive[0]?.CurrencyRef?.value;
+      if (fact.currency && existingCurrency && existingCurrency !== fact.currency) {
+        throw new AppError(
+          "VALIDATION_FAILED",
+          `The QuickBooks contact "${fact.displayName}" already exists and was created in ${existingCurrency}, but this Case needs it in ${fact.currency}. A contact's currency is frozen at creation in QuickBooks and cannot be edited, so this is not fixable by changing the existing contact -- a different contact record, created in ${fact.currency}, is required.`,
+          {
+            httpStatus: 422,
+            details: {
+              failureLayer: "PROVIDER_REFERENCE",
+              reasonCodes: ["EXISTING_CONTACT_CURRENCY_MISMATCH"],
+              existingCurrency,
+              documentCurrency: fact.currency,
+              recoveryAction: "USE_A_DIFFERENTLY_NAMED_CONTACT_RECORD_IN_THE_REQUIRED_CURRENCY",
+            },
+          },
+        );
+      }
       throw new AppError("VALIDATION_FAILED", "The exact QuickBooks contact already exists.", {
         httpStatus: 422,
         details: { failureLayer: "ALREADY_SATISFIED", reasonCodes: ["CONTACT_ALREADY_EXISTS"] },
@@ -1011,10 +1040,26 @@ export class QuickBooksAccountingCaseService {
         details: { failureLayer: "PROVIDER_REFERENCE", reasonCodes: ["REFERENCE_AMBIGUOUS"] },
       });
     }
+    // A Customer/Vendor's CurrencyRef is set once at creation and is
+    // immutable afterwards, and QuickBooks rejects the field outright on a
+    // company that has never turned multicurrency on. fact.currency is never
+    // Agent-stated here -- the compiler derives it purely from the
+    // NATIVE_DOCUMENT facts in this Case that reference this contact, and
+    // leaves it undefined when no such document exists yet (a legitimate
+    // contact-only Case, left to default to the company's home currency).
+    // When the derived currency equals the company's home currency,
+    // QuickBooks would default to the same value regardless, but this still
+    // names it explicitly -- one fewer implicit assumption, matching how
+    // #documentPayload always names CurrencyRef below rather than relying on
+    // the provider default.
+    const currencyRef = company.MultiCurrencyEnabled === true && fact.currency
+      ? { CurrencyRef: { value: fact.currency } }
+      : {};
     return {
       DisplayName: fact.displayName,
       ...(fact.companyName ? { CompanyName: fact.companyName } : {}),
       ...(fact.email ? { PrimaryEmailAddr: { Address: fact.email } } : {}),
+      ...currencyRef,
     };
   }
 
