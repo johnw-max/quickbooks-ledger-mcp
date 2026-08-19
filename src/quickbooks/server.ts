@@ -11,7 +11,6 @@ import { createQuickBooksHttpApp } from "./httpApp.js";
 import { QuickBooksOAuthService } from "./oauthService.js";
 import { QuickBooksMcpOAuthService } from "./mcpOAuthService.js";
 import { QuickBooksPostgresMcpOAuthRepository } from "./mcpOAuthRepository.js";
-import { QuickBooksPostgresPostingRepository } from "./postgresRepository.js";
 import { QuickBooksPostgresMutationRepository } from "./postgresMutationRepository.js";
 import { ServerBoundQuickBooksProviderResolver } from "./providerResolver.js";
 import { QuickBooksReviewService } from "./reviewService.js";
@@ -34,7 +33,6 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: config.databaseUrl, max: 10 });
   const controlRepository = new QuickBooksPostgresControlRepository(pool);
   const connectionRepository = new QuickBooksPostgresConnectionRepository(pool);
-  const postingRepository = new QuickBooksPostgresPostingRepository(pool);
   const mutationRepository = new QuickBooksPostgresMutationRepository(pool);
   const accountingCaseRepository = new QuickBooksPostgresAccountingCaseRepository(pool);
   const mcpOAuthRepository = config.mcpOAuth ? new QuickBooksPostgresMcpOAuthRepository(pool) : undefined;
@@ -59,15 +57,7 @@ async function main(): Promise<void> {
     connectUrl: (actorId) => tickets.issue(actorId),
     targetSessions,
   });
-  const workflow = new QuickBooksWorkflowService({
-    repository: postingRepository,
-    resolver,
-    publicBaseUrl: config.publicBaseUrl,
-    writeEnabled: config.writeEnabled,
-    writeTargetMode: config.writeTargetMode,
-    ...(config.allowedRealmId ? { allowedRealmId: config.allowedRealmId } : {}),
-    ...(executeScopeAuthorizer ? { executeScopeAuthorizer } : {}),
-  });
+  const workflow = new QuickBooksWorkflowService({ resolver });
   const mutations = new QuickBooksMutationService(mutationRepository, resolver, {
     writeEnabled: config.writeEnabled,
     writeTargetMode: config.writeTargetMode,
@@ -100,11 +90,7 @@ async function main(): Promise<void> {
     manager,
     config: managerConfig,
   });
-  const reviews = new QuickBooksReviewService({
-    postings: postingRepository,
-    mutations: mutationRepository,
-    security: controlRepository,
-  });
+  const reviews = new QuickBooksReviewService({ security: controlRepository });
   const mcpOAuth = config.mcpOAuth && mcpOAuthRepository ? new QuickBooksMcpOAuthService({
     repository: mcpOAuthRepository,
     manager,

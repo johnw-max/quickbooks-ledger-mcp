@@ -16,10 +16,10 @@ import type { QuickBooksConnectionTicketService } from "./connectionTicketServic
 import type { QuickBooksRuntimeConfig } from "./config.js";
 import {
   createQuickBooksMcpServer,
+  QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
+  QUICKBOOKS_CAPABILITY_TOOL_ALLOWLIST,
+  QUICKBOOKS_READ_TOOL_ALLOWLIST,
   QUICKBOOKS_RELEASE_VERSION,
-  QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST,
-  QUICKBOOKS_TOOL_ALLOWLIST,
-  QUICKBOOKS_MUTATION_TOOL_ALLOWLIST,
 } from "./mcp.js";
 import type { QuickBooksOAuthService } from "./oauthService.js";
 import {
@@ -154,69 +154,11 @@ function renderConnected(companyName: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuickBooks connected</title></head><body><main><h1>QuickBooks connected</h1><p>Connected to <strong>${escapeHtml(companyName)}</strong>. Return to the Agent and continue.</p></main></body></html>`;
 }
 
-function renderReview(options: {
-  posting: Awaited<ReturnType<QuickBooksReviewService["getReview"]>>["posting"];
-  csrfToken?: string;
-}): string {
-  const posting = options.posting;
-  const rows = posting.payload.lines.map((line) => `<tr><td>${escapeHtml(line.description ?? "-")}</td><td>${escapeHtml(line.amount)}</td><td>${escapeHtml(line.accountId)}</td><td>${escapeHtml(line.taxCodeId ?? "-")}</td></tr>`).join("");
-  const actionBase = `/quickbooks/review/${encodeURIComponent(posting.postingRequestId)}`;
-  const actions = options.csrfToken && ["PREPARED", "WRITE_RESULT_UNKNOWN"].includes(posting.state)
-    ? `<form method="post" action="${actionBase}/approve"><input type="hidden" name="csrf_token" value="${escapeHtml(options.csrfToken)}"><button type="submit">Approve and post to QuickBooks</button></form>${posting.state === "PREPARED" ? `<form method="post" action="${actionBase}/reject"><input type="hidden" name="csrf_token" value="${escapeHtml(options.csrfToken)}"><button type="submit">Reject</button></form>` : ""}`
-    : "<p>No review action is available.</p>";
-  const evidence = {
-    postingRequestId: posting.postingRequestId,
-    payloadHash: posting.payloadHash,
-    sourceRef: posting.sourceRef,
-    sourceSha256: posting.sourceSha256,
-    sourceDigestProvenance: posting.payload.sourceDigestProvenance ?? "EXTERNALLY_SUPPLIED_UNVERIFIED_SHA256",
-    approvalRef: posting.payload.approvalRef,
-    supportingEvidence: posting.payload.supportingEvidence,
-    providerRequestId: posting.providerRequestId,
-    qboBillId: posting.qboBillId,
-  };
-  const sourceDigestProvenance = posting.payload.sourceDigestProvenance ?? "EXTERNALLY_SUPPLIED_UNVERIFIED_SHA256";
-  const sourceWarning = sourceDigestProvenance === "HOST_PROVIDED_ORIGINAL_FILE_SHA256"
-    ? ""
-    : '<p class="warning"><strong>Evidence limitation:</strong> the source digest is not a host-verified hash of the original uploaded file. For AGENT_SUPPLIED_TEXT_FINGERPRINT it covers only text supplied by the Agent. Compare the displayed accounting fields with the original document before approving.</p>';
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review QuickBooks supplier bill</title><style>body{font-family:system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:.5rem;text-align:left}form{display:inline-block;margin:1rem 1rem 1rem 0}button{padding:.65rem 1rem}.warning{background:#fff4ce;padding:.75rem}</style></head><body><main><h1>Review QuickBooks supplier bill</h1><p><strong>Status: ${escapeHtml(posting.state)}</strong>. QuickBooks has not been written unless the status is POSTED_READBACK_VERIFIED.</p>${posting.payload.approvalRef ? "" : '<p class="warning">No separate business approval reference was supplied. Apply the workspace approval policy before posting.</p>'}${sourceWarning}<dl><dt>Company realm</dt><dd>${escapeHtml(posting.realmId)}</dd><dt>Vendor ID</dt><dd>${escapeHtml(posting.payload.vendorId)}</dd><dt>Supplier document</dt><dd>${escapeHtml(posting.payload.docNumber ?? `Missing: ${posting.payload.missingDocNumberReason ?? "no reason"}`)}</dd><dt>Transaction date</dt><dd>${escapeHtml(posting.payload.txnDate)}</dd><dt>Due date</dt><dd>${escapeHtml(posting.payload.dueDate ?? "-")}</dd><dt>Currency</dt><dd>${escapeHtml(posting.payload.currencyCode ?? "Company default")}</dd><dt>Tax treatment</dt><dd>${escapeHtml(posting.payload.globalTaxCalculation ?? "-")}</dd><dt>Invoice total</dt><dd>${escapeHtml(posting.payload.invoiceTotal ?? "-")}</dd><dt>Tax total</dt><dd>${escapeHtml(posting.payload.taxTotal ?? "-")}</dd><dt>Source</dt><dd>${escapeHtml(posting.sourceRef)}</dd><dt>Source digest provenance</dt><dd>${escapeHtml(sourceDigestProvenance)}</dd></dl><table><thead><tr><th>Description</th><th>Amount</th><th>Account ID</th><th>Tax code ID</th></tr></thead><tbody>${rows}</tbody></table>${actions}<details><summary>Evidence</summary><pre>${escapeHtml(JSON.stringify(evidence, null, 2))}</pre></details></main></body></html>`;
-}
-
-function renderResult(options: {
-  title: string;
-  message: string;
-  postingRequestId: string;
-  state: string;
-  billId?: string;
-}): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(options.title)}</title></head><body><main><h1>${escapeHtml(options.title)}</h1><p>${escapeHtml(options.message)}</p><dl><dt>Status</dt><dd>${escapeHtml(options.state)}</dd><dt>Posting request</dt><dd>${escapeHtml(options.postingRequestId)}</dd>${options.billId ? `<dt>QuickBooks Bill ID</dt><dd>${escapeHtml(options.billId)}</dd>` : ""}</dl></main></body></html>`;
-}
-
-function renderMutationReview(options: {
-  preparation: Awaited<ReturnType<QuickBooksReviewService["getMutationReview"]>>["preparation"];
-  csrfToken?: string;
-}): string {
-  const preparation = options.preparation;
-  const actionBase = `/quickbooks/mutation-review/${encodeURIComponent(preparation.preparationId)}`;
-  const actions = options.csrfToken && preparation.state === "PREPARED"
-    ? `<form method="post" action="${actionBase}/approve"><input type="hidden" name="csrf_token" value="${escapeHtml(options.csrfToken)}"><button type="submit">Approve and execute once</button></form><form method="post" action="${actionBase}/reject"><input type="hidden" name="csrf_token" value="${escapeHtml(options.csrfToken)}"><button type="submit">Reject</button></form>`
-    : "<p>No review action is available.</p>";
-  const destructiveWarning = preparation.operation === "DELETE"
-    ? preparation.entity === "Invoice"
-      ? '<p class="critical"><strong>Destructive action:</strong> QuickBooks may delete this Invoice or fall back to voiding it. Either outcome changes receivables and requires a restricted reviewer.</p>'
-      : '<p class="critical"><strong>Destructive action:</strong> QuickBooks transaction deletion cannot be undone. Master-data deletion may deactivate the record.</p>'
-    : "";
-  const beforeImage = preparation.beforeImage
-    ? `<details open><summary>Provider target read at preparation time</summary><pre>${escapeHtml(JSON.stringify(preparation.beforeImage, null, 2))}</pre></details>`
-    : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review QuickBooks mutation</title><style>body{font-family:system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}form{display:inline-block;margin:1rem 1rem 1rem 0}button{padding:.65rem 1rem}.warning{background:#fff4ce;padding:.75rem}.critical{background:#ffd9d9;padding:.75rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><main><h1>Review QuickBooks ${escapeHtml(preparation.operation)} ${escapeHtml(preparation.entity)}</h1><p><strong>Status: ${escapeHtml(preparation.state)}</strong>. No QuickBooks provider write has occurred unless the status is POSTED_READBACK_VERIFIED.</p><p class="warning"><strong>${escapeHtml(preparation.risk)} risk / ${escapeHtml(preparation.providerEffect)}</strong>. QuickBooks does not provide a universal draft state; this page is zCloak's immutable review proposal.</p>${destructiveWarning}<dl><dt>Company binding</dt><dd>${escapeHtml(preparation.boundTargetRefSafe)}</dd><dt>Target ID</dt><dd>${escapeHtml(preparation.targetId ?? "New object")}</dd><dt>Sync token</dt><dd>${escapeHtml(preparation.syncToken ?? "Not applicable")}</dd><dt>Business reason</dt><dd>${escapeHtml(preparation.businessReason)}</dd><dt>Payload hash</dt><dd>${escapeHtml(preparation.payloadHash)}</dd><dt>Expires</dt><dd>${escapeHtml(preparation.expiresAt.toISOString())}</dd></dl>${beforeImage}<details open><summary>Approved payload</summary><pre>${escapeHtml(JSON.stringify(preparation.payload, null, 2))}</pre></details>${actions}</main></body></html>`;
-}
-
 export function createQuickBooksHttpApp(options: {
   config: QuickBooksRuntimeConfig;
   workflow: QuickBooksWorkflowService;
   mutations?: QuickBooksMutationService;
-  accountingCases?: QuickBooksAccountingCaseService;
+  accountingCases: QuickBooksAccountingCaseService;
   oauth: QuickBooksOAuthService;
   mcpOAuth?: QuickBooksMcpOAuthService;
   reviews: QuickBooksReviewService;
@@ -225,7 +167,6 @@ export function createQuickBooksHttpApp(options: {
   logger: Logger;
 }) {
   const { config, workflow, mutations, accountingCases, oauth, mcpOAuth, reviews, tickets, readiness, logger } = options;
-  const legacyReviewRoutesEnabled = !accountingCases;
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -251,15 +192,14 @@ export function createQuickBooksHttpApp(options: {
   };
 
   app.get("/healthz", async (_, response) => {
-    const toolset = accountingCases
-      ? QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST
-      : mutations
-        ? [...QUICKBOOKS_TOOL_ALLOWLIST, ...QUICKBOOKS_MUTATION_TOOL_ALLOWLIST]
-        : QUICKBOOKS_TOOL_ALLOWLIST;
+    const toolset = [
+      ...QUICKBOOKS_READ_TOOL_ALLOWLIST,
+      ...(mutations ? QUICKBOOKS_CAPABILITY_TOOL_ALLOWLIST : []),
+      ...QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
+    ];
     const runtime = await readinessState();
     const promotionReasons = [
       ...(runtime.ready ? [] : ["RUNTIME_NOT_READY"]),
-      ...(accountingCases ? [] : ["ACCOUNTING_CASE_RUNTIME_DISABLED"]),
       ...(mcpOAuth ? [] : ["PER_USER_MCP_OAUTH_DISABLED"]),
       ...(config.writeEnabled ? [] : ["WRITE_KILL_SWITCH_DISABLED"]),
       ...(config.standingDelegationEnabled ? [] : ["STANDING_DELEGATION_DISABLED"]),
@@ -279,7 +219,7 @@ export function createQuickBooksHttpApp(options: {
       validatorVersion: LEDGER_DETERMINISTIC_VALIDATOR_VERSION,
       compilerVersion: QUICKBOOKS_CASE_ATTESTATION.compilerVersion,
       policyVersion: QUICKBOOKS_CASE_ATTESTATION.policyVersion,
-      accountingCaseEnabled: Boolean(accountingCases),
+      accountingCaseEnabled: true,
       readiness: runtime.attestation ?? {
         ready: runtime.ready,
         persistence: { status: runtime.ready ? "READY" : "NOT_READY", source: "UNSTRUCTURED_CALLBACK" },
@@ -536,8 +476,8 @@ export function createQuickBooksHttpApp(options: {
     const server = createQuickBooksMcpServer(
       workflow,
       response.locals.requestContext as RequestContext,
-      mutations,
       accountingCases,
+      mutations,
     );
     const transport = new StreamableHTTPServerTransport();
     try {
@@ -636,202 +576,6 @@ export function createQuickBooksHttpApp(options: {
       return;
     }
     response.type("html").send(renderConnected(connected.companyName));
-  });
-
-  app.get("/quickbooks/review/:postingRequestId", async (request, response) => {
-    if (!legacyReviewRoutesEnabled) {
-      throw new AppError("NOT_FOUND", "Legacy QuickBooks supplier-Bill review is not available in Accounting Case mode.", { httpStatus: 404 });
-    }
-    const postingRequestId = request.params.postingRequestId;
-    const rawSession = parseCookie(request, REVIEW_COOKIE);
-    if (typeof postingRequestId !== "string" || !rawSession) {
-      throw new AppError("AUTH_REQUIRED", "QuickBooks operator review session is required.", { httpStatus: 401 });
-    }
-    const session = await reviews.authenticate(rawSession);
-    const review = await reviews.getReview(postingRequestId, session.actorId, session.sessionHash);
-    const csrfToken = "csrfToken" in review && typeof review.csrfToken === "string" ? review.csrfToken : undefined;
-    setPrivateHeaders(response);
-    if (request.accepts(["html", "json"]) === "json") {
-      response.json({ review: review.posting, ...(csrfToken ? { csrfToken } : {}) });
-      return;
-    }
-    response.type("html").send(renderReview({ posting: review.posting, ...(csrfToken ? { csrfToken } : {}) }));
-  });
-
-  const sameOrigin = (request: Request, response: Response, next: NextFunction) => {
-    if (request.headers.origin !== config.publicBaseUrl) {
-      response.status(403).json({ error: { code: "FORBIDDEN", message: "Review POST must be same-origin." } });
-      return;
-    }
-    next();
-  };
-
-  app.post("/quickbooks/review/:postingRequestId/approve", sameOrigin, async (request, response) => {
-    if (!legacyReviewRoutesEnabled) {
-      throw new AppError("NOT_FOUND", "Legacy QuickBooks supplier-Bill review is not available in Accounting Case mode.", { httpStatus: 404 });
-    }
-    const postingRequestId = request.params.postingRequestId;
-    const rawSession = parseCookie(request, REVIEW_COOKIE);
-    const csrfToken = typeof request.body?.csrf_token === "string" ? request.body.csrf_token : undefined;
-    if (typeof postingRequestId !== "string" || !rawSession || !csrfToken) {
-      throw new AppError("AUTH_REQUIRED", "QuickBooks review session and CSRF are required.", { httpStatus: 401 });
-    }
-    const session = await reviews.authenticate(rawSession);
-    const result = await reviews.approve({
-      postingRequestId,
-      actorId: session.actorId,
-      sessionHash: session.sessionHash,
-      csrfToken,
-      approvedBy: session.actorId,
-      service: workflow,
-    });
-    setPrivateHeaders(response);
-    const payload = {
-      status: result.state,
-      postingRequestId: result.postingRequestId,
-      billId: result.bill.billId,
-      realmId: result.bill.realmId,
-      verified: result.receipt.verified === true,
-    };
-    if (request.accepts(["html", "json"]) === "json") {
-      response.json(payload);
-      return;
-    }
-    response.type("html").send(renderResult({
-      title: "Posted to QuickBooks",
-      message: "The approved supplier Bill was written once and exact readback was verified.",
-      postingRequestId: result.postingRequestId,
-      state: result.state,
-      billId: result.bill.billId,
-    }));
-  });
-
-  app.post("/quickbooks/review/:postingRequestId/reject", sameOrigin, async (request, response) => {
-    if (!legacyReviewRoutesEnabled) {
-      throw new AppError("NOT_FOUND", "Legacy QuickBooks supplier-Bill review is not available in Accounting Case mode.", { httpStatus: 404 });
-    }
-    const postingRequestId = request.params.postingRequestId;
-    const rawSession = parseCookie(request, REVIEW_COOKIE);
-    const csrfToken = typeof request.body?.csrf_token === "string" ? request.body.csrf_token : undefined;
-    if (typeof postingRequestId !== "string" || !rawSession || !csrfToken) {
-      throw new AppError("AUTH_REQUIRED", "QuickBooks review session and CSRF are required.", { httpStatus: 401 });
-    }
-    const session = await reviews.authenticate(rawSession);
-    const result = await reviews.reject({
-      postingRequestId,
-      actorId: session.actorId,
-      sessionHash: session.sessionHash,
-      csrfToken,
-      rejectedBy: session.actorId,
-      service: workflow,
-    });
-    setPrivateHeaders(response);
-    if (request.accepts(["html", "json"]) === "json") {
-      response.json({ postingRequestId: result.postingRequestId, state: result.state });
-      return;
-    }
-    response.type("html").send(renderResult({
-      title: "QuickBooks Bill rejected",
-      message: "Nothing was posted to QuickBooks.",
-      postingRequestId: result.postingRequestId,
-      state: result.state,
-    }));
-  });
-
-  app.get("/quickbooks/mutation-review/:preparationId", async (request, response) => {
-    if (!legacyReviewRoutesEnabled) {
-      throw new AppError("NOT_FOUND", "Generic QuickBooks mutation review is not available in Accounting Case mode.", { httpStatus: 404 });
-    }
-    if (!mutations) throw new AppError("CONFIGURATION_ERROR", "QuickBooks mutation runtime is not configured.", { httpStatus: 503 });
-    const preparationId = request.params.preparationId;
-    const rawSession = parseCookie(request, REVIEW_COOKIE);
-    if (typeof preparationId !== "string" || !rawSession) {
-      throw new AppError("AUTH_REQUIRED", "QuickBooks operator review session is required.", { httpStatus: 401 });
-    }
-    const session = await reviews.authenticate(rawSession);
-    const review = await reviews.getMutationReview(preparationId, session.actorId, session.sessionHash);
-    const csrfToken = "csrfToken" in review && typeof review.csrfToken === "string" ? review.csrfToken : undefined;
-    setPrivateHeaders(response);
-    if (request.accepts(["html", "json"]) === "json") {
-      response.json({ review: review.preparation, ...(csrfToken ? { csrfToken } : {}) });
-      return;
-    }
-    response.type("html").send(renderMutationReview({ preparation: review.preparation, ...(csrfToken ? { csrfToken } : {}) }));
-  });
-
-  app.post("/quickbooks/mutation-review/:preparationId/approve", sameOrigin, async (request, response) => {
-    if (!legacyReviewRoutesEnabled) {
-      throw new AppError("NOT_FOUND", "Generic QuickBooks mutation review is not available in Accounting Case mode.", { httpStatus: 404 });
-    }
-    if (!mutations) throw new AppError("CONFIGURATION_ERROR", "QuickBooks mutation runtime is not configured.", { httpStatus: 503 });
-    const preparationId = request.params.preparationId;
-    const rawSession = parseCookie(request, REVIEW_COOKIE);
-    const csrfToken = typeof request.body?.csrf_token === "string" ? request.body.csrf_token : undefined;
-    if (typeof preparationId !== "string" || !rawSession || !csrfToken) {
-      throw new AppError("AUTH_REQUIRED", "QuickBooks review session and CSRF are required.", { httpStatus: 401 });
-    }
-    const session = await reviews.authenticate(rawSession);
-    const result = await reviews.approveMutation({
-      preparationId,
-      actorId: session.actorId,
-      sessionHash: session.sessionHash,
-      csrfToken,
-      approvedBy: session.actorId,
-      service: mutations,
-    });
-    setPrivateHeaders(response);
-    const payload = {
-      status: result.state,
-      preparationId: result.preparationId,
-      entity: result.entity,
-      operation: result.operation,
-      providerEntityId: result.providerEntityId,
-      verified: result.receipt.verified === true,
-    };
-    if (request.accepts(["html", "json"]) === "json") {
-      response.json(payload);
-      return;
-    }
-    response.type("html").send(renderResult({
-      title: "QuickBooks mutation verified",
-      message: `${result.operation} ${result.entity} was executed once and provider evidence was verified.`,
-      postingRequestId: result.preparationId,
-      state: result.state,
-      billId: result.providerEntityId,
-    }));
-  });
-
-  app.post("/quickbooks/mutation-review/:preparationId/reject", sameOrigin, async (request, response) => {
-    if (!legacyReviewRoutesEnabled) {
-      throw new AppError("NOT_FOUND", "Generic QuickBooks mutation review is not available in Accounting Case mode.", { httpStatus: 404 });
-    }
-    if (!mutations) throw new AppError("CONFIGURATION_ERROR", "QuickBooks mutation runtime is not configured.", { httpStatus: 503 });
-    const preparationId = request.params.preparationId;
-    const rawSession = parseCookie(request, REVIEW_COOKIE);
-    const csrfToken = typeof request.body?.csrf_token === "string" ? request.body.csrf_token : undefined;
-    if (typeof preparationId !== "string" || !rawSession || !csrfToken) {
-      throw new AppError("AUTH_REQUIRED", "QuickBooks review session and CSRF are required.", { httpStatus: 401 });
-    }
-    const session = await reviews.authenticate(rawSession);
-    const result = await reviews.rejectMutation({
-      preparationId,
-      actorId: session.actorId,
-      sessionHash: session.sessionHash,
-      csrfToken,
-      rejectedBy: session.actorId,
-      service: mutations,
-    });
-    setPrivateHeaders(response);
-    if (request.accepts(["html", "json"]) === "json") {
-      response.json({ preparationId: result.preparationId, state: result.state });
-      return;
-    }
-    response.type("html").send(renderResult({
-      title: "QuickBooks mutation rejected",
-      message: "Nothing was written to QuickBooks.",
-      postingRequestId: result.preparationId,
-      state: result.state,
-    }));
   });
 
   app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {

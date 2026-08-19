@@ -1,6 +1,4 @@
 import { AppError } from "../errors.js";
-import type { QuickBooksSupplierBillInput } from "../providers/quickbooksTypes.js";
-import type { QuickBooksPostingRequest } from "../quickbooks/models.js";
 import type { QuickBooksMutationPreparation } from "../quickbooks/mutationModels.js";
 import {
   QUICKBOOKS_WRITABLE_ENTITIES,
@@ -15,7 +13,6 @@ declare const quickBooksProviderWritePermitBrand: unique symbol;
 /** Every credentialed raw QuickBooks adapter operation covered by this authority. */
 export const QUICKBOOKS_PROVIDER_WRITE_ADAPTER_OPERATIONS = [
   "QuickBooksAccountingProvider.executeMutation",
-  "QuickBooksAccountingProvider.createApprovedSupplierBill",
 ] as const;
 
 export type QuickBooksProviderWriteAdapterOperation =
@@ -56,11 +53,6 @@ export interface QuickBooksProviderWritePermitClaims {
 export type IssueQuickBooksProviderWritePermitInput = Readonly<{
   /** The repository-returned record after an exclusive execution claim. */
   claimedPreparation: QuickBooksMutationPreparation;
-}>;
-
-export type IssueQuickBooksSupplierBillProviderWritePermitInput = Readonly<{
-  /** The legacy posting repository record after an exclusive POSTING claim. */
-  claimedPosting: QuickBooksPostingRequest;
 }>;
 
 interface PermitState {
@@ -140,38 +132,6 @@ function commandHashes(command: Pick<
   };
 }
 
-function supplierBillCommand(input: QuickBooksSupplierBillInput): QuickBooksProviderMutationCommand {
-  const { requestId, ...payload } = input;
-  return {
-    entity: "Bill",
-    operation: "CREATE",
-    requestId,
-    payload,
-  };
-}
-
-function supplierBillCommandFromPosting(posting: QuickBooksPostingRequest): QuickBooksProviderMutationCommand {
-  const payload = posting.payload;
-  return supplierBillCommand({
-    requestId: posting.providerRequestId,
-    sourceRef: payload.sourceRef,
-    sourceSha256: payload.sourceSha256,
-    vendorId: payload.vendorId,
-    txnDate: payload.txnDate,
-    ...(payload.dueDate ? { dueDate: payload.dueDate } : {}),
-    ...(payload.docNumber ? { docNumber: payload.docNumber } : {}),
-    ...(payload.missingDocNumberReason ? { missingDocNumberReason: payload.missingDocNumberReason } : {}),
-    ...(payload.currencyCode ? { currencyCode: payload.currencyCode } : {}),
-    ...(payload.memo ? { memo: payload.memo } : {}),
-    ...(payload.approvalRef ? { approvalRef: payload.approvalRef } : {}),
-    ...(payload.supportingEvidence ? { supportingEvidence: payload.supportingEvidence } : {}),
-    ...(payload.globalTaxCalculation ? { globalTaxCalculation: payload.globalTaxCalculation } : {}),
-    ...(payload.invoiceTotal ? { invoiceTotal: payload.invoiceTotal } : {}),
-    ...(payload.taxTotal ? { taxTotal: payload.taxTotal } : {}),
-    lines: payload.lines,
-  });
-}
-
 function validClaimedPreparation(
   value: unknown,
 ): value is QuickBooksMutationPreparation {
@@ -216,43 +176,6 @@ export function issueQuickBooksProviderWritePermit(
     entity: preparation.entity,
     operation: preparation.operation,
     ...commandHashes(preparation),
-  }) satisfies Readonly<QuickBooksProviderWritePermitClaims>;
-
-  const permit = Object.freeze(Object.create(null)) as QuickBooksProviderWritePermit;
-  permitState.set(permit, { claims, consumed: false });
-  return permit;
-}
-
-/**
- * Legacy review compatibility issuer. Production imports are architecture-
- * gated to QuickBooksWorkflowService, and the Accounting Case HTTP runtime
- * removes that legacy review route entirely.
- */
-export function issueQuickBooksSupplierBillProviderWritePermit(
-  input: IssueQuickBooksSupplierBillProviderWritePermitInput,
-): QuickBooksProviderWritePermit {
-  if (!isRecord(input) || !isRecord(input.claimedPosting)) {
-    throw permitIssuanceFailed("INVALID_CLAIM");
-  }
-  const posting = input.claimedPosting;
-  const realmId = ownValue(posting, "realmId");
-  const providerRequestId = ownValue(posting, "providerRequestId");
-  const payload = ownValue(posting, "payload");
-  if (!isExactNonEmptyString(realmId) || !isExactNonEmptyString(providerRequestId) || !isRecord(payload)) {
-    throw permitIssuanceFailed("INVALID_CLAIM");
-  }
-  if (ownValue(posting, "state") !== "POSTING") {
-    throw permitIssuanceFailed("CLAIM_NOT_EXECUTING");
-  }
-  const command = supplierBillCommandFromPosting(posting);
-  const claims = Object.freeze({
-    providerId: "quickbooks" as const,
-    adapterOperation: "QuickBooksAccountingProvider.createApprovedSupplierBill" as const,
-    realmId: posting.realmId,
-    providerRequestId: posting.providerRequestId,
-    entity: command.entity,
-    operation: command.operation,
-    ...commandHashes(command),
   }) satisfies Readonly<QuickBooksProviderWritePermitClaims>;
 
   const permit = Object.freeze(Object.create(null)) as QuickBooksProviderWritePermit;
@@ -306,37 +229,6 @@ export function consumeQuickBooksProviderWritePermit(
     entity: expected.command.entity,
     operation: expected.command.operation,
     ...commandHashes(expected.command),
-  }) satisfies Readonly<QuickBooksProviderWritePermitClaims>;
-  const mismatch = mismatchReason(state.claims, expectedClaims);
-  if (mismatch) throw permitDenied(mismatch);
-  return state.claims;
-}
-
-/** Consumes the same one-shot authority for the legacy supplier-Bill writer. */
-export function consumeQuickBooksSupplierBillProviderWritePermit(
-  permit: QuickBooksProviderWritePermit | undefined,
-  expected: Readonly<{
-    realmId: string;
-    input: QuickBooksSupplierBillInput;
-  }>,
-): Readonly<QuickBooksProviderWritePermitClaims> {
-  if (!permit || (typeof permit !== "object" && typeof permit !== "function")) {
-    throw permitDenied("INVALID");
-  }
-  const state = permitState.get(permit);
-  if (!state) throw permitDenied("INVALID");
-  if (state.consumed) throw permitDenied("CONSUMED");
-
-  state.consumed = true;
-  const command = supplierBillCommand(expected.input);
-  const expectedClaims = Object.freeze({
-    providerId: "quickbooks" as const,
-    adapterOperation: "QuickBooksAccountingProvider.createApprovedSupplierBill" as const,
-    realmId: expected.realmId,
-    providerRequestId: command.requestId,
-    entity: command.entity,
-    operation: command.operation,
-    ...commandHashes(command),
   }) satisfies Readonly<QuickBooksProviderWritePermitClaims>;
   const mismatch = mismatchReason(state.claims, expectedClaims);
   if (mismatch) throw permitDenied(mismatch);

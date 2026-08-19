@@ -1,12 +1,9 @@
 import type { QuickBooksMutationPreparation } from "../../src/quickbooks/mutationModels.js";
 import {
   issueQuickBooksProviderWritePermit,
-  issueQuickBooksSupplierBillProviderWritePermit,
   type QuickBooksProviderMutationCommand,
   type QuickBooksProviderWritePermit,
 } from "../../src/security/quickBooksProviderWritePermit.js";
-import type { QuickBooksSupplierBillInput } from "../../src/providers/quickbooksTypes.js";
-import type { QuickBooksPostingRequest } from "../../src/quickbooks/models.js";
 
 export function issueQuickBooksProviderWriteTestPermit(
   command: QuickBooksProviderMutationCommand,
@@ -15,37 +12,6 @@ export function issueQuickBooksProviderWriteTestPermit(
   return issueQuickBooksProviderWritePermit({
     claimedPreparation: claimedQuickBooksMutationPreparationFixture(command, realmId),
   });
-}
-
-export function issueQuickBooksSupplierBillProviderWriteTestPermit(
-  input: QuickBooksSupplierBillInput,
-  realmId = "934145",
-): QuickBooksProviderWritePermit {
-  const now = new Date("2026-08-13T00:00:00.000Z");
-  const { requestId: providerRequestId, ...billPayload } = input;
-  const posting: QuickBooksPostingRequest = {
-    postingRequestId: `test-posting-${providerRequestId}`,
-    actorId: "test-actor",
-    realmId,
-    clientRequestId: `client-${providerRequestId}`,
-    providerRequestId,
-    sourceRef: input.sourceRef,
-    sourceSha256: input.sourceSha256,
-    payload: {
-      ...billPayload,
-      clientRequestId: `client-${providerRequestId}`,
-      connectionRefSafe: "quickbooks-connection:test",
-      boundTargetRefSafe: "quickbooks-target:test",
-      bindingRevision: "quickbooks-binding-revision:test",
-    },
-    payloadHash: "test-posting-envelope-hash",
-    state: "POSTING",
-    approvedBy: "test-controller",
-    approvedAt: now,
-    createdAt: now,
-    updatedAt: now,
-  };
-  return issueQuickBooksSupplierBillProviderWritePermit({ claimedPosting: posting });
 }
 
 export function claimedQuickBooksMutationPreparationFixture(

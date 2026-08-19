@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { AppError } from "../errors.js";
 import { QuickBooksApiClient } from "./quickbooksClient.js";
 import type {
@@ -14,7 +13,6 @@ import type {
   QuickBooksPreferences,
   QuickBooksQueryResponse,
   QuickBooksReference,
-  QuickBooksSupplierBillInput,
   QuickBooksTaxCode,
   QuickBooksTaxRate,
   QuickBooksVendor,
@@ -22,16 +20,11 @@ import type {
 import type { QuickBooksWritableEntity } from "../quickbooks/writePolicy.js";
 import {
   consumeQuickBooksProviderWritePermit,
-  consumeQuickBooksSupplierBillProviderWritePermit,
   type QuickBooksProviderMutationCommand,
   type QuickBooksProviderWritePermit,
 } from "../security/quickBooksProviderWritePermit.js";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const SHA256 = /^[a-f0-9]{64}$/;
-const REQUEST_ID = /^[A-Za-z0-9._:-]{1,50}$/;
-const CURRENCY = /^[A-Z]{3}$/;
-const MAX_BILL_LINES = 100;
 
 interface CompanyInfoResponse {
   CompanyInfo?: QuickBooksCompanyInfo;
@@ -46,20 +39,8 @@ interface BillResponse {
   time?: string;
 }
 
-interface AccountResponse {
-  Account?: QuickBooksAccount;
-}
-
-interface TaxCodeResponse {
-  TaxCode?: QuickBooksTaxCode;
-}
-
 interface TaxRateResponse {
   TaxRate?: QuickBooksTaxRate;
-}
-
-interface VendorResponse {
-  Vendor?: QuickBooksVendor;
 }
 
 function entityPath(entity: QuickBooksWritableEntity): string {
@@ -346,21 +327,6 @@ export interface QuickBooksReportInput {
   view?: "normalized" | "raw" | "both";
 }
 
-export interface QuickBooksReferenceValidationResult {
-  vendor: { id: string; name?: string; currencyCode?: string };
-  accounts: Array<{ id: string; name?: string }>;
-  taxCodes: Array<{ id: string; name?: string }>;
-}
-
-export interface QuickBooksExistingBillMatch {
-  billId: string;
-  vendorId: string;
-  docNumber: string;
-  txnDate?: string;
-  total: string;
-  balance?: string;
-}
-
 export interface QuickBooksExistingDocumentMatch {
   entity: "Invoice" | "Bill" | "CreditMemo" | "VendorCredit";
   providerEntityId: string;
@@ -480,89 +446,6 @@ function snapshot(realmId: string, bill: QuickBooksBill): QuickBooksBillSnapshot
 function validateDate(value: string | undefined, label: string): void {
   if (value !== undefined && !DATE.test(value)) {
     throw new AppError("VALIDATION_FAILED", `${label} must use YYYY-MM-DD.`, { httpStatus: 400 });
-  }
-}
-
-function parseAmount(value: string, index: number): number {
-  if (!/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/.test(value)) {
-    throw new AppError("VALIDATION_FAILED", `lines[${index}].amount must be a positive decimal with at most two places.`, {
-      httpStatus: 400,
-    });
-  }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new AppError("VALIDATION_FAILED", `lines[${index}].amount must be greater than zero.`, {
-      httpStatus: 400,
-    });
-  }
-  return parsed;
-}
-
-function validateInput(input: QuickBooksSupplierBillInput): void {
-  if (!REQUEST_ID.test(input.requestId)) {
-    throw new AppError("VALIDATION_FAILED", "requestId must be 1-50 safe ASCII characters.", { httpStatus: 400 });
-  }
-  if (!input.sourceRef.trim() || input.sourceRef.length > 256 || /[\r\n\u0000-\u001f\u007f]/u.test(input.sourceRef)) {
-    throw new AppError("VALIDATION_FAILED", "sourceRef must contain 1-256 characters.", { httpStatus: 400 });
-  }
-  if (!SHA256.test(input.sourceSha256)) {
-    throw new AppError("VALIDATION_FAILED", "sourceSha256 must be a lowercase SHA-256 digest.", { httpStatus: 400 });
-  }
-  if (/^0{64}$/.test(input.sourceSha256)) {
-    throw new AppError("VALIDATION_FAILED", "sourceSha256 cannot be an all-zero placeholder.", { httpStatus: 400 });
-  }
-  if (!input.vendorId || input.vendorId.length > 64) {
-    throw new AppError("VALIDATION_FAILED", "vendorId is required.", { httpStatus: 400 });
-  }
-  validateDate(input.txnDate, "txnDate");
-  validateDate(input.dueDate, "dueDate");
-  if (!input.docNumber && !input.missingDocNumberReason?.trim()) {
-    throw new AppError("VALIDATION_FAILED", "A supplier document number or missing-document-number reason is required.", {
-      httpStatus: 400,
-    });
-  }
-  if (input.currencyCode && !CURRENCY.test(input.currencyCode)) {
-    throw new AppError("VALIDATION_FAILED", "currencyCode must be a three-letter uppercase code.", { httpStatus: 400 });
-  }
-  if (input.lines.length === 0 || input.lines.length > MAX_BILL_LINES) {
-    throw new AppError("VALIDATION_FAILED", `lines must contain 1-${MAX_BILL_LINES} entries.`, { httpStatus: 400 });
-  }
-  input.lines.forEach((line, index) => {
-    if (!line.accountId || line.accountId.length > 64) {
-      throw new AppError("VALIDATION_FAILED", `lines[${index}].accountId is required.`, { httpStatus: 400 });
-    }
-    parseAmount(line.amount, index);
-    if (line.description && line.description.length > 4_000) {
-      throw new AppError("VALIDATION_FAILED", `lines[${index}].description is too long.`, { httpStatus: 400 });
-    }
-  });
-  if (!input.globalTaxCalculation || input.invoiceTotal === undefined || input.taxTotal === undefined) {
-    throw new AppError("VALIDATION_FAILED", "globalTaxCalculation, invoiceTotal, and taxTotal are required.", {
-      httpStatus: 400,
-    });
-  }
-  const lineTotal = input.lines.reduce((total, line, index) => total + parseAmount(line.amount, index), 0);
-  const invoiceTotal = parseAmount(input.invoiceTotal, input.lines.length);
-  const taxTotal = Number(input.taxTotal);
-  if (!/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/.test(input.taxTotal) || !Number.isFinite(taxTotal) || taxTotal < 0) {
-    throw new AppError("VALIDATION_FAILED", "taxTotal must be a non-negative decimal with at most two places.", {
-      httpStatus: 400,
-    });
-  }
-  if (input.globalTaxCalculation === "NotApplicable") {
-    if (taxTotal !== 0 || input.lines.some((line) => line.taxCodeId)) {
-      throw new AppError("VALIDATION_FAILED", "No-tax bills require zero taxTotal and no line taxCodeId.", { httpStatus: 400 });
-    }
-  } else if (input.lines.some((line) => !line.taxCodeId)) {
-    throw new AppError("VALIDATION_FAILED", "TaxExcluded and TaxInclusive bills require a taxCodeId on every line.", {
-      httpStatus: 400,
-    });
-  }
-  const expectedInvoiceTotal = input.globalTaxCalculation === "TaxExcluded" ? lineTotal + taxTotal : lineTotal;
-  if (Math.abs(expectedInvoiceTotal - invoiceTotal) > 0.001) {
-    throw new AppError("VALIDATION_FAILED", "invoiceTotal does not reconcile to the approved lines and taxTotal.", {
-      httpStatus: 400,
-    });
   }
 }
 
@@ -686,12 +569,6 @@ function reportRows(
       ...window,
     },
   };
-}
-
-function safeEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 export class QuickBooksAccountingProvider {
@@ -824,30 +701,6 @@ export class QuickBooksAccountingProvider {
     return this.#listActiveEntities<QuickBooksItem>("Item")
       .then((items) => items.filter((item) => item.Id && item.Name));
   }
-
-  async findExistingSupplierBills(input: { vendorId: string; docNumber: string }): Promise<QuickBooksExistingBillMatch[]> {
-    if (!/^[A-Za-z0-9-]{1,64}$/.test(input.vendorId) || !input.docNumber.trim() || input.docNumber.length > 21) {
-      throw new AppError("VALIDATION_FAILED", "Vendor Id or supplier document number is invalid for duplicate checking.", {
-        httpStatus: 400,
-      });
-    }
-    const response = await this.#client.query<Record<string, unknown>>(
-      `SELECT * FROM Bill WHERE DocNumber = '${queryLiteral(input.docNumber.trim())}' MAXRESULTS 100`,
-    );
-    const normalizedDocNumber = input.docNumber.trim().toLocaleLowerCase("en-US");
-    return queryArray<QuickBooksBill>(response, "Bill")
-      .filter((bill) => bill.Id && bill.VendorRef?.value === input.vendorId &&
-        bill.DocNumber?.trim().toLocaleLowerCase("en-US") === normalizedDocNumber)
-      .map((bill) => ({
-        billId: bill.Id as string,
-        vendorId: input.vendorId,
-        docNumber: bill.DocNumber as string,
-        ...(bill.TxnDate ? { txnDate: bill.TxnDate } : {}),
-        total: decimal(bill.TotalAmt),
-        ...(bill.Balance === undefined ? {} : { balance: decimal(bill.Balance) }),
-      }));
-  }
-
   async findExistingAccountingDocuments(input: {
     entity: QuickBooksExistingDocumentMatch["entity"];
     counterpartyId: string;
@@ -1052,74 +905,6 @@ export class QuickBooksAccountingProvider {
     if (!response.Bill) throw new AppError("NOT_FOUND", "QuickBooks Bill was not found.", { httpStatus: 404 });
     return snapshot(this.#client.realmId, response.Bill);
   }
-
-  async createApprovedSupplierBill(
-    input: QuickBooksSupplierBillInput,
-    permit: QuickBooksProviderWritePermit,
-  ): Promise<{
-    bill: QuickBooksBillSnapshot;
-    receipt: Record<string, unknown>;
-  }> {
-    consumeQuickBooksSupplierBillProviderWritePermit(permit, {
-      realmId: this.#client.realmId,
-      input,
-    });
-    await this.validateSupplierBill(input);
-    const sourceMarker = `zCloak source=${input.sourceRef}; sha256=${input.sourceSha256}`;
-    const privateNote = [input.memo?.trim(), sourceMarker].filter(Boolean).join("\n").slice(0, 4_000);
-    const payload = {
-      VendorRef: { value: input.vendorId },
-      TxnDate: input.txnDate,
-      ...(input.dueDate ? { DueDate: input.dueDate } : {}),
-      ...(input.docNumber ? { DocNumber: input.docNumber } : {}),
-      ...(input.currencyCode ? { CurrencyRef: { value: input.currencyCode } } : {}),
-      ...(input.globalTaxCalculation ? { GlobalTaxCalculation: input.globalTaxCalculation } : {}),
-      PrivateNote: [
-        privateNote,
-        ...(input.approvalRef ? [`zCloak approval=${input.approvalRef}`] : []),
-        ...(input.supportingEvidence ?? []).map((evidence) => `zCloak evidence=${evidence.kind}:${evidence.ref}; sha256=${evidence.sha256}`),
-        ...(input.invoiceTotal ? [`zCloak invoice_total=${input.invoiceTotal}; tax_total=${input.taxTotal ?? "unspecified"}`] : []),
-        ...(input.missingDocNumberReason ? [`zCloak missing_doc_number_reason=${input.missingDocNumberReason}`] : []),
-      ].filter(Boolean).join("\n").slice(0, 4_000),
-      Line: input.lines.map((line, index) => ({
-        Amount: parseAmount(line.amount, index),
-        DetailType: "AccountBasedExpenseLineDetail",
-        ...(line.description ? { Description: line.description } : {}),
-        AccountBasedExpenseLineDetail: {
-          AccountRef: { value: line.accountId },
-          BillableStatus: "NotBillable",
-          ...(line.taxCodeId ? { TaxCodeRef: { value: line.taxCodeId } } : {}),
-        },
-      })),
-    };
-    const response = await this.#client.request<BillResponse>("/bill", {
-      method: "POST",
-      requestId: input.requestId,
-      isWrite: true,
-      body: payload,
-    });
-    if (!response.Bill?.Id) {
-      throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks accepted the request without returning a Bill Id.", {
-        httpStatus: 502,
-        retryable: true,
-        details: { requestId: input.requestId },
-      });
-    }
-    const readback = await this.getBill(response.Bill.Id);
-    this.#verifyReadback(input, readback);
-    return {
-      bill: readback,
-      receipt: {
-        provider: "quickbooks-online",
-        realmId: this.#client.realmId,
-        billId: readback.billId,
-        requestId: input.requestId,
-        providerTime: response.time,
-        verified: true,
-      },
-    };
-  }
-
   async executeMutation(
     input: QuickBooksProviderMutationCommand,
     permit: QuickBooksProviderWritePermit,
@@ -1523,62 +1308,6 @@ export class QuickBooksAccountingProvider {
   getTrialBalance(date?: string): Promise<Record<string, unknown>> {
     return this.runReport({ report: "TrialBalance", ...(date ? { asOfDate: date } : {}) });
   }
-
-  async validateSupplierBill(input: QuickBooksSupplierBillInput): Promise<QuickBooksReferenceValidationResult> {
-    validateInput(input);
-    const validated = await this.#validateReferencedRecords(input);
-    if (input.currencyCode && validated.vendor.currencyCode && !safeEqual(input.currencyCode, validated.vendor.currencyCode)) {
-      throw new AppError("VALIDATION_FAILED", "The bill currency does not match the selected vendor currency.", {
-        httpStatus: 400,
-      });
-    }
-    return validated;
-  }
-
-  async #validateReferencedRecords(input: QuickBooksSupplierBillInput): Promise<QuickBooksReferenceValidationResult> {
-    const vendor = await this.#client.request<VendorResponse>(`/vendor/${encodeURIComponent(input.vendorId)}`);
-    if (!vendor.Vendor?.Id || vendor.Vendor.Active === false) {
-      throw new AppError("VALIDATION_FAILED", "Selected QuickBooks vendor is missing or inactive.", { httpStatus: 400 });
-    }
-    const accountIds = [...new Set(input.lines.map((line) => line.accountId))];
-    const taxCodeIds = [...new Set(input.lines.flatMap((line) => line.taxCodeId ? [line.taxCodeId] : []))];
-    const [accounts, taxCodes] = await Promise.all([
-      Promise.all(accountIds.map(async (accountId) => {
-        const response = await this.#client.request<AccountResponse>(`/account/${encodeURIComponent(accountId)}`);
-        return response.Account;
-      })),
-      Promise.all(taxCodeIds.map(async (taxCodeId) => {
-        const response = await this.#client.request<TaxCodeResponse>(`/taxcode/${encodeURIComponent(taxCodeId)}`);
-        return response.TaxCode;
-      })),
-    ]);
-    if (accounts.some((account) => !account?.Id || account.Active === false)) {
-      throw new AppError("VALIDATION_FAILED", "A selected QuickBooks account is missing or inactive.", {
-        httpStatus: 400,
-      });
-    }
-    if (taxCodes.some((taxCode) => !taxCode?.Id || taxCode.Active === false)) {
-      throw new AppError("VALIDATION_FAILED", "A selected QuickBooks tax code is missing or inactive.", {
-        httpStatus: 400,
-      });
-    }
-    return {
-      vendor: {
-        id: vendor.Vendor.Id,
-        ...(vendor.Vendor.DisplayName ? { name: vendor.Vendor.DisplayName } : {}),
-        ...(vendor.Vendor.CurrencyRef?.value ? { currencyCode: vendor.Vendor.CurrencyRef.value } : {}),
-      },
-      accounts: accounts.map((account) => ({
-        id: account?.Id as string,
-        ...(account?.Name ? { name: account.Name } : {}),
-      })),
-      taxCodes: taxCodes.map((taxCode) => ({
-        id: taxCode?.Id as string,
-        ...(taxCode?.Name ? { name: taxCode.Name } : {}),
-      })),
-    };
-  }
-
   async #listActiveEntities<T>(entity: "Account" | "TaxCode" | "Item"): Promise<T[]> {
     const records: T[] = [];
     for (let start = 1; start <= 10_000; start += 1_000) {
@@ -1613,50 +1342,5 @@ export class QuickBooksAccountingProvider {
         stoppedReason,
       },
     };
-  }
-
-  #verifyReadback(input: QuickBooksSupplierBillInput, bill: QuickBooksBillSnapshot): void {
-    if (!safeEqual(bill.vendor.id, input.vendorId) || !safeEqual(bill.txnDate ?? "", input.txnDate)) {
-      throw new AppError("READBACK_MISMATCH", "QuickBooks Bill readback does not match its approved vendor or date.", {
-        httpStatus: 502,
-      });
-    }
-    const headerChecks: Array<[label: string, expected: string | undefined, actual: string | undefined]> = [
-      ["document number", input.docNumber, bill.docNumber],
-      ["due date", input.dueDate, bill.dueDate],
-      ["currency", input.currencyCode, bill.currencyCode],
-      ["global tax calculation", input.globalTaxCalculation, bill.globalTaxCalculation],
-      ["invoice total", input.invoiceTotal, bill.total],
-      ["tax total", input.taxTotal, bill.totalTax ?? "0.00"],
-    ];
-    const headerMismatch = headerChecks.find(([label, expected, actual]) => {
-      if (expected === undefined) return false;
-      const normalizedExpected = ["invoice total", "tax total"].includes(label) ? Number(expected).toFixed(2) : expected;
-      return !safeEqual(normalizedExpected, actual ?? "");
-    });
-    if (headerMismatch) {
-      throw new AppError("READBACK_MISMATCH", `QuickBooks Bill readback does not match its approved ${headerMismatch[0]}.`, {
-        httpStatus: 502,
-      });
-    }
-    const linesMatch = bill.lines.length === input.lines.length && input.lines.every((line, index) => {
-      const readbackLine = bill.lines[index];
-      return readbackLine !== undefined &&
-        safeEqual(readbackLine.account?.id ?? "", line.accountId) &&
-        safeEqual(readbackLine.amount, parseAmount(line.amount, index).toFixed(2)) &&
-        (line.description === undefined || safeEqual(readbackLine.description ?? "", line.description)) &&
-        (line.taxCodeId === undefined || safeEqual(readbackLine.taxCode?.id ?? "", line.taxCodeId));
-    });
-    if (!linesMatch) {
-      throw new AppError("READBACK_MISMATCH", "QuickBooks Bill readback does not match its approved line accounts or amounts.", {
-        httpStatus: 502,
-      });
-    }
-    const expectedMarker = `sha256=${input.sourceSha256}`;
-    if (!bill.privateNote?.includes(expectedMarker)) {
-      throw new AppError("READBACK_MISMATCH", "QuickBooks Bill readback lost its source-document evidence marker.", {
-        httpStatus: 502,
-      });
-    }
   }
 }

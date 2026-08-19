@@ -2,9 +2,7 @@ import { AppError } from "../../src/errors.js";
 import type {
   QuickBooksBillListInput,
   QuickBooksBillListResult,
-  QuickBooksExistingBillMatch,
   QuickBooksExistingDocumentMatch,
-  QuickBooksReferenceValidationResult,
   QuickBooksReportInput,
   QuickBooksSearchResult,
   QuickBooksTransactionEntity,
@@ -18,7 +16,6 @@ import type {
   QuickBooksCompanyInfo,
   QuickBooksCustomer,
   QuickBooksItem,
-  QuickBooksSupplierBillInput,
   QuickBooksTaxCode,
   QuickBooksTaxRate,
   QuickBooksVendor,
@@ -26,7 +23,6 @@ import type {
 import { hashObject } from "../../src/security/hash.js";
 import {
   consumeQuickBooksProviderWritePermit,
-  consumeQuickBooksSupplierBillProviderWritePermit,
   type QuickBooksProviderMutationCommand,
   type QuickBooksProviderWritePermit,
 } from "../../src/security/quickBooksProviderWritePermit.js";
@@ -431,20 +427,6 @@ export class SyntheticQuickBooksProvider implements QuickBooksProviderCapabiliti
     return this.#billSnapshot(bill);
   }
 
-  async findExistingSupplierBills(input: { vendorId: string; docNumber: string }): Promise<QuickBooksExistingBillMatch[]> {
-    const listed = await this.listBills();
-    return listed.bills
-      .filter((bill) => bill.vendor.id === input.vendorId && bill.docNumber === input.docNumber)
-      .map((bill) => ({
-        billId: bill.billId,
-        vendorId: bill.vendor.id,
-        docNumber: bill.docNumber as string,
-        ...(bill.txnDate ? { txnDate: bill.txnDate } : {}),
-        total: bill.total,
-        ...(bill.balance ? { balance: bill.balance } : {}),
-      }));
-  }
-
   async findExistingAccountingDocuments(input: {
     entity: QuickBooksExistingDocumentMatch["entity"];
     counterpartyId: string;
@@ -467,62 +449,6 @@ export class SyntheticQuickBooksProvider implements QuickBooksProviderCapabiliti
     });
   }
 
-  async validateSupplierBill(input: QuickBooksSupplierBillInput): Promise<QuickBooksReferenceValidationResult> {
-    const vendor = this.#records.get("Vendor")?.get(input.vendorId) as unknown as QuickBooksVendor | undefined;
-    const selectedAccounts = input.lines.map((line) => this.#accounts.find((account) => account.Id === line.accountId && account.Active !== false));
-    const selectedTaxCodes = input.lines
-      .filter((line) => line.taxCodeId)
-      .map((line) => this.#taxCodes.find((taxCode) => taxCode.Id === line.taxCodeId && taxCode.Active !== false));
-    if (!vendor || vendor.Active === false || selectedAccounts.some((account) => !account) || selectedTaxCodes.some((taxCode) => !taxCode)) {
-      throw new AppError("VALIDATION_FAILED", "Synthetic QuickBooks references are missing or inactive.", { httpStatus: 400 });
-    }
-    return {
-      vendor: {
-        id: vendor.Id as string,
-        ...(vendor.DisplayName ? { name: vendor.DisplayName } : {}),
-        ...(vendor.CurrencyRef?.value ? { currencyCode: vendor.CurrencyRef.value } : {}),
-      },
-      accounts: selectedAccounts.map((account) => optionalName(account?.Id as string, account?.Name)),
-      taxCodes: selectedTaxCodes.map((taxCode) => optionalName(taxCode?.Id as string, taxCode?.Name)),
-    };
-  }
-
-  async createApprovedSupplierBill(
-    input: QuickBooksSupplierBillInput,
-    permit: QuickBooksProviderWritePermit,
-  ): Promise<{
-    bill: QuickBooksBillSnapshot;
-    receipt: Record<string, unknown>;
-  }> {
-    consumeQuickBooksSupplierBillProviderWritePermit(permit, {
-      realmId: SYNTHETIC_QUICKBOOKS_REALM_ID,
-      input,
-    });
-    await this.validateSupplierBill(input);
-    const result = await this.#executeMutation({
-      entity: "Bill",
-      operation: "CREATE",
-      requestId: input.requestId,
-      payload: {
-        VendorRef: { value: input.vendorId },
-        TxnDate: input.txnDate,
-        ...(input.dueDate ? { DueDate: input.dueDate } : {}),
-        ...(input.docNumber ? { DocNumber: input.docNumber } : {}),
-        ...(input.currencyCode ? { CurrencyRef: { value: input.currencyCode } } : {}),
-        ...(input.memo ? { PrivateNote: input.memo } : {}),
-        Line: input.lines.map((line) => ({
-          Amount: Number(line.amount),
-          ...(line.description ? { Description: line.description } : {}),
-          DetailType: "AccountBasedExpenseLineDetail",
-          AccountBasedExpenseLineDetail: {
-            AccountRef: { value: line.accountId },
-            ...(line.taxCodeId ? { TaxCodeRef: { value: line.taxCodeId } } : {}),
-          },
-        })),
-      },
-    });
-    return { bill: this.#billSnapshot(result.readback), receipt: result.receipt };
-  }
 
   async getTrialBalance(date?: string): Promise<Record<string, unknown>> {
     return {

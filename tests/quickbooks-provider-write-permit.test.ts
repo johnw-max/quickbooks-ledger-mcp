@@ -14,9 +14,7 @@ import { QuickBooksAccountingProvider } from "../src/providers/quickbooksProvide
 import {
   claimedQuickBooksMutationPreparationFixture,
   issueQuickBooksProviderWriteTestPermit,
-  issueQuickBooksSupplierBillProviderWriteTestPermit,
 } from "./helpers/quickBooksProviderWritePermit.js";
-import type { QuickBooksSupplierBillInput } from "../src/providers/quickbooksTypes.js";
 
 const command: QuickBooksProviderMutationCommand = {
   entity: "Vendor",
@@ -25,20 +23,6 @@ const command: QuickBooksProviderMutationCommand = {
   targetId: "77",
   syncToken: "3",
   requestId: "zc.vendor.update.permit-001",
-};
-
-const supplierBillInput: QuickBooksSupplierBillInput = {
-  requestId: "zc.bill.legacy-permit-001",
-  sourceRef: "synthetic-invoice.pdf",
-  sourceSha256: "a".repeat(64),
-  vendorId: "56",
-  txnDate: "2026-08-13",
-  docNumber: "SYN-001",
-  currencyCode: "SGD",
-  globalTaxCalculation: "NotApplicable",
-  invoiceTotal: "100.00",
-  taxTotal: "0.00",
-  lines: [{ accountId: "7", amount: "100.00" }],
 };
 
 function sourceFiles(root: string): string[] {
@@ -50,18 +34,15 @@ function sourceFiles(root: string): string[] {
 }
 
 describe("QuickBooks provider-write permit architecture", () => {
-  it("allows only the two claimed workflow services to import their production issuers", () => {
+  it("allows only the claimed mutation service to import the production issuer", () => {
     const sourceRoot = resolve(import.meta.dirname, "../src");
     const permitModule = resolve(sourceRoot, "security/quickBooksProviderWritePermit.ts");
     const importers = sourceFiles(sourceRoot)
       .filter((path) => path !== permitModule)
-      .filter((path) => /issueQuickBooks(?:SupplierBill)?ProviderWritePermit/u.test(readFileSync(path, "utf8")))
+      .filter((path) => /issueQuickBooksProviderWritePermit/u.test(readFileSync(path, "utf8")))
       .sort();
 
-    expect(importers).toEqual([
-      resolve(sourceRoot, "quickbooks/mutationService.ts"),
-      resolve(sourceRoot, "quickbooks/service.ts"),
-    ].sort());
+    expect(importers).toEqual([resolve(sourceRoot, "quickbooks/mutationService.ts")]);
   });
 
   it("is opaque, process-local and not forgeable by copy or serialisation", () => {
@@ -99,24 +80,22 @@ describe("QuickBooks provider-write permit architecture", () => {
       }));
   });
 
-  it("keeps the two credentialed provider write egresses permit-gated", () => {
+  it("keeps every credentialed provider write egress behind the single permit gate", () => {
     const providerSource = readFileSync(
       resolve(import.meta.dirname, "../src/providers/quickbooksProvider.ts"),
       "utf8",
     );
-    expect(providerSource.match(/isWrite:\s*true/gu)).toHaveLength(3);
-    expect(providerSource.match(/consumeQuickBooksSupplierBillProviderWritePermit\(permit/gu)).toHaveLength(1);
+    // Both egresses (the mutation POST and its Invoice void fallback) sit inside
+    // executeMutation, downstream of the one consumer. A second write lifecycle
+    // would show up here as a third isWrite egress with no permit ahead of it.
+    expect(providerSource.match(/isWrite:\s*true/gu)).toHaveLength(2);
     expect(providerSource.match(/consumeQuickBooksProviderWritePermit\(permit/gu)).toHaveLength(1);
 
-    const supplierConsumer = providerSource.indexOf("consumeQuickBooksSupplierBillProviderWritePermit(permit");
-    const supplierPost = providerSource.indexOf('this.#client.request<BillResponse>("/bill"');
-    expect(supplierConsumer).toBeGreaterThan(-1);
-    expect(supplierPost).toBeGreaterThan(supplierConsumer);
-
     const genericConsumer = providerSource.indexOf("consumeQuickBooksProviderWritePermit(permit");
-    const genericPost = providerSource.indexOf("method: \"POST\"", genericConsumer);
     expect(genericConsumer).toBeGreaterThan(-1);
-    expect(genericPost).toBeGreaterThan(genericConsumer);
+    for (const egress of [...providerSource.matchAll(/isWrite:\s*true/gu)]) {
+      expect(egress.index).toBeGreaterThan(genericConsumer);
+    }
   });
 });
 
@@ -196,36 +175,6 @@ describe("QuickBooks raw and bound provider write boundaries", () => {
     });
     await expect(provider.executeMutation(command, permit, async () => undefined,
       async () => undefined)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-      details: { permitReason: "CONSUMED", providerMutationPossible: false },
-    });
-    expect(request).not.toHaveBeenCalled();
-  });
-
-  it("blocks the legacy supplier-Bill raw writer without its claimed one-shot permit", async () => {
-    const request = vi.fn();
-    const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
-    const provider = new QuickBooksAccountingProvider(client);
-
-    await expect(provider.createApprovedSupplierBill(supplierBillInput, undefined as never)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-      details: { permitReason: "INVALID", providerMutationPossible: false },
-    });
-    expect(request).not.toHaveBeenCalled();
-  });
-
-  it("poisons a legacy supplier-Bill permit on payload substitution before validation or provider I/O", async () => {
-    const request = vi.fn();
-    const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
-    const provider = new QuickBooksAccountingProvider(client);
-    const permit = issueQuickBooksSupplierBillProviderWriteTestPermit(supplierBillInput);
-    const substituted = { ...supplierBillInput, docNumber: "SUBSTITUTED" };
-
-    await expect(provider.createApprovedSupplierBill(substituted, permit)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-      details: { permitReason: "PAYLOAD_MISMATCH", providerMutationPossible: false },
-    });
-    await expect(provider.createApprovedSupplierBill(supplierBillInput, permit)).rejects.toMatchObject({
       code: "FORBIDDEN",
       details: { permitReason: "CONSUMED", providerMutationPossible: false },
     });

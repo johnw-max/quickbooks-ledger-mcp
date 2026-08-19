@@ -10,7 +10,6 @@ import { QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS, QUICKBOOKS_ACCOUNTING_CASE
 import { QuickBooksAccountingCaseService } from "../src/quickbooks/accountingCaseService.js";
 import { InMemoryQuickBooksAccountingCaseRepository } from "../src/quickbooks/inMemoryAccountingCaseRepository.js";
 import { InMemoryQuickBooksMutationRepository } from "../src/quickbooks/inMemoryMutationRepository.js";
-import { InMemoryQuickBooksPostingRepository } from "../src/quickbooks/inMemoryRepository.js";
 import { createQuickBooksMcpServer } from "../src/quickbooks/mcp.js";
 import { QuickBooksMutationService } from "../src/quickbooks/mutationService.js";
 import type { QuickBooksProviderResolver } from "../src/quickbooks/service.js";
@@ -193,12 +192,7 @@ describe("QuickBooks OAuth Accounting Case MCP contract harness", () => {
         };
       },
     };
-    const workflow = new QuickBooksWorkflowService({
-      repository: new InMemoryQuickBooksPostingRepository(),
-      resolver,
-      publicBaseUrl: "https://quickbooks-synthetic-contract.invalid",
-      writeEnabled: false,
-    });
+    const workflow = new QuickBooksWorkflowService({ resolver });
     const token: ResolvedMcpAccessToken = {
       tokenId: "synthetic-contract-token-v1",
       clientId: "synthetic-contract-client",
@@ -248,7 +242,7 @@ describe("QuickBooks OAuth Accounting Case MCP contract harness", () => {
       resolver,
       mutations,
     );
-    const server = createQuickBooksMcpServer(workflow, context, mutations, cases);
+    const server = createQuickBooksMcpServer(workflow, context, cases, mutations);
     const client = new Client({ name: "qbo-synthetic-contract-test", version: "0.6.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);

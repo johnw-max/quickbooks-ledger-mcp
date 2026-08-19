@@ -6,7 +6,10 @@ import type { Logger } from "../src/logging.js";
 import type { QuickBooksConnectionTicketService } from "../src/quickbooks/connectionTicketService.js";
 import type { QuickBooksRuntimeConfig } from "../src/quickbooks/config.js";
 import { createQuickBooksHttpApp } from "../src/quickbooks/httpApp.js";
-import { QUICKBOOKS_TOOL_ALLOWLIST } from "../src/quickbooks/mcp.js";
+import {
+  QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
+  QUICKBOOKS_READ_TOOL_ALLOWLIST,
+} from "../src/quickbooks/mcp.js";
 import type { QuickBooksOAuthService } from "../src/quickbooks/oauthService.js";
 import type { QuickBooksMcpOAuthService } from "../src/quickbooks/mcpOAuthService.js";
 import type { QuickBooksReviewService } from "../src/quickbooks/reviewService.js";
@@ -113,6 +116,7 @@ describe("QuickBooks HTTP and MCP edge", () => {
     const app = createQuickBooksHttpApp({
       config: appConfig,
       workflow: { connectionStatus } as unknown as QuickBooksWorkflowService,
+      accountingCases: {} as QuickBooksAccountingCaseService,
       oauth: {} as QuickBooksOAuthService,
       mcpOAuth,
       reviews: {} as QuickBooksReviewService,
@@ -131,7 +135,7 @@ describe("QuickBooks HTTP and MCP edge", () => {
     await expect(health.json()).resolves.toMatchObject({
       provider: "quickbooks-online",
       providerEnvironment: "sandbox",
-      toolCount: 16,
+      toolCount: 17,
       writeEnabled: false,
       registeredHostClientCount: 2,
       readiness: {
@@ -270,7 +274,7 @@ describe("QuickBooks HTTP and MCP edge", () => {
     expect(toolsResponse.status).toBe(200);
     const toolsPayload = await parseMcp(toolsResponse) as { result?: { tools?: Array<{ name: string }> } };
     expect(toolsPayload.result?.tools?.map((tool) => tool.name).sort())
-      .toEqual([...QUICKBOOKS_TOOL_ALLOWLIST].sort());
+      .toEqual([...QUICKBOOKS_READ_TOOL_ALLOWLIST, ...QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST].sort());
 
     const statusResponse = await fetch(`${base}/quickbooks/mcp`, {
       method: "POST",
@@ -288,57 +292,5 @@ describe("QuickBooks HTTP and MCP edge", () => {
       result: { content: [{ type: "text" }] },
     });
     expect(connectionStatus).toHaveBeenCalledWith("qbo-client-test:user:agent2-client");
-  });
-
-  it("removes the legacy supplier-Bill review writer in Accounting Case runtime", async () => {
-    const reviews = { authenticate: vi.fn() } as unknown as QuickBooksReviewService;
-    const app = createQuickBooksHttpApp({
-      config: config(),
-      workflow: {} as QuickBooksWorkflowService,
-      accountingCases: {} as QuickBooksAccountingCaseService,
-      oauth: {} as QuickBooksOAuthService,
-      reviews,
-      tickets: {} as QuickBooksConnectionTicketService,
-      readiness: vi.fn().mockResolvedValue(true),
-      logger: logger(),
-    });
-    const server = app.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    servers.push(server);
-    const port = (server.address() as AddressInfo).port;
-    const base = `http://127.0.0.1:${port}`;
-
-    const getReview = await fetch(`${base}/quickbooks/review/qbp_legacy`, {
-      headers: { Cookie: "qbo_review_session=opaque" },
-    });
-    expect(getReview.status).toBe(404);
-
-    const approve = await fetch(`${base}/quickbooks/review/qbp_legacy/approve`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Origin: "https://quickbooks-mcp.example.test",
-        Cookie: "qbo_review_session=opaque",
-      },
-      body: "csrf_token=opaque",
-    });
-    expect(approve.status).toBe(404);
-
-    const getMutationReview = await fetch(`${base}/quickbooks/mutation-review/qbm_legacy`, {
-      headers: { Cookie: "qbo_review_session=opaque" },
-    });
-    expect(getMutationReview.status).toBe(404);
-
-    const approveMutation = await fetch(`${base}/quickbooks/mutation-review/qbm_legacy/approve`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Origin: "https://quickbooks-mcp.example.test",
-        Cookie: "qbo_review_session=opaque",
-      },
-      body: "csrf_token=opaque",
-    });
-    expect(approveMutation.status).toBe(404);
-    expect(reviews.authenticate).not.toHaveBeenCalled();
   });
 });

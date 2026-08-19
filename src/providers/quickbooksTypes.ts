@@ -181,36 +181,6 @@ export interface QuickBooksEntityResponse<T> {
   entity: T;
 }
 
-export interface QuickBooksBillInputLine {
-  accountId: string;
-  amount: string;
-  description?: string;
-  taxCodeId?: string;
-}
-
-export interface QuickBooksSupplierBillInput {
-  requestId: string;
-  sourceRef: string;
-  sourceSha256: string;
-  vendorId: string;
-  txnDate: string;
-  dueDate?: string;
-  docNumber?: string;
-  missingDocNumberReason?: string;
-  currencyCode?: string;
-  memo?: string;
-  approvalRef?: string;
-  supportingEvidence?: Array<{
-    kind: "approval" | "coding" | "correspondence" | "other";
-    ref: string;
-    sha256: string;
-  }>;
-  globalTaxCalculation?: "TaxExcluded" | "TaxInclusive" | "NotApplicable";
-  invoiceTotal?: string;
-  taxTotal?: string;
-  lines: QuickBooksBillInputLine[];
-}
-
 export interface QuickBooksBillSnapshotLine {
   lineId?: string;
   amount: string;

@@ -2,85 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { AppError } from "../src/errors.js";
 import type { QuickBooksApiClient, QuickBooksRequestOptions } from "../src/providers/quickbooksClient.js";
 import { QuickBooksAccountingProvider } from "../src/providers/quickbooksProvider.js";
-import type { QuickBooksSupplierBillInput } from "../src/providers/quickbooksTypes.js";
 import type { QuickBooksProviderMutationCommand } from "../src/security/quickBooksProviderWritePermit.js";
-import {
-  issueQuickBooksProviderWriteTestPermit,
-  issueQuickBooksSupplierBillProviderWriteTestPermit,
-} from "./helpers/quickBooksProviderWritePermit.js";
-
-const input: QuickBooksSupplierBillInput = {
-  requestId: "zc.bill.case-001",
-  sourceRef: "invoice-case-001.pdf",
-  sourceSha256: "a".repeat(64),
-  vendorId: "56",
-  txnDate: "2026-08-05",
-  dueDate: "2026-09-04",
-  docNumber: "INV-CASE-001",
-  currencyCode: "SGD",
-  memo: "Approved supplier invoice",
-  globalTaxCalculation: "TaxExcluded",
-  invoiceTotal: "129.60",
-  taxTotal: "9.60",
-  lines: [
-    { accountId: "7", amount: "100.00", description: "Bookkeeping subscription", taxCodeId: "3" },
-    { accountId: "8", amount: "20.00", description: "Support", taxCodeId: "3" },
-  ],
-};
-
-function fixtureBill(privateNote = `Approved supplier invoice\nzCloak source=invoice-case-001.pdf; sha256=${"a".repeat(64)}`) {
-  return {
-    Id: "145",
-    SyncToken: "0",
-    VendorRef: { value: "56", name: "Acme Pte Ltd" },
-    TxnDate: "2026-08-05",
-    DueDate: "2026-09-04",
-    DocNumber: "INV-CASE-001",
-    CurrencyRef: { value: "SGD" },
-    GlobalTaxCalculation: "TaxExcluded",
-    TotalAmt: 129.6,
-    Balance: 129.6,
-    TxnTaxDetail: { TotalTax: 9.6 },
-    PrivateNote: privateNote,
-    Line: [
-      {
-        Id: "1",
-        Amount: 100,
-        Description: "Bookkeeping subscription",
-        DetailType: "AccountBasedExpenseLineDetail",
-        AccountBasedExpenseLineDetail: {
-          AccountRef: { value: "7", name: "Subscriptions" },
-          TaxCodeRef: { value: "3", name: "GST" },
-        },
-      },
-      {
-        Id: "2",
-        Amount: 20,
-        Description: "Support",
-        DetailType: "AccountBasedExpenseLineDetail",
-        AccountBasedExpenseLineDetail: {
-          AccountRef: { value: "8", name: "Professional fees" },
-          TaxCodeRef: { value: "3", name: "GST" },
-        },
-      },
-    ],
-    MetaData: { LastUpdatedTime: "2026-08-05T08:00:00+08:00" },
-  };
-}
-
-function providerWithRequest(readback = fixtureBill()) {
-  const request = vi.fn(async (path: string, options: QuickBooksRequestOptions = {}) => {
-    if (path === "/vendor/56") return { Vendor: { Id: "56", Active: true } };
-    if (path === "/account/7") return { Account: { Id: "7", Active: true } };
-    if (path === "/account/8") return { Account: { Id: "8", Active: true } };
-    if (path === "/taxcode/3") return { TaxCode: { Id: "3", Active: true } };
-    if (path === "/bill" && options.method === "POST") return { Bill: { Id: "145" }, time: "2026-08-05T00:00:00Z" };
-    if (path === "/bill/145") return { Bill: readback };
-    throw new Error(`Unexpected request ${path}`);
-  });
-  const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
-  return { provider: new QuickBooksAccountingProvider(client), request };
-}
+import { issueQuickBooksProviderWriteTestPermit } from "./helpers/quickBooksProviderWritePermit.js";
 
 function executeProviderMutation(
   provider: QuickBooksAccountingProvider,
@@ -230,19 +153,6 @@ describe("QuickBooks accounting provider", () => {
     expect(query).toHaveBeenCalledTimes(2);
   });
 
-  it("finds an existing QuickBooks Bill by exact vendor and normalized supplier document number", async () => {
-    const query = vi.fn().mockResolvedValue({ QueryResponse: { Bill: [
-      { Id: "900", VendorRef: { value: "56" }, DocNumber: "INV-001", TxnDate: "2026-08-05", TotalAmt: 100 },
-      { Id: "901", VendorRef: { value: "77" }, DocNumber: "INV-001", TotalAmt: 25 },
-    ] } });
-    const client = { realmId: "934145", request: vi.fn(), query } as unknown as QuickBooksApiClient;
-    const provider = new QuickBooksAccountingProvider(client);
-
-    await expect(provider.findExistingSupplierBills({ vendorId: "56", docNumber: " inv-001 " }))
-      .resolves.toEqual([{ billId: "900", vendorId: "56", docNumber: "INV-001", txnDate: "2026-08-05", total: "100.00" }]);
-    expect(query).toHaveBeenCalledWith("SELECT * FROM Bill WHERE DocNumber = 'inv-001' MAXRESULTS 100");
-  });
-
   it("resolves an exact TaxRate and checks document duplicates by entity, counterparty and DocNumber", async () => {
     const request = vi.fn().mockResolvedValueOnce({ TaxRate: { Id: "904", Name: "GST 9%", RateValue: 9, Active: true } });
     const query = vi.fn();
@@ -305,43 +215,6 @@ describe("QuickBooks accounting provider", () => {
         stoppedReason: "scan_limit",
       },
     });
-  });
-
-  it("validates references, writes once with requestid, and returns exact verified readback", async () => {
-    const { provider, request } = providerWithRequest();
-
-    const result = await provider.createApprovedSupplierBill(
-      input,
-      issueQuickBooksSupplierBillProviderWriteTestPermit(input),
-    );
-
-    expect(result.bill).toMatchObject({
-      billId: "145",
-      realmId: "934145",
-      paymentStatus: "OPEN",
-      vendor: { id: "56", name: "Acme Pte Ltd" },
-      txnDate: "2026-08-05",
-      currencyCode: "SGD",
-      total: "129.60",
-      totalTax: "9.60",
-      lines: [
-        { amount: "100.00", account: { id: "7" }, taxCode: { id: "3" } },
-        { amount: "20.00", account: { id: "8" } },
-      ],
-    });
-    expect(result.receipt).toMatchObject({
-      provider: "quickbooks-online",
-      realmId: "934145",
-      billId: "145",
-      requestId: "zc.bill.case-001",
-      verified: true,
-    });
-    expect(request).toHaveBeenCalledWith("/bill", expect.objectContaining({
-      method: "POST",
-      requestId: "zc.bill.case-001",
-      isWrite: true,
-    }));
-    expect(request.mock.calls.at(-1)?.[0]).toBe("/bill/145");
   });
 
   it("executes a generic create once and verifies the exact provider Id by readback", async () => {
@@ -781,42 +654,5 @@ describe("QuickBooks accounting provider", () => {
       providerEntityId: "501",
       readback: { FileName: "receipt-reviewed.pdf", Note: "Reviewed source" },
     });
-  });
-
-  it("rejects a readback that lost the source-document marker", async () => {
-    const { provider } = providerWithRequest(fixtureBill("Approved supplier invoice"));
-
-    await expect(provider.createApprovedSupplierBill(
-      input,
-      issueQuickBooksSupplierBillProviderWriteTestPermit(input),
-    )).rejects.toMatchObject({
-      code: "READBACK_MISMATCH",
-    });
-  });
-
-  it("rejects a readback that changed an approved header or tax field", async () => {
-    const changed = fixtureBill();
-    changed.CurrencyRef = { value: "USD" };
-    const { provider } = providerWithRequest(changed);
-
-    await expect(provider.createApprovedSupplierBill(
-      input,
-      issueQuickBooksSupplierBillProviderWriteTestPermit(input),
-    )).rejects.toMatchObject({
-      code: "READBACK_MISMATCH",
-      message: expect.stringContaining("currency"),
-    });
-  });
-
-  it("does not call QuickBooks when local bill validation fails", async () => {
-    const { provider, request } = providerWithRequest();
-
-    const invalid = { ...input, sourceSha256: "not-a-hash" };
-    await expect(provider.createApprovedSupplierBill(
-      invalid,
-      issueQuickBooksSupplierBillProviderWriteTestPermit(invalid),
-    ))
-      .rejects.toMatchObject({ code: "VALIDATION_FAILED" });
-    expect(request).not.toHaveBeenCalled();
   });
 });

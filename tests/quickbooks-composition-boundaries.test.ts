@@ -3,10 +3,7 @@ import { assertInternalQuickBooksCaller } from "../src/quickbooks/callerPolicy.j
 import { verifyQuickBooksSourceAttestation } from "../src/quickbooks/sourceAttestation.js";
 import type { RequestContext } from "../src/security/requestContext.js";
 import { createOAuthRequestContextFromAuthInfo } from "../src/security/requestContext.js";
-import {
-  quickBooksPrepareMutationSchema,
-  quickBooksPrepareSupplierBillSchema,
-} from "../src/quickbooks/schemas.js";
+import { quickBooksPrepareMutationSchema } from "../src/quickbooks/schemas.js";
 import { InMemoryQuickBooksMutationRepository } from "../src/quickbooks/inMemoryMutationRepository.js";
 
 function context(overrides: Partial<RequestContext> = {}): RequestContext {
@@ -120,23 +117,20 @@ describe("QuickBooks composition trust boundaries", () => {
 
   it("requires the opaque WorkStore attestation only for HOST provenance", () => {
     const target_session_ref = `qbts_v1.${"a".repeat(16)}.${"b".repeat(22)}.${"c".repeat(64)}`;
-    const bill = {
+    const hostClaim = {
       target_session_ref,
-      request_id: "qbo.bill.attestation.001",
+      request_id: "qbo.customer.attestation.002",
+      entity: "Customer" as const,
+      operation: "CREATE" as const,
+      payload: { DisplayName: "Acme" },
+      business_reason: "Create the accepted customer.",
       source_ref: "work-material:receipt-1",
       source_sha256: "a".repeat(64),
       source_digest_provenance: "HOST_PROVIDED_ORIGINAL_FILE_SHA256" as const,
-      vendor_id: "56",
-      txn_date: "2026-08-12",
-      doc_number: "INV-001",
-      global_tax_calculation: "NotApplicable" as const,
-      invoice_total: "100.00",
-      tax_total: "0.00",
-      lines: [{ account_id: "7", amount: "100.00" }],
     };
-    expect(quickBooksPrepareSupplierBillSchema.safeParse(bill).success).toBe(false);
-    expect(quickBooksPrepareSupplierBillSchema.safeParse({
-      ...bill,
+    expect(quickBooksPrepareMutationSchema.safeParse(hostClaim).success).toBe(false);
+    expect(quickBooksPrepareMutationSchema.safeParse({
+      ...hostClaim,
       source_attestation_ref: "opaque-workstore-attestation",
     }).success).toBe(true);
     expect(quickBooksPrepareMutationSchema.safeParse({

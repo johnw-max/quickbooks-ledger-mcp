@@ -2,7 +2,6 @@ import { QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS, QUICKBOOKS_ACCOUNTING_CASE
 import { QuickBooksAccountingCaseService } from "../../src/quickbooks/accountingCaseService.js";
 import { InMemoryQuickBooksAccountingCaseRepository } from "../../src/quickbooks/inMemoryAccountingCaseRepository.js";
 import { InMemoryQuickBooksMutationRepository } from "../../src/quickbooks/inMemoryMutationRepository.js";
-import { InMemoryQuickBooksPostingRepository } from "../../src/quickbooks/inMemoryRepository.js";
 import { createQuickBooksMcpServer } from "../../src/quickbooks/mcp.js";
 import { QuickBooksMutationService } from "../../src/quickbooks/mutationService.js";
 import type { QuickBooksProviderResolver } from "../../src/quickbooks/service.js";
@@ -58,12 +57,7 @@ export function createSyntheticQuickBooksHarnessRuntime(options: { writeEnabled:
     },
   };
 
-  const workflow = new QuickBooksWorkflowService({
-    repository: new InMemoryQuickBooksPostingRepository(),
-    resolver,
-    publicBaseUrl: "https://quickbooks-synthetic-business-uat.invalid",
-    writeEnabled: false,
-  });
+  const workflow = new QuickBooksWorkflowService({ resolver });
   const contextToken: ResolvedMcpAccessToken = {
     tokenId: "local-synthetic-token-v1",
     clientId: "local-synthetic-agent-client",
@@ -119,6 +113,6 @@ export function createSyntheticQuickBooksHarnessRuntime(options: { writeEnabled:
   return {
     provider,
     writeEnabled: options.writeEnabled,
-    createServer: () => createQuickBooksMcpServer(workflow, context, mutations, accountingCases),
+    createServer: () => createQuickBooksMcpServer(workflow, context, accountingCases, mutations),
   };
 }

@@ -14,6 +14,7 @@ import type { QuickBooksOAuthService } from "../src/quickbooks/oauthService.js";
 import { ServerBoundQuickBooksProviderResolver } from "../src/quickbooks/providerResolver.js";
 import type { QuickBooksReviewService } from "../src/quickbooks/reviewService.js";
 import type { QuickBooksWorkflowService } from "../src/quickbooks/service.js";
+import type { QuickBooksAccountingCaseService } from "../src/quickbooks/accountingCaseService.js";
 import { Aes256GcmTokenCipher } from "../src/security/tokenCipher.js";
 
 const PUBLIC_BASE_URL = "https://quickbooks-mcp.example.test";
@@ -165,6 +166,7 @@ describe("QuickBooks MCP unauthorized-and-unconnected recovery", () => {
     const base = await listen(createQuickBooksHttpApp({
       config: config(),
       workflow: {} as QuickBooksWorkflowService,
+      accountingCases: {} as QuickBooksAccountingCaseService,
       oauth: {} as QuickBooksOAuthService,
       mcpOAuth: broker,
       reviews: {} as QuickBooksReviewService,
@@ -212,6 +214,7 @@ describe("QuickBooks MCP unauthorized-and-unconnected recovery", () => {
     const base = await listen(createQuickBooksHttpApp({
       config: config(),
       workflow: {} as QuickBooksWorkflowService,
+      accountingCases: {} as QuickBooksAccountingCaseService,
       oauth: {} as QuickBooksOAuthService,
       mcpOAuth: broker,
       reviews: {} as QuickBooksReviewService,
@@ -263,6 +266,7 @@ describe("QuickBooks MCP unauthorized-and-unconnected recovery", () => {
       workflow: {
         connectionStatus: (actor: string) => resolver.connectionStatus(actor),
       } as unknown as QuickBooksWorkflowService,
+      accountingCases: {} as QuickBooksAccountingCaseService,
       oauth: {} as QuickBooksOAuthService,
       mcpOAuth: broker,
       reviews: {} as QuickBooksReviewService,

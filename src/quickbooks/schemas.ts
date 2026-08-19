@@ -13,18 +13,10 @@ const yyyyMmDd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "must use YYYY-MM-DD").
 }, "must be a real calendar date");
 
 const providerId = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9-]+$/);
-const taxCodeId = providerId.refine((value) => /^\d+$/.test(value), {
-  message: "must use a numeric TaxCode Id returned by quickbooks_list_tax_codes; for NON/no-tax use global_tax_calculation=NotApplicable and omit tax_code_id",
-});
 const requestId = z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 const targetSessionRef = z.string().trim().min(64).max(2_048).regex(
   /^qbts_v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
   "must be an opaque target session returned by quickbooks_resolve_target",
-);
-const nonNegativeMoney = z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,2})?$/);
-const money = nonNegativeMoney.refine(
-  (value) => Number(value) > 0,
-  "must be greater than zero",
 );
 
 export const quickBooksNoInputSchema = z.object({}).strict();
@@ -129,93 +121,6 @@ export const quickBooksGetBillSchema = z.object({
   target_session_ref: targetSessionRef,
   bill_id: providerId,
 }).strict();
-
-export const quickBooksHashSourceDocumentSchema = z.object({
-  source_ref: z.string().trim().min(1).max(256).regex(/^[^\r\n\u0000-\u001f\u007f]+$/u),
-  content: z.string().min(1).max(262_144).refine(
-    (value) => Buffer.byteLength(value, "utf8") <= 262_144,
-    "UTF-8 content must not exceed 262144 bytes",
-  ),
-}).strict();
-
-const quickBooksBillLineSchema = z.object({
-  account_id: providerId,
-  amount: money,
-  description: z.string().trim().min(1).max(4_000).optional(),
-  tax_code_id: taxCodeId.optional(),
-}).strict();
-
-export const quickBooksPrepareSupplierBillSchema = z.object({
-  target_session_ref: targetSessionRef,
-  request_id: requestId,
-  source_ref: z.string().trim().min(1).max(256).regex(/^[^\r\n\u0000-\u001f\u007f]+$/u),
-  source_sha256: z.string().regex(/^[a-f0-9]{64}$/).refine((value) => !/^0{64}$/.test(value), {
-    message: "must be a real content digest, not the all-zero placeholder",
-  }),
-  source_digest_provenance: z.enum([
-    "AGENT_SUPPLIED_TEXT_FINGERPRINT",
-    "HOST_PROVIDED_ORIGINAL_FILE_SHA256",
-    "EXTERNALLY_SUPPLIED_UNVERIFIED_SHA256",
-  ]).default("EXTERNALLY_SUPPLIED_UNVERIFIED_SHA256"),
-  source_attestation_ref: z.string().trim().min(16).max(2_048).optional(),
-  vendor_id: providerId,
-  txn_date: yyyyMmDd,
-  due_date: yyyyMmDd.optional(),
-  doc_number: z.string().trim().min(1).max(21).optional(),
-  missing_doc_number_reason: z.string().trim().min(3).max(256).optional(),
-  currency_code: z.string().regex(/^[A-Z]{3}$/).optional(),
-  memo: z.string().trim().min(1).max(3_000).optional(),
-  approval_ref: z.string().trim().min(1).max(256).optional(),
-  supporting_evidence: z.array(z.object({
-    kind: z.enum(["approval", "coding", "correspondence", "other"]),
-    ref: z.string().trim().min(1).max(256),
-    sha256: z.string().regex(/^[a-f0-9]{64}$/).refine((value) => !/^0{64}$/.test(value)),
-  }).strict()).max(20).default([]),
-  global_tax_calculation: z.enum(["TaxExcluded", "TaxInclusive", "NotApplicable"]),
-  invoice_total: money,
-  tax_total: nonNegativeMoney,
-  lines: z.array(quickBooksBillLineSchema).min(1).max(100),
-}).strict().superRefine((value, context) => {
-  if (value.source_digest_provenance === "HOST_PROVIDED_ORIGINAL_FILE_SHA256" && !value.source_attestation_ref) {
-    context.addIssue({ code: "custom", message: "HOST_PROVIDED provenance requires source_attestation_ref from WorkStore", path: ["source_attestation_ref"] });
-  }
-  if (value.source_digest_provenance !== "HOST_PROVIDED_ORIGINAL_FILE_SHA256" && value.source_attestation_ref) {
-    context.addIssue({ code: "custom", message: "source_attestation_ref is only valid for HOST_PROVIDED provenance", path: ["source_attestation_ref"] });
-  }
-  if (value.due_date && value.due_date < value.txn_date) {
-    context.addIssue({ code: "custom", message: "due_date must not be before txn_date", path: ["due_date"] });
-  }
-  if (!value.doc_number && !value.missing_doc_number_reason) {
-    context.addIssue({ code: "custom", message: "provide doc_number or explain why it is missing", path: ["missing_doc_number_reason"] });
-  }
-  if (value.doc_number && value.missing_doc_number_reason) {
-    context.addIssue({ code: "custom", message: "omit missing_doc_number_reason when doc_number is present", path: ["missing_doc_number_reason"] });
-  }
-  if (value.global_tax_calculation === "NotApplicable" && value.lines.some((line) => line.tax_code_id)) {
-    context.addIssue({ code: "custom", message: "tax_code_id must be omitted when global_tax_calculation is NotApplicable", path: ["lines"] });
-  }
-  if (value.global_tax_calculation !== "NotApplicable" && value.lines.some((line) => !line.tax_code_id)) {
-    context.addIssue({ code: "custom", message: "every line needs a QuickBooks tax_code_id for TaxExcluded or TaxInclusive", path: ["lines"] });
-  }
-  const cents = (amount: string) => Math.round(Number(amount) * 100);
-  const lineCents = value.lines.reduce((total, line) => total + cents(line.amount), 0);
-  const invoiceCents = cents(value.invoice_total);
-  const taxCents = cents(value.tax_total);
-  if (value.global_tax_calculation === "NotApplicable" && taxCents !== 0) {
-    context.addIssue({ code: "custom", message: "tax_total must be zero when tax is NotApplicable", path: ["tax_total"] });
-  }
-  const expectedInvoiceCents = value.global_tax_calculation === "TaxExcluded" ? lineCents + taxCents : lineCents;
-  if (invoiceCents !== expectedInvoiceCents) {
-    context.addIssue({
-      code: "custom",
-      message: `invoice_total does not reconcile: expected ${(expectedInvoiceCents / 100).toFixed(2)} from lines and tax_total`,
-      path: ["invoice_total"],
-    });
-  }
-  if (taxCents > invoiceCents) {
-    context.addIssue({ code: "custom", message: "tax_total cannot exceed invoice_total", path: ["tax_total"] });
-  }
-});
 
 export const quickBooksTrialBalanceSchema = z.object({
   target_session_ref: targetSessionRef,
@@ -769,8 +674,6 @@ export type QuickBooksGetTransactionInput = z.infer<typeof quickBooksGetTransact
 export type QuickBooksRunReportInput = z.infer<typeof quickBooksRunReportSchema>;
 export type QuickBooksListBillsToolInput = z.infer<typeof quickBooksListBillsSchema>;
 export type QuickBooksGetBillInput = z.infer<typeof quickBooksGetBillSchema>;
-export type QuickBooksHashSourceDocumentInput = z.infer<typeof quickBooksHashSourceDocumentSchema>;
-export type QuickBooksPrepareSupplierBillToolInput = z.infer<typeof quickBooksPrepareSupplierBillSchema>;
 export type QuickBooksTrialBalanceInput = z.infer<typeof quickBooksTrialBalanceSchema>;
 export type QuickBooksGetWriteCapabilitiesInput = z.infer<typeof quickBooksGetWriteCapabilitiesSchema>;
 export type QuickBooksPrepareMutationInput = z.infer<typeof quickBooksPrepareMutationSchema>;

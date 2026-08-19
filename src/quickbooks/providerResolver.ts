@@ -5,7 +5,6 @@ import type {
   QuickBooksCompanyInfo,
   QuickBooksCustomer,
   QuickBooksItem,
-  QuickBooksSupplierBillInput,
   QuickBooksTaxCode,
   QuickBooksTaxRate,
   QuickBooksVendor,
@@ -14,9 +13,7 @@ import type {
   QuickBooksAccountingProvider,
   QuickBooksBillListInput,
   QuickBooksBillListResult,
-  QuickBooksExistingBillMatch,
   QuickBooksExistingDocumentMatch,
-  QuickBooksReferenceValidationResult,
   QuickBooksSearchResult,
 } from "../providers/quickbooksProvider.js";
 import type {
@@ -121,27 +118,12 @@ class BoundQuickBooksProvider implements QuickBooksProviderCapabilities {
     return this.#withProvider((provider) => provider.getBill(billId));
   }
 
-  findExistingSupplierBills(input: { vendorId: string; docNumber: string }): Promise<QuickBooksExistingBillMatch[]> {
-    return this.#withProvider((provider) => provider.findExistingSupplierBills(input));
-  }
-
   findExistingAccountingDocuments(input: {
     entity: QuickBooksExistingDocumentMatch["entity"];
     counterpartyId: string;
     docNumber: string;
   }): Promise<QuickBooksExistingDocumentMatch[]> {
     return this.#withProvider((provider) => provider.findExistingAccountingDocuments(input));
-  }
-
-  validateSupplierBill(input: QuickBooksSupplierBillInput): Promise<QuickBooksReferenceValidationResult> {
-    return this.#withProvider((provider) => provider.validateSupplierBill(input));
-  }
-
-  createApprovedSupplierBill(input: QuickBooksSupplierBillInput, permit: QuickBooksProviderWritePermit): Promise<{
-    bill: QuickBooksBillSnapshot;
-    receipt: Record<string, unknown>;
-  }> {
-    return this.#withProvider((provider) => provider.createApprovedSupplierBill(input, permit));
   }
 
   getTrialBalance(date?: string): Promise<Record<string, unknown>> {

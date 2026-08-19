@@ -72,7 +72,7 @@ describe("QuickBooks MCP failure envelope", () => {
       audience: "https://agent2.zcloak.ai/quickbooks/mcp",
       scopes: ["quickbooks.read", "quickbooks.mutation.prepare", "quickbooks.mutation.execute"],
     });
-    const server = createQuickBooksMcpServer(service, context, mutations, accountingCases);
+    const server = createQuickBooksMcpServer(service, context, accountingCases, mutations);
     const client = new Client({ name: "qbo-failure-envelope-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);

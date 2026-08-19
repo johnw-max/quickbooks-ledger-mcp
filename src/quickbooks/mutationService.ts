@@ -292,10 +292,10 @@ export class QuickBooksMutationService {
       },
       canonical_payload_hash: created.preparation.payloadHash,
       confirmation_phrase: capability.executionMode === "EXPLICIT_CONFIRMATION" ? phrase : undefined,
+      // review_required says only that Agent confirmation is not sufficient. It
+      // names no review page: the operator review route is gone, and an
+      // Accounting Case reaches these capabilities through standing delegation.
       review_required: capability.executionMode !== "EXPLICIT_CONFIRMATION",
-      review_url: capability.executionMode !== "EXPLICIT_CONFIRMATION"
-        ? `${this.policy.publicBaseUrl.replace(/\/$/, "")}/quickbooks/mutation-review/${created.preparation.preparationId}`
-        : undefined,
       expires_at: created.preparation.expiresAt.toISOString(),
       warnings: preparationWarnings(input, capability.providerEffect, capability.quickBooksDraftAvailable),
       idempotent_replay: !created.created,
@@ -1045,10 +1045,9 @@ export class QuickBooksMutationService {
     }
     if (this.policy.executeScopeAuthorizer) {
       // Generic mutations and Accounting Cases are exposed behind the single
-      // mutation.execute transport scope.  The legacy supplier-bill workflow
-      // has its own bill.execute gate in QuickBooksWorkflowService; applying
-      // that legacy scope again here makes Case Bills impossible even though
-      // the caller passed the Case tool's transport authorization.
+      // mutation.execute transport scope. Nothing here re-checks a per-entity
+      // scope: doing so would make Case Bills impossible even though the caller
+      // passed the Case tool's transport authorization.
       const requiredScope = "quickbooks.mutation.execute";
       if (!await this.policy.executeScopeAuthorizer(preparation.actorId, requiredScope)) {
         throw new AppError("FORBIDDEN", `The connected MCP installation does not grant ${requiredScope}.`, {

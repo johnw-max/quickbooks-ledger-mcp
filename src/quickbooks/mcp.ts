@@ -14,21 +14,17 @@ import type { QuickBooksMutationService } from "./mutationService.js";
 import { assertInternalQuickBooksCaller } from "./callerPolicy.js";
 import {
   quickBooksGetBillSchema,
-  quickBooksHashSourceDocumentSchema,
   quickBooksGetTransactionSchema,
   quickBooksListItemsSchema,
   quickBooksListBillsSchema,
   quickBooksListTransactionsSchema,
   quickBooksNoInputSchema,
   quickBooksTargetSessionSchema,
-  quickBooksPrepareSupplierBillSchema,
   quickBooksSearchVendorsSchema,
   quickBooksSearchCustomersSchema,
   quickBooksRunReportSchema,
   quickBooksTrialBalanceSchema,
   quickBooksGetWriteCapabilitiesSchema,
-  quickBooksPrepareMutationSchema,
-  quickBooksExecutePreparedMutationSchema,
 } from "./schemas.js";
 import {
   normalizeQuickBooksAccountingCaseBusinessIntake,
@@ -52,23 +48,6 @@ export const QUICKBOOKS_READ_TOOL_ALLOWLIST = [
   "quickbooks_get_transaction",
   "quickbooks_run_report",
   "quickbooks_get_trial_balance",
-] as const;
-
-export const QUICKBOOKS_LEGACY_PREPARE_TOOL_ALLOWLIST = [
-  "quickbooks_hash_source_document",
-  "quickbooks_prepare_supplier_bill",
-] as const;
-
-/** Legacy read + supplier-Bill preparation surface. Accounting Case mode excludes it. */
-export const QUICKBOOKS_TOOL_ALLOWLIST = [
-  ...QUICKBOOKS_READ_TOOL_ALLOWLIST,
-  ...QUICKBOOKS_LEGACY_PREPARE_TOOL_ALLOWLIST,
-] as const;
-
-export const QUICKBOOKS_MUTATION_TOOL_ALLOWLIST = [
-  "quickbooks_get_write_capabilities",
-  "quickbooks_prepare_mutation",
-  "quickbooks_execute_confirmed_mutation",
 ] as const;
 
 export const QUICKBOOKS_CAPABILITY_TOOL_ALLOWLIST = [
@@ -209,8 +188,6 @@ async function scoped<T>(options: {
   context: RequestContext;
   requiredScope:
     | "quickbooks.read"
-    | "quickbooks.bill.prepare"
-    | "quickbooks.bill.execute"
     | "quickbooks.mutation.prepare"
     | "quickbooks.mutation.execute";
   action: () => Promise<T>;
@@ -257,8 +234,8 @@ async function scopedRead<T>(options: {
 export function createQuickBooksMcpServer(
   service: QuickBooksWorkflowService,
   context: RequestContext,
+  accountingCases: QuickBooksAccountingCaseService,
   mutations?: QuickBooksMutationService,
-  accountingCases?: QuickBooksAccountingCaseService,
 ): McpServer {
   const actorId = context.actorId;
   const server = new McpServer(
@@ -443,30 +420,6 @@ export function createQuickBooksMcpServer(
     action: () => service.runReportRead(actorId, input),
   }));
 
-  if (!accountingCases) {
-    server.registerTool("quickbooks_hash_source_document", {
-      title: "Hash supplied accounting source text",
-      description: "Computes a SHA-256 text fingerprint from the exact UTF-8 text supplied by the Agent. This does not read or verify original PDF/image bytes, and it does not prove the identity of the uploaded file. Copy the returned 64-character sha256 and evidenceType exactly into quickbooks_prepare_supplier_bill. The text is limited to 256 KiB and is not stored by this QuickBooks MCP service; upstream host retention is outside this tool's control.",
-      inputSchema: quickBooksHashSourceDocumentSchema,
-      annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false },
-    }, async (input) => scoped({
-      context,
-      requiredScope: "quickbooks.bill.prepare",
-      action: async () => service.hashSourceDocument(input),
-    }));
-
-    server.registerTool("quickbooks_prepare_supplier_bill", {
-      title: "Prepare a QuickBooks supplier bill for review",
-      description: "Validates references and totals, checks both local pending requests and existing QuickBooks Bills for the same vendor document number, then creates a local review request only. It does not write to QuickBooks until a human approves outside Agent tools. Pass the current target_session_ref from quickbooks_resolve_target. For Agent-supplied text, first call quickbooks_hash_source_document and copy its sha256/evidenceType exactly. HOST_PROVIDED provenance additionally requires an opaque source_attestation_ref that the configured WorkStore verifier accepts; the Agent must never invent it. QuickBooks doc_number is limited to 21 characters: never silently truncate it; for a longer number omit doc_number, explain it in missing_doc_number_reason, and preserve the full original in memo. For NON/no-tax bills, use global_tax_calculation=NotApplicable, tax_total=0, and omit line tax_code_id; tax_code_id otherwise must be the numeric Id returned by quickbooks_list_tax_codes.",
-      inputSchema: quickBooksPrepareSupplierBillSchema,
-      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
-    }, async (input) => scoped({
-      context,
-      requiredScope: "quickbooks.bill.prepare",
-      action: () => service.prepareSupplierBill(actorId, input),
-    }));
-  }
-
   server.registerTool("quickbooks_get_trial_balance", {
     title: "Get QuickBooks Trial Balance",
     description: "Reads the QuickBooks Trial Balance for post-write ledger evidence.",
@@ -490,64 +443,40 @@ export function createQuickBooksMcpServer(
       requiredScope: "quickbooks.read",
       action: async () => mutations.capabilities(input),
     }));
-
-    if (!accountingCases) server.registerTool("quickbooks_prepare_mutation", {
-      title: "Prepare a governed QuickBooks mutation",
-      description: "Creates an immutable local PREPARED proposal for an official QuickBooks create, update, or delete capability. It never writes to QuickBooks. Pass the current target_session_ref from quickbooks_resolve_target. The result states whether exact Agent confirmation is allowed or an out-of-band human review is mandatory. UPDATE and DELETE require the exact provider Id and SyncToken; Company/Realm is always taken from the verified target and OAuth binding. HOST_PROVIDED source evidence additionally requires a WorkStore-verified source_attestation_ref.",
-      inputSchema: quickBooksPrepareMutationSchema,
-      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
-    }, async (input) => scoped({
-      context,
-      requiredScope: "quickbooks.mutation.prepare",
-      action: () => mutations.prepare(actorId, input),
-    }));
-
-    if (!accountingCases) server.registerTool("quickbooks_execute_confirmed_mutation", {
-      title: "Execute a confirmed low-risk QuickBooks mutation",
-      description: "Consumes one exact, unexpired PREPARED proposal only when policy classifies it as low-risk EXPLICIT_CONFIRMATION. It accepts no accounting payload. Medium/high/critical actions are rejected and must use the out-of-band review route. Success means one provider write plus exact-Id readback, never PREPARED alone.",
-      inputSchema: quickBooksExecutePreparedMutationSchema,
-      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
-    }, async (input) => scoped({
-      context,
-      requiredScope: "quickbooks.mutation.execute",
-      action: () => mutations.executeWithConfirmation(actorId, input),
-    }));
   }
 
-  if (accountingCases) {
-    server.registerTool("quickbooks_prepare_accounting_case", {
-      title: "Prepare a bounded QuickBooks Accounting Case",
-      description: "Accepts business-shaped source units and deterministically builds the strict internal typed Case; the Agent does not create fact ids, lineage, source links, or Provider ids. A residual Case can contain only UNSUPPORTED_EVENT, EVIDENCE, or CONTROL_FINDING facts and compile to zero Provider operations. The server verifies coverage, recomputes totals, resolves QuickBooks references, stores immutable canonical operations, and performs no Provider write.",
-      inputSchema: quickBooksAccountingCaseBusinessIntakeSchema,
-      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
-    }, async (input) => scoped({
-      context,
-      requiredScope: "quickbooks.mutation.prepare",
-      action: () => accountingCases.prepare(context, normalizeQuickBooksAccountingCaseBusinessIntake(input)),
-    }));
+  server.registerTool("quickbooks_prepare_accounting_case", {
+    title: "Prepare a bounded QuickBooks Accounting Case",
+    description: "Accepts business-shaped source units and deterministically builds the strict internal typed Case; the Agent does not create fact ids, lineage, source links, or Provider ids. A residual Case can contain only UNSUPPORTED_EVENT, EVIDENCE, or CONTROL_FINDING facts and compile to zero Provider operations. The server verifies coverage, recomputes totals, resolves QuickBooks references, stores immutable canonical operations, and performs no Provider write.",
+    inputSchema: quickBooksAccountingCaseBusinessIntakeSchema,
+    annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
+  }, async (input) => scoped({
+    context,
+    requiredScope: "quickbooks.mutation.prepare",
+    action: () => accountingCases.prepare(context, normalizeQuickBooksAccountingCaseBusinessIntake(input)),
+  }));
 
-    server.registerTool("quickbooks_execute_accounting_case", {
-      title: "Execute a governed QuickBooks Accounting Case",
-      description: "Executes only server-persisted canonical operations from one immutable case version. Standing delegation, exact target binding, deterministic validation, idempotency and exact readback are mandatory. No accounting payload or confirmation phrase is accepted.",
-      inputSchema: quickBooksExecuteAccountingCaseSchema,
-      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
-    }, async (input) => scoped({
-      context,
-      requiredScope: "quickbooks.mutation.execute",
-      action: () => accountingCases.execute(context, input),
-    }));
+  server.registerTool("quickbooks_execute_accounting_case", {
+    title: "Execute a governed QuickBooks Accounting Case",
+    description: "Executes only server-persisted canonical operations from one immutable case version. Standing delegation, exact target binding, deterministic validation, idempotency and exact readback are mandatory. No accounting payload or confirmation phrase is accepted.",
+    inputSchema: quickBooksExecuteAccountingCaseSchema,
+    annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
+  }, async (input) => scoped({
+    context,
+    requiredScope: "quickbooks.mutation.execute",
+    action: () => accountingCases.execute(context, input),
+  }));
 
-    server.registerTool("quickbooks_get_accounting_case_status", {
-      title: "Get QuickBooks Accounting Case status",
-      description: "Returns bounded source coverage, event dispositions, operation receipts and a conservative completion claim. Only READBACK_VERIFIED operations count as written.",
-      inputSchema: quickBooksGetAccountingCaseStatusSchema,
-      annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false },
-    }, async (input) => scoped({
-      context,
-      requiredScope: "quickbooks.read",
-      action: () => accountingCases.status(context, input),
-    }));
-  }
+  server.registerTool("quickbooks_get_accounting_case_status", {
+    title: "Get QuickBooks Accounting Case status",
+    description: "Returns bounded source coverage, event dispositions, operation receipts and a conservative completion claim. Only READBACK_VERIFIED operations count as written.",
+    inputSchema: quickBooksGetAccountingCaseStatusSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false },
+  }, async (input) => scoped({
+    context,
+    requiredScope: "quickbooks.read",
+    action: () => accountingCases.status(context, input),
+  }));
 
   return server;
 }

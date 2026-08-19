@@ -7,13 +7,14 @@ import {
   createQuickBooksMcpServer,
   QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST,
   QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
-  QUICKBOOKS_TOOL_ALLOWLIST,
-  QUICKBOOKS_MUTATION_TOOL_ALLOWLIST,
+  QUICKBOOKS_READ_TOOL_ALLOWLIST,
 } from "../src/quickbooks/mcp.js";
 import { hasQuickBooksReadEvidenceProfile } from "../src/quickbooks/readEvidence.js";
 import type { QuickBooksWorkflowService } from "../src/quickbooks/service.js";
 import type { QuickBooksMutationService } from "../src/quickbooks/mutationService.js";
 import type { QuickBooksAccountingCaseService } from "../src/quickbooks/accountingCaseService.js";
+
+const accountingCasesStub = {} as QuickBooksAccountingCaseService;
 
 const TARGET_SESSION_REF = `qbts_v1.${"a".repeat(16)}.${"b".repeat(22)}.${"c".repeat(64)}`;
 
@@ -33,14 +34,14 @@ describe("QuickBooks MCP surface", () => {
     await Promise.all(closeables.splice(0).map((closeable) => closeable.close()));
   });
 
-  it("exposes reviewed read and prepare tools but no Agent approval/post tool", async () => {
+  it("exposes reviewed read and Accounting Case tools but no Agent approval/post tool", async () => {
     const service = {} as QuickBooksWorkflowService;
     const context = createLegacySharedBearerRequestContext({
       actorId: "actor-a",
       audience: "https://agent2.zcloak.ai/quickbooks/mcp",
-      scopes: ["quickbooks.read", "quickbooks.bill.prepare"],
+      scopes: ["quickbooks.read", "quickbooks.mutation.prepare"],
     });
-    const server = createQuickBooksMcpServer(service, context);
+    const server = createQuickBooksMcpServer(service, context, accountingCasesStub);
     const client = new Client({ name: "qbo-contract-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);
@@ -50,23 +51,21 @@ describe("QuickBooks MCP surface", () => {
     const tools = await client.listTools();
     const names = tools.tools.map((tool) => tool.name);
 
-    expect(names.sort()).toEqual([...QUICKBOOKS_TOOL_ALLOWLIST].sort());
-    expect(names).toHaveLength(16);
+    expect(names.sort()).toEqual(
+      [...QUICKBOOKS_READ_TOOL_ALLOWLIST, ...QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST].sort(),
+    );
+    expect(names).toHaveLength(17);
     expect(names.some((name) => /approve|post|create/.test(name))).toBe(false);
   });
 
   it("keeps every ordinary read tool covered by normalized evidence", () => {
-    const nonReadTools = new Set([
-      "quickbooks_hash_source_document",
-      "quickbooks_prepare_supplier_bill",
-      "quickbooks_resolve_target",
-    ]);
-    const ordinaryReads = QUICKBOOKS_TOOL_ALLOWLIST.filter((name) => !nonReadTools.has(name));
+    const nonReadTools = new Set(["quickbooks_resolve_target"]);
+    const ordinaryReads = QUICKBOOKS_READ_TOOL_ALLOWLIST.filter((name) => !nonReadTools.has(name));
 
     expect(ordinaryReads.every((name) => hasQuickBooksReadEvidenceProfile(name))).toBe(true);
   });
 
-  it("adds the governed generic mutation tools only when the mutation runtime is installed", async () => {
+  it("adds the write-capability tool only when the mutation runtime is installed", async () => {
     const service = {} as QuickBooksWorkflowService;
     const mutations = {
       capabilities: vi.fn().mockReturnValue({ sourceCoverage: { total: 71 } }),
@@ -76,7 +75,7 @@ describe("QuickBooks MCP surface", () => {
       audience: "https://agent2.zcloak.ai/quickbooks/mcp",
       scopes: ["quickbooks.read", "quickbooks.mutation.prepare"],
     });
-    const server = createQuickBooksMcpServer(service, context, mutations);
+    const server = createQuickBooksMcpServer(service, context, accountingCasesStub, mutations);
     const client = new Client({ name: "qbo-mutation-contract-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);
@@ -84,9 +83,7 @@ describe("QuickBooks MCP surface", () => {
     await client.connect(clientTransport);
 
     const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name).sort()).toEqual(
-      [...QUICKBOOKS_TOOL_ALLOWLIST, ...QUICKBOOKS_MUTATION_TOOL_ALLOWLIST].sort(),
-    );
+    expect(tools.tools.map((tool) => tool.name).sort()).toEqual([...QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST].sort());
     const capabilities = await client.callTool({ name: "quickbooks_get_write_capabilities", arguments: {} });
     expect(capabilities.isError).not.toBe(true);
     const payload = JSON.parse(firstToolText(capabilities)) as {
@@ -95,10 +92,8 @@ describe("QuickBooks MCP surface", () => {
     expect(payload.result?.sourceCoverage?.total).toBe(71);
   });
 
-  it("adds high-level Accounting Case tools only when the Case runtime is installed", async () => {
-    const hashSourceDocument = vi.fn();
-    const prepareSupplierBill = vi.fn();
-    const service = { hashSourceDocument, prepareSupplierBill } as unknown as QuickBooksWorkflowService;
+  it("routes the high-level Accounting Case intake through the deterministic normalizer", async () => {
+    const service = {} as QuickBooksWorkflowService;
     const mutations = { capabilities: vi.fn().mockReturnValue({ sourceCoverage: { total: 71 } }) } as unknown as QuickBooksMutationService;
     const prepare = vi.fn().mockResolvedValue({ state: "PLANNED_NEEDS_PREFLIGHT" });
     const accountingCases = { prepare } as unknown as QuickBooksAccountingCaseService;
@@ -107,7 +102,7 @@ describe("QuickBooks MCP surface", () => {
       audience: "https://agent2.zcloak.ai/quickbooks/mcp",
       scopes: ["quickbooks.read", "quickbooks.mutation.prepare", "quickbooks.mutation.execute"],
     });
-    const server = createQuickBooksMcpServer(service, context, mutations, accountingCases);
+    const server = createQuickBooksMcpServer(service, context, accountingCases, mutations);
     const client = new Client({ name: "qbo-case-contract-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);
@@ -117,31 +112,12 @@ describe("QuickBooks MCP surface", () => {
     const names = listedTools.map((tool) => tool.name);
     expect(names.sort()).toEqual([...QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST].sort());
     expect(names).toHaveLength(18);
-    expect(names).not.toContain("quickbooks_hash_source_document");
-    expect(names).not.toContain("quickbooks_prepare_supplier_bill");
-    expect(names).not.toContain("quickbooks_prepare_mutation");
-    expect(names).not.toContain("quickbooks_execute_confirmed_mutation");
     expect(QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST.every((name) => names.includes(name))).toBe(true);
     const prepareCaseTool = listedTools.find((tool) => tool.name === "quickbooks_prepare_accounting_case");
     expect(prepareCaseTool?.description).toContain("zero Provider operations");
     expect(prepareCaseTool?.description).toContain("does not create fact ids");
     expect(JSON.stringify(prepareCaseTool?.inputSchema)).toContain("source_key");
     expect(JSON.stringify(prepareCaseTool?.inputSchema)).toContain("The server creates fact ids");
-
-    const hiddenHash = await client.callTool({
-      name: "quickbooks_hash_source_document",
-      arguments: { source_ref: "invoice.txt", content: "USD 148" },
-    });
-    const hiddenBill = await client.callTool({
-      name: "quickbooks_prepare_supplier_bill",
-      arguments: {},
-    });
-    expect(hiddenHash.isError).toBe(true);
-    expect(hiddenBill.isError).toBe(true);
-    expect(JSON.stringify(hiddenHash.content)).toContain("not found");
-    expect(JSON.stringify(hiddenBill.content)).toContain("not found");
-    expect(hashSourceDocument).not.toHaveBeenCalled();
-    expect(prepareSupplierBill).not.toHaveBeenCalled();
 
     const prepared = await client.callTool({
       name: "quickbooks_prepare_accounting_case",
@@ -178,15 +154,15 @@ describe("QuickBooks MCP surface", () => {
   });
 
   it("does not let mutation prepare scope authorize provider execution", async () => {
-    const executeWithConfirmation = vi.fn();
+    const execute = vi.fn();
     const service = {} as QuickBooksWorkflowService;
-    const mutations = { executeWithConfirmation } as unknown as QuickBooksMutationService;
+    const accountingCases = { execute } as unknown as QuickBooksAccountingCaseService;
     const context = createLegacySharedBearerRequestContext({
       actorId: "prepare-only-actor",
       audience: "https://agent2.zcloak.ai/quickbooks/mcp",
       scopes: ["quickbooks.mutation.prepare"],
     });
-    const server = createQuickBooksMcpServer(service, context, mutations);
+    const server = createQuickBooksMcpServer(service, context, accountingCases);
     const client = new Client({ name: "qbo-scope-separation-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);
@@ -194,86 +170,17 @@ describe("QuickBooks MCP surface", () => {
     await client.connect(clientTransport);
 
     const result = await client.callTool({
-      name: "quickbooks_execute_confirmed_mutation",
+      name: "quickbooks_execute_accounting_case",
       arguments: {
-        preparation_id: `qbm_${"a".repeat(32)}`,
-        request_id: "qbo.customer.scope.001",
-        confirmation_phrase: "CONFIRM QUICKBOOKS",
+        target_session_ref: TARGET_SESSION_REF,
+        case_id: "case-scope-001",
+        case_version: 1,
+        request_id: "qbo.case.scope.001",
       },
     });
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toContain("quickbooks.mutation.execute");
-    expect(executeWithConfirmation).not.toHaveBeenCalled();
-  });
-
-  it("hashes uploaded source text without storing it", async () => {
-    const hashSourceDocument = vi.fn().mockReturnValue({
-      sourceRef: "invoice.txt",
-      algorithm: "sha256",
-      sha256: "a".repeat(64),
-      utf8ByteLength: 7,
-      evidenceType: "AGENT_SUPPLIED_TEXT_FINGERPRINT",
-      originalFileVerified: false,
-      storedByQuickBooksMcp: false,
-    });
-    const service = { hashSourceDocument } as unknown as QuickBooksWorkflowService;
-    const context = createLegacySharedBearerRequestContext({
-      actorId: "prepare-actor",
-      audience: "https://agent2.zcloak.ai/quickbooks/mcp",
-      scopes: ["quickbooks.bill.prepare"],
-    });
-    const server = createQuickBooksMcpServer(service, context);
-    const client = new Client({ name: "qbo-hash-test", version: "0.1.0" });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    closeables.push(client, server);
-    await server.connect(serverTransport as unknown as Transport);
-    await client.connect(clientTransport);
-
-    const result = await client.callTool({
-      name: "quickbooks_hash_source_document",
-      arguments: { source_ref: "invoice.txt", content: "USD 148" },
-    });
-
-    expect(result.isError).not.toBe(true);
-    expect(hashSourceDocument).toHaveBeenCalledWith({ source_ref: "invoice.txt", content: "USD 148" });
-    expect(JSON.stringify(result.content)).toContain("originalFileVerified");
-  });
-
-  it("routes a prepared bill only when the installation has prepare scope", async () => {
-    const prepareSupplierBill = vi.fn().mockResolvedValue({ postingRequestId: "qbp_1", state: "PREPARED" });
-    const service = { prepareSupplierBill } as unknown as QuickBooksWorkflowService;
-    const context = createLegacySharedBearerRequestContext({
-      actorId: "read-only-actor",
-      audience: "https://agent2.zcloak.ai/quickbooks/mcp",
-      scopes: ["quickbooks.read"],
-    });
-    const server = createQuickBooksMcpServer(service, context);
-    const client = new Client({ name: "qbo-scope-test", version: "0.1.0" });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    closeables.push(client, server);
-    await server.connect(serverTransport as unknown as Transport);
-    await client.connect(clientTransport);
-
-    const result = await client.callTool({
-      name: "quickbooks_prepare_supplier_bill",
-      arguments: {
-        target_session_ref: TARGET_SESSION_REF,
-        request_id: "case-quickbooks-001",
-        source_ref: "invoice.pdf",
-        source_sha256: "a".repeat(64),
-        vendor_id: "56",
-        txn_date: "2026-08-05",
-        doc_number: "INV-001",
-        global_tax_calculation: "NotApplicable",
-        invoice_total: "100.00",
-        tax_total: "0.00",
-        lines: [{ account_id: "7", amount: "100.00" }],
-      },
-    });
-
-    expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("quickbooks.bill.prepare");
-    expect(prepareSupplierBill).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("returns ledger-target evidence without exposing raw Realm or connection identifiers", async () => {
@@ -297,7 +204,7 @@ describe("QuickBooks MCP surface", () => {
       audience: "https://mcp.jiayuanwang.xyz/quickbooks/mcp",
       scopes: ["quickbooks.read"],
     });
-    const server = createQuickBooksMcpServer(service, context);
+    const server = createQuickBooksMcpServer(service, context, accountingCasesStub);
     const client = new Client({ name: "qbo-read-evidence-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);
@@ -347,7 +254,7 @@ describe("QuickBooks MCP surface", () => {
       audience: "https://mcp.jiayuanwang.xyz/quickbooks/mcp",
       scopes: ["quickbooks.read"],
     });
-    const server = createQuickBooksMcpServer(service, context);
+    const server = createQuickBooksMcpServer(service, context, accountingCasesStub);
     const client = new Client({ name: "qbo-target-session-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);
@@ -382,7 +289,7 @@ describe("QuickBooks MCP surface", () => {
       audience: "https://mcp.jiayuanwang.xyz/quickbooks/mcp",
       scopes: ["quickbooks.read"],
     });
-    const server = createQuickBooksMcpServer(service, context);
+    const server = createQuickBooksMcpServer(service, context, accountingCasesStub);
     const client = new Client({ name: "qbo-status-evidence-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);
