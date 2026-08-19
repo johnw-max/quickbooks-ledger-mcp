@@ -313,3 +313,60 @@ QuickBooks 尚未采纳。
 先按 Xero 的做法把委托身份与 OAuth installation 解耦，再重跑线上续写。
 在那之前，线上 Bill 与 Invoice 仍未对真实 QuickBooks 验证过——这是本判定
 唯一实质性的剩余缺口，且它不是"没人去跑"，是当前构建下跑不通。
+
+## 线上主链完成（2026-08-19 晚）
+
+8 月 15 日卡住的 case `qbo-us-normalized-uat-20260815` v2 已由线上 agent
+（Work / DeepSeek-V4）续写完成，四条操作全部 `READBACK_VERIFIED`，case `TERMINAL`。
+
+**六条已释放能力现已全部对真实 QuickBooks 沙盒完成写入并通过同 ID 精确回读：**
+
+| 对象 | Provider ID |
+|---|---|
+| Customer | 58、59 |
+| Vendor | 60 |
+| CreditMemo | 147 |
+| VendorCredit | 148 |
+| **Bill** | **149**（8 月 15 日因双 scope 缺陷卡住的那张） |
+| **Invoice** | **150**（此前从未尝试） |
+
+provider 写入计数从 5 增至 7 —— 只多了这两笔，没有重复写入。
+
+### 解开死锁需要的三层修复
+
+一次续写要穿过三道各自独立的门，每一道都是同一个错误的不同表现：**用"最后一次
+错误长什么样"去分类，而不是用"账本能证明什么"。**
+
+1. **准备件过期**（迁移 036）。三十分钟窗口没有任何东西能作用于它：Case 复用存着
+   的准备件而不看年龄，而操作的 request id 是内容哈希，`ON CONFLICT DO NOTHING`
+   把每一次后续尝试都交回同一行。修法是重新授权而非延长时钟 —— 清掉授权证据，
+   迫使下一次认领重跑常驻委托评估，那正是过期机制当初要强制的检查。
+
+2. **未 dispatch 的失败被写成 provider 拒绝**。分类只看 `details.failureLayer`，
+   于是所有不带 details 的拒绝（目标会话过期、重连、binding revision 变动）都被
+   记成"provider 拒绝了"并终态化 Case —— 而 Intuit 从未收到请求。改为看持久行：
+   真实的 provider 拒绝必然先过 dispatch 标记，必然留下执行尝试。
+
+3. **重挂载资格被一次无关报错摧毁**（迁移 037）。资格判定读的是 `error_receipt`，
+   而该字段可变、会被后续任何失败覆盖。本轮第一次续写尝试自己写下的
+   `APPROVAL_INVALID` 覆盖掉了原始的 `FORBIDDEN / MCP_SCOPE`，操作随即被判为
+   `TERMINAL_REJECTION_NOT_RETRYABLE` —— 而它背后的准备件干干净净、从未发出。
+   两层都改为凭持久证据判定；那些列一旦写入即不可变，回执不是。
+
+第三条尤其值得记：**它是被前两条修复的缺席直接制造出来的**。修好第二条之后，
+那次覆盖根本不会发生。
+
+### 同批修掉的可用性缺陷
+
+- 401 缺 `WWW-Authenticate` 头，客户端因此永远刷新—401—刷新。这就是"初始服务器
+  失败"的机制。同时把 `NOT_CONNECTED` 从 token 失败里拆出来，让
+  `quickbooks_connection_status`（它本来就会返回重连 URL）不再被它自己要诊断的
+  条件挡在门外。
+- Zod 校验失败曾报成 `PROVIDER_ERROR / retryable: true` —— 告诉 agent"QuickBooks
+  挂了、可以重试"，而那份 payload 永远不可能成功。Xero 前一天刚把同一缺陷定级
+  P1 并修复。
+- 四条单据规则原本只在内部 schema 里，现已移到 agent 面 schema，由 SDK 前置拒绝
+  并一次性列出全部违规。
+- 错误信封原先丢弃 `details.recoveryAction`，且 16 个码里 14 个共用同一条通用恢复
+  串。现为按码穷尽的映射，词表是封闭联合类型 —— 未登记的值编译期失败，而不是像
+  兄弟连接器那样被静默替换成通用建议。
