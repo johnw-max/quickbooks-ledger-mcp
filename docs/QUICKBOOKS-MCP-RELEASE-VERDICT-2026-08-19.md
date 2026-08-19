@@ -266,3 +266,50 @@ nginx upstream 已指向它；旧容器 `quickbooks-accounting-mcp-0.6-candidate
    本身不受影响（nginx 按 IP:3000 转发，不看 readyz），提升完成后即恢复。
    但这意味着**灰度窗口内必然有一段旧构建自报未就绪**：要么接受，要么让候选
    先不跑迁移。这条在只读部署演练里看不出来，只有真的起候选才会遇到。
+
+## 线上 agent 验收尝试（2026-08-19，未完成）
+
+在部署后用 Work / DeepSeek-V4 尝试续写 8 月 15 日卡住的 case v2。**没有完成**：
+四条操作仍是 `READBACK_VERIFIED x2 / PROVIDER_REJECTED x1 / PENDING x1`，
+case 仍是 `RECOVERY_REQUIRED`，`provider write count` 未增加。
+
+### 8 月 15 日那次会话证明了什么（服务端审计，非推测）
+
+`quickbooks_tool_audit_logs` 与 case 表显示，当天对**真实 QuickBooks**：
+
+- Customer、Vendor、CreditMemo、VendorCredit 四条 `POSTED_READBACK_VERIFIED`；
+- 一条 `FAILED / READBACK_MISMATCH` —— 即 QBO 派生小计行与 `DueDate` 形状缺陷；
+- 一条 `REJECTED / FORBIDDEN`，case 侧记为 `MCP_SCOPE / TRANSPORT_SCOPE_MISSING`
+  —— 即 Bill 的双 scope 缺陷；
+- Invoice 从未尝试。
+
+**本轮修复的两个缺陷都不是推测出来的，它们在真实线上会话里各现形一次。**
+
+### 本次尝试暴露的新缺陷
+
+**1. Case 归属冲突不可据以纠正（已修并已部署）。**
+处于 `EXECUTING` / `RECOVERY_REQUIRED` 的 case 只能用**发起时那个
+`execution_request_id`** 续写，而拒绝信息只说"被另一个请求占用"，不说是谁。
+线上 agent 把它读成锁竞争，连续十几次换新请求号重试——那条路永远走不通，
+case 行自始至终没被碰过。修复后错误会带上 `owningRequestId`、`caseState` 与
+`recoveryAction`；重新部署后同一个 agent 立刻改用 owning request id，
+说明这条修复确实起了作用。
+
+**2. 常驻委托身份钉死在 OAuth installation 上（未修，当前阻塞项）。**
+用对 request id 之后，执行止于 `APPROVAL_INVALID`（授权因果校验）。
+记录在案的授权回执里，`delegationId` 是
+`qbo-default-<installationId>` —— 委托身份内嵌了 OAuth token id。
+
+这与 Xero 已经修过的是同一个缺陷：*"常驻委托钉死在 OAuth installation 上，
+用户每次重连即失效"*，Xero 的解法是改成按 workspace + agent + 租户这个稳定
+身份匹配，并把 installation 降级为可选钉子（见 `AUTHORITY-PIN-OPERATIONS.md`）。
+QuickBooks 尚未采纳。
+
+同一根因还解释了另外两个现象：线上累积了 6 条同 realm 的 ACTIVE 连接，
+以及每次授权都新建 principal（`subjectId = randomUUID()`），使既有 Case 被孤立。
+
+### 下一步
+
+先按 Xero 的做法把委托身份与 OAuth installation 解耦，再重跑线上续写。
+在那之前，线上 Bill 与 Invoice 仍未对真实 QuickBooks 验证过——这是本判定
+唯一实质性的剩余缺口，且它不是"没人去跑"，是当前构建下跑不通。
