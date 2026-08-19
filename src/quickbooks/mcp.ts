@@ -25,6 +25,7 @@ import {
   quickBooksRunReportSchema,
   quickBooksTrialBalanceSchema,
   quickBooksGetWriteCapabilitiesSchema,
+  quickBooksResolveUnknownWriteSchema,
 } from "./schemas.js";
 import {
   normalizeQuickBooksAccountingCaseBusinessIntake,
@@ -60,10 +61,20 @@ export const QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST = [
   "quickbooks_get_accounting_case_status",
 ] as const;
 
+/**
+ * The human exit from a write whose outcome was never known. It is deliberately
+ * its own group: it is not a read, it is not part of the Case surface an Agent
+ * drives, and no standing delegation can authorise it.
+ */
+export const QUICKBOOKS_OPERATOR_RESOLUTION_TOOL_ALLOWLIST = [
+  "quickbooks_resolve_unknown_write",
+] as const;
+
 export const QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST = [
   ...QUICKBOOKS_READ_TOOL_ALLOWLIST,
   ...QUICKBOOKS_CAPABILITY_TOOL_ALLOWLIST,
   ...QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
+  ...QUICKBOOKS_OPERATOR_RESOLUTION_TOOL_ALLOWLIST,
 ] as const;
 
 function success(value: unknown): CallToolResult {
@@ -442,6 +453,24 @@ export function createQuickBooksMcpServer(
       context,
       requiredScope: "quickbooks.read",
       action: async () => mutations.capabilities(input),
+    }));
+
+    server.registerTool("quickbooks_resolve_unknown_write", {
+      title: "Resolve a QuickBooks write whose outcome is unknown",
+      description: "For an operator, not an Agent. A write that never received a completed QuickBooks response is left in WRITE_RESULT_UNKNOWN_NO_ID and is never re-armed automatically, because a second attempt could post the document twice. Look the object up in QuickBooks yourself, then record what you found: finding=ABSENT if it is not there, or finding=PRESENT with the exact provider_entity_id if it is. ABSENT is refused if the server's own natural-key search still finds the object; PRESENT is refused unless that exact Id reads back and matches the prepared payload. confirmation_phrase must be the exact sentence for this preparation and finding, which a refusal will name.",
+      inputSchema: quickBooksResolveUnknownWriteSchema,
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
+    }, async (input) => scoped({
+      context,
+      requiredScope: "quickbooks.mutation.execute",
+      action: () => mutations.resolveUnknownWrite(context, {
+        targetSessionRef: input.target_session_ref,
+        preparationId: input.preparation_id,
+        finding: input.finding,
+        ...(input.provider_entity_id ? { providerEntityId: input.provider_entity_id } : {}),
+        operatorNote: input.operator_note,
+        confirmationPhrase: input.confirmation_phrase,
+      }),
     }));
   }
 

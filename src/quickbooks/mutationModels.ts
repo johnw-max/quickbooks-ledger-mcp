@@ -7,6 +7,7 @@ import type {
 } from "./writePolicy.js";
 import type { QuickBooksAutonomousAuthorizationEvidence } from "./autonomousAuthorizationEvidence.js";
 import type { QuickBooksMutationExecutionAttempt } from "./mutationExecutionAttempt.js";
+import type { QuickBooksOperatorResolutionReceipt } from "./operatorResolution.js";
 
 export type QuickBooksMutationState =
   | "PREPARED"
@@ -57,6 +58,13 @@ export interface QuickBooksMutationPreparation {
   /** Immutable authorization that causally preceded the first Provider dispatch. */
   autonomousAuthorizationEvidence?: QuickBooksAutonomousAuthorizationEvidence;
   executionAttempt?: QuickBooksMutationExecutionAttempt;
+  /**
+   * An operator's attestation of what QuickBooks actually holds, recorded only
+   * from WRITE_RESULT_UNKNOWN_NO_ID. It accretes beside the execution
+   * resolution receipt and never amends it: the row keeps saying the outcome
+   * was unknown, and gains what a person found when they looked.
+   */
+  operatorResolutionReceipt?: QuickBooksOperatorResolutionReceipt;
   providerOutcomeReceipt?: Record<string, unknown>;
   writeReceipt?: Record<string, unknown>;
   readback?: Record<string, unknown>;
@@ -71,6 +79,7 @@ export interface CreateQuickBooksMutationPreparationInput extends Omit<
   "providerEntityId" | "providerOutcomeReceipt" | "writeReceipt" | "readback" | "createdAt" | "updatedAt"
   | "autonomousAuthorizationEvidence"
   | "executionAttempt"
+  | "operatorResolutionReceipt"
 > {
   now: Date;
 }

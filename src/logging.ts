@@ -21,6 +21,14 @@ const safeContextKeys = new Set([
   "providerHttpStatus",
   "providerRequestId",
   "providerWriteOutcome",
+  // The other half of that story: how an unknown outcome was finally resolved.
+  // A finding, an opaque Provider id, and which natural-key search stood behind
+  // it — the evidence an auditor needs to see that a person, not the system,
+  // decided what the ledger holds.
+  "operatorResolutionFinding",
+  "naturalKeySearchMethod",
+  "naturalKeySearchChecked",
+  "providerEntityId",
   "auditCompletionStatus",
   "batches",
   "callId",

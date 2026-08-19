@@ -658,6 +658,38 @@ export const quickBooksPrepareMutationSchema = z.object({
   validateMutationPayload(value.entity, value.operation, value.payload, context);
 });
 
+/**
+ * The operator's attestation of what QuickBooks actually holds for a write
+ * whose outcome was never known. finding and provider_entity_id are exactly
+ * paired: PRESENT is meaningless without the id that must read back, and ABSENT
+ * is contradicted by carrying one.
+ */
+export const quickBooksResolveUnknownWriteSchema = z.object({
+  target_session_ref: targetSessionRef,
+  preparation_id: z.string().regex(/^qbm_[a-f0-9]{32}$/),
+  finding: z.enum(["ABSENT", "PRESENT"]),
+  provider_entity_id: providerId.optional(),
+  operator_note: z.string().trim().min(12).max(1_000),
+  confirmation_phrase: z.string().min(1).max(512)
+    .refine((value) => value === value.trim(), "must not have surrounding whitespace")
+    .refine((value) => !/[\u0000-\u001f\u007f]/u.test(value), "must not contain control characters"),
+}).strict().superRefine((value, context) => {
+  if (value.finding === "PRESENT" && !value.provider_entity_id) {
+    context.addIssue({
+      code: "custom",
+      message: "PRESENT requires the exact provider_entity_id read in QuickBooks",
+      path: ["provider_entity_id"],
+    });
+  }
+  if (value.finding === "ABSENT" && value.provider_entity_id) {
+    context.addIssue({
+      code: "custom",
+      message: "ABSENT must not carry a provider_entity_id",
+      path: ["provider_entity_id"],
+    });
+  }
+});
+
 export const quickBooksExecutePreparedMutationSchema = z.object({
   preparation_id: z.string().regex(/^qbm_[a-f0-9]{32}$/),
   request_id: requestId,
@@ -678,3 +710,4 @@ export type QuickBooksTrialBalanceInput = z.infer<typeof quickBooksTrialBalanceS
 export type QuickBooksGetWriteCapabilitiesInput = z.infer<typeof quickBooksGetWriteCapabilitiesSchema>;
 export type QuickBooksPrepareMutationInput = z.infer<typeof quickBooksPrepareMutationSchema>;
 export type QuickBooksExecutePreparedMutationInput = z.infer<typeof quickBooksExecutePreparedMutationSchema>;
+export type QuickBooksResolveUnknownWriteInput = z.infer<typeof quickBooksResolveUnknownWriteSchema>;

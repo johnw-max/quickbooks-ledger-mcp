@@ -4,6 +4,10 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runQuickBooksMigrations } from "../src/quickbooks/migrate.js";
 import { QuickBooksPostgresMutationRepository } from "../src/quickbooks/postgresMutationRepository.js";
+import {
+  issueQuickBooksOperatorResolutionReceipt,
+  quickBooksOperatorResolutionPhraseHash,
+} from "../src/quickbooks/operatorResolution.js";
 
 const { Pool } = pg;
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -515,5 +519,267 @@ describeWithPostgres("Postgres QuickBooks governed mutation integration", () => 
     )).rejects.toMatchObject({
       message: expect.stringContaining("execution lease cannot move after Provider dispatch"),
     });
+  });
+
+  it("admits an operator attestation only from unknown-no-Id, only once, and never under delegated authority", async () => {
+    if (!repository || !pool) throw new Error("TEST_DATABASE_URL is required");
+    const activeRepository = repository;
+    const activePool = pool;
+    const now = new Date();
+
+    /** Drives one preparation to the state that has no automatic exit. */
+    const strand = async (label: string) => {
+      const suffix = randomUUID();
+      const leaseTokenHash = randomBytes(32).toString("hex");
+      const input = {
+        preparationId: `qbm_${randomBytes(16).toString("hex")}`,
+        actorId: `actor-${suffix}`,
+        realmId: "9341457701636490",
+        connectionRefSafe: `qbc-${suffix}`,
+        boundTargetRefSafe: `qbt-${suffix}`,
+        bindingRevision: `qbr-${suffix}`,
+        entity: "Bill" as const,
+        operation: "CREATE" as const,
+        risk: "HIGH" as const,
+        executionMode: "EXPLICIT_CONFIRMATION" as const,
+        providerEffect: "POSTING_TRANSACTION" as const,
+        clientRequestId: `qbo.${label}.${suffix}`,
+        providerRequestId: `zc.${randomBytes(16).toString("hex")}`,
+        payload: { VendorRef: { value: "63" }, DocNumber: "MBC-2026-0820" },
+        payloadHash: randomBytes(32).toString("hex"),
+        businessReason: "The SGD bill whose write outcome was never known.",
+        confirmationPhraseHash: randomBytes(32).toString("hex"),
+        expiresAt: new Date(now.getTime() + 30 * 60_000),
+        now,
+      };
+      await activeRepository.createOrGet(input);
+      const claimed = await activeRepository.claimForExecution({
+        preparationId: input.preparationId, actorId: input.actorId, requestId: input.clientRequestId,
+        confirmationPhraseHash: input.confirmationPhraseHash, approvedBy: input.actorId,
+        leaseOwner: `pg-worker-${suffix}`, leaseTokenHash, leaseDurationMs: 120_000,
+        now: new Date(now.getTime() + 1_000),
+      });
+      const attemptId = claimed.preparation.executionAttempt?.attemptId as string;
+      await activeRepository.markDispatchStarted({
+        preparationId: input.preparationId, attemptId, leaseTokenHash,
+        now: new Date(now.getTime() + 2_000),
+      });
+      await activeRepository.resolveUnknownNoId({
+        preparationId: input.preparationId, attemptId, leaseTokenHash,
+        resolutionReceipt: {
+          evidenceType: "QUICKBOOKS_EXECUTION_RESOLUTION", evidenceVersion: "1.0",
+          resolution: "WRITE_RESULT_UNKNOWN_NO_ID", attemptId,
+          providerRequestId: input.providerRequestId, reasonCode: "DISPATCH_OUTCOME_NOT_CHECKPOINTED",
+          providerMutationPossible: true, automaticRearmAllowed: false,
+          operatorResolutionRequired: true,
+          recoveryAction: "OPERATOR_RESOLUTION_REQUIRED_NO_AUTOMATIC_REARM",
+          resolvedAt: new Date(now.getTime() + 3_000).toISOString(),
+        },
+        now: new Date(now.getTime() + 3_000),
+      });
+      const attestation = (finding: "ABSENT" | "PRESENT", providerEntityId?: string) =>
+        issueQuickBooksOperatorResolutionReceipt({
+          preparationId: input.preparationId,
+          providerRequestId: input.providerRequestId,
+          attemptId,
+          entity: input.entity,
+          operation: input.operation,
+          attestedBy: input.actorId,
+          attestedByIdentityAssurance: "INSTALLATION_ONLY",
+          confirmationPhraseHash: quickBooksOperatorResolutionPhraseHash({
+            finding,
+            preparationId: input.preparationId,
+            boundTargetRefSafe: input.boundTargetRefSafe,
+            payloadHash: input.payloadHash,
+            ...(providerEntityId ? { providerEntityId } : {}),
+          }),
+          operatorNote: "Swept a full year of Bills in the QuickBooks UI.",
+          attestedAt: new Date(now.getTime() + 4_000),
+          ...(finding === "ABSENT"
+            ? {
+                finding: "ABSENT" as const,
+                naturalKeySearch: {
+                  method: "DOCUMENT_NUMBER_AND_COUNTERPARTY" as const,
+                  checked: true,
+                  matchCount: 0,
+                  naturalKey: { entity: "Bill", docNumber: "MBC-2026-0820", counterpartyId: "63" },
+                  complete: true,
+                },
+              }
+            : { finding: "PRESENT" as const, providerEntityId: providerEntityId as string }),
+        });
+      const store = (receipt: unknown) => activePool.query(
+        `UPDATE quickbooks_mutation_preparations
+           SET operator_resolution_receipt=$2::jsonb, updated_at=now() WHERE preparation_id=$1`,
+        [input.preparationId, JSON.stringify(receipt)],
+      );
+      return { input, attemptId, leaseTokenHash, attestation, store };
+    };
+
+    // The deployment gate covers migration 038's column, CHECK and trigger.
+    await expect(activeRepository.readiness()).resolves.toBe(true);
+
+    const absent = await strand("attested-absent");
+    const validAbsent = absent.attestation("ABSENT");
+    if (validAbsent.finding !== "ABSENT") throw new Error("expected an absence attestation");
+
+    // Delegated authority is unrepresentable: not as the attesting actor,
+    // and not as an authority value, because only one value is accepted.
+    await expect(absent.store({ ...validAbsent, attestedBy: "standing:delegation-a" }))
+      .rejects.toMatchObject({ code: "23514" });
+    await expect(absent.store({ ...validAbsent, attestationAuthority: "STANDING_DELEGATION" }))
+      .rejects.toMatchObject({ code: "23514" });
+    // A confirmation of one finding cannot be replayed as another: the phrase
+    // hash is recomputed in SQL from this row's own identity.
+    await expect(absent.store({
+      ...validAbsent,
+      confirmationPhraseHash: quickBooksOperatorResolutionPhraseHash({
+        finding: "PRESENT",
+        preparationId: absent.input.preparationId,
+        boundTargetRefSafe: absent.input.boundTargetRefSafe,
+        payloadHash: absent.input.payloadHash,
+        providerEntityId: "289",
+      }),
+    })).rejects.toMatchObject({ code: "23514" });
+    // The dangerous direction is vetoed by the database itself: an absence
+    // claim carrying a natural-key hit is not storable at all.
+    await expect(absent.store({
+      ...validAbsent,
+      naturalKeySearch: { ...validAbsent.naturalKeySearch, matchCount: 1, matches: ["289"] },
+    })).rejects.toMatchObject({ code: "23514" });
+    await expect(absent.store({ ...validAbsent, operatorNote: "  " }))
+      .rejects.toMatchObject({ code: "23514" });
+
+    const attested = await activeRepository.recordOperatorResolution({
+      preparationId: absent.input.preparationId,
+      actorId: absent.input.actorId,
+      receipt: validAbsent,
+      now: new Date(now.getTime() + 4_000),
+    });
+    expect(attested).toMatchObject({
+      // Unchanged: what the machine knew is not rewritten by what a person found.
+      state: "WRITE_RESULT_UNKNOWN_NO_ID",
+      executionAttempt: {
+        state: "WRITE_RESULT_UNKNOWN_NO_ID",
+        resolutionReceipt: { resolution: "WRITE_RESULT_UNKNOWN_NO_ID", providerMutationPossible: true },
+      },
+      operatorResolutionReceipt: { finding: "ABSENT", attestationAuthority: "HUMAN_EXPLICIT_CONFIRMATION" },
+    });
+
+    // Immutable once set, in the database and in the repository.
+    await expect(absent.store(absent.attestation("PRESENT", "289")))
+      .rejects.toMatchObject({ code: "23514", message: expect.stringContaining("immutable") });
+    await expect(activeRepository.recordOperatorResolution({
+      preparationId: absent.input.preparationId,
+      actorId: absent.input.actorId,
+      receipt: absent.attestation("PRESENT", "289"),
+      now: new Date(now.getTime() + 5_000),
+    })).rejects.toMatchObject({
+      code: "CONFLICT", details: { reasonCodes: ["OPERATOR_RESOLUTION_ALREADY_RECORDED"] },
+    });
+    // And a row attested absent can never afterwards acquire a Provider id.
+    // Attesting absence wrongly is the error that double posts, so it may not
+    // be committed and then quietly contradicted.
+    await expect(activeRepository.recordProviderOutcome({
+      preparationId: absent.input.preparationId,
+      attemptId: absent.attemptId,
+      leaseTokenHash: absent.leaseTokenHash,
+      providerEntityId: "289",
+      providerOutcomeReceipt: { provider: "quickbooks-online" },
+      now: new Date(now.getTime() + 6_000),
+    })).rejects.toMatchObject({ code: "23514" });
+
+    // A write whose outcome is not unknown cannot be attested at all. The
+    // shape CHECK demands the machine's own unknown-no-Id resolution receipt
+    // and the dispatch marker, neither of which a prepared row carries.
+    const neverDispatchedSuffix = randomUUID();
+    const neverDispatched = {
+      preparationId: `qbm_${randomBytes(16).toString("hex")}`,
+      actorId: `actor-${neverDispatchedSuffix}`,
+      realmId: "9341457701636490",
+      connectionRefSafe: `qbc-${neverDispatchedSuffix}`,
+      boundTargetRefSafe: `qbt-${neverDispatchedSuffix}`,
+      bindingRevision: `qbr-${neverDispatchedSuffix}`,
+      entity: "Bill" as const,
+      operation: "CREATE" as const,
+      risk: "HIGH" as const,
+      executionMode: "EXPLICIT_CONFIRMATION" as const,
+      providerEffect: "POSTING_TRANSACTION" as const,
+      clientRequestId: `qbo.prepared.${neverDispatchedSuffix}`,
+      providerRequestId: `zc.${randomBytes(16).toString("hex")}`,
+      payload: { VendorRef: { value: "63" }, DocNumber: "MBC-2026-0819" },
+      payloadHash: randomBytes(32).toString("hex"),
+      businessReason: "Prepared and never dispatched.",
+      confirmationPhraseHash: randomBytes(32).toString("hex"),
+      expiresAt: new Date(now.getTime() + 30 * 60_000),
+      now,
+    };
+    await activeRepository.createOrGet(neverDispatched);
+    await expect(activePool.query(
+      `UPDATE quickbooks_mutation_preparations
+         SET operator_resolution_receipt=$2::jsonb WHERE preparation_id=$1`,
+      [neverDispatched.preparationId, JSON.stringify(issueQuickBooksOperatorResolutionReceipt({
+        preparationId: neverDispatched.preparationId,
+        providerRequestId: neverDispatched.providerRequestId,
+        attemptId: `qbea_${randomBytes(16).toString("hex")}`,
+        entity: neverDispatched.entity,
+        operation: neverDispatched.operation,
+        attestedBy: neverDispatched.actorId,
+        attestedByIdentityAssurance: "INSTALLATION_ONLY",
+        confirmationPhraseHash: quickBooksOperatorResolutionPhraseHash({
+          finding: "ABSENT",
+          preparationId: neverDispatched.preparationId,
+          boundTargetRefSafe: neverDispatched.boundTargetRefSafe,
+          payloadHash: neverDispatched.payloadHash,
+        }),
+        operatorNote: "Nothing was ever dispatched, so there is nothing to attest.",
+        attestedAt: new Date(now.getTime() + 4_000),
+        finding: "ABSENT",
+        naturalKeySearch: {
+          method: "DOCUMENT_NUMBER_AND_COUNTERPARTY", checked: true, matchCount: 0, complete: true,
+        },
+      }))],
+    )).rejects.toMatchObject({ code: "23514" });
+
+    // PRESENT pins which Id may ever be adopted, and the adoption itself still
+    // goes through the ordinary exact-Id Provider outcome checkpoint.
+    const present = await strand("attested-present");
+    await activeRepository.recordOperatorResolution({
+      preparationId: present.input.preparationId,
+      actorId: present.input.actorId,
+      receipt: present.attestation("PRESENT", "289"),
+      now: new Date(now.getTime() + 4_000),
+    });
+    await expect(activeRepository.recordProviderOutcome({
+      preparationId: present.input.preparationId,
+      attemptId: present.attemptId,
+      leaseTokenHash: present.leaseTokenHash,
+      providerEntityId: "290",
+      providerOutcomeReceipt: { provider: "quickbooks-online" },
+      now: new Date(now.getTime() + 5_000),
+    })).rejects.toMatchObject({ code: "23514" });
+    const adopted = await activeRepository.recordProviderOutcome({
+      preparationId: present.input.preparationId,
+      attemptId: present.attemptId,
+      leaseTokenHash: present.leaseTokenHash,
+      providerEntityId: "289",
+      providerOutcomeReceipt: {
+        provider: "quickbooks-online", adoptedBy: "OPERATOR_RESOLUTION_EXACT_ID_READBACK",
+      },
+      now: new Date(now.getTime() + 6_000),
+    });
+    expect(adopted).toMatchObject({
+      state: "PROVIDER_OUTCOME_RECORDED",
+      providerEntityId: "289",
+      operatorResolutionReceipt: { finding: "PRESENT", providerEntityId: "289" },
+    });
+    const completed = await activeRepository.completeVerified({
+      preparationId: present.input.preparationId,
+      providerEntityId: "289",
+      receipt: { provider: "quickbooks-online", verified: true, recoveryOnly: true },
+      readback: { Id: "289", DocNumber: "MBC-2026-0820" },
+      now: new Date(now.getTime() + 7_000),
+    });
+    expect(completed.state).toBe("POSTED_READBACK_VERIFIED");
   });
 });

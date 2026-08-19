@@ -6,6 +6,7 @@ import type {
 } from "./mutationModels.js";
 import type { QuickBooksAutonomousAuthorizationEvidence } from "./autonomousAuthorizationEvidence.js";
 import type { QuickBooksMutationExecutionReconciliation } from "./mutationExecutionAttempt.js";
+import type { QuickBooksOperatorResolutionReceipt } from "./operatorResolution.js";
 
 export interface QuickBooksMutationRepository {
   readiness(): Promise<boolean>;
@@ -95,6 +96,20 @@ export interface QuickBooksMutationRepository {
     attemptId: string;
     leaseTokenHash: string;
     resolutionReceipt: Record<string, unknown>;
+    now: Date;
+  }): Promise<QuickBooksMutationPreparation>;
+  /**
+   * Records an operator's attestation of what QuickBooks holds for a write
+   * whose outcome was never known. It is a pure accretion: no state, no
+   * Provider identity and no other receipt moves with it. Only a row that is
+   * still WRITE_RESULT_UNKNOWN_NO_ID with no attestation may take one, and the
+   * database enforces that independently (migration 038), so a drift between
+   * this predicate and the guard surfaces as a 23514 rather than a silent write.
+   */
+  recordOperatorResolution(input: {
+    preparationId: string;
+    actorId: string;
+    receipt: QuickBooksOperatorResolutionReceipt;
     now: Date;
   }): Promise<QuickBooksMutationPreparation>;
   releasePreDispatchLease(input: {

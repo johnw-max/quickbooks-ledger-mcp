@@ -426,6 +426,24 @@ export class InMemoryQuickBooksMutationRepository implements QuickBooksMutationR
     return copy(preparation);
   }
 
+  async recordOperatorResolution(
+    input: Parameters<QuickBooksMutationRepository["recordOperatorResolution"]>[0],
+  ) {
+    const preparation = this.#preparations.get(input.preparationId);
+    if (!preparation || !safeEqual(preparation.actorId, input.actorId)) throw notAttestable(undefined);
+    // Mirrors the Postgres predicate and migration 038's trigger exactly.
+    if (preparation.operatorResolutionReceipt ||
+      preparation.state !== "WRITE_RESULT_UNKNOWN_NO_ID" ||
+      preparation.executionAttempt?.state !== "WRITE_RESULT_UNKNOWN_NO_ID" ||
+      preparation.providerEntityId || preparation.providerOutcomeReceipt ||
+      preparation.writeReceipt || preparation.readback) {
+      throw notAttestable(preparation);
+    }
+    preparation.operatorResolutionReceipt = structuredClone(input.receipt);
+    preparation.updatedAt = input.now;
+    return copy(preparation);
+  }
+
   async releasePreDispatchLease(input: Parameters<QuickBooksMutationRepository["releasePreDispatchLease"]>[0]) {
     const preparation = this.#preparations.get(input.preparationId);
     const attempt = preparation?.executionAttempt;
@@ -515,6 +533,31 @@ function inFlight(preparation: QuickBooksMutationPreparation): AppError {
       failureLayer: "EXECUTION_FENCING",
       reasonCodes: ["EXECUTION_LEASE_ACTIVE"],
       providerMutationPossible: Boolean(preparation.executionAttempt?.dispatchStartedAt),
+    },
+  });
+}
+
+function notAttestable(existing: QuickBooksMutationPreparation | undefined): AppError {
+  if (!existing) {
+    return new AppError("NOT_FOUND", "QuickBooks mutation preparation was not found.", { httpStatus: 404 });
+  }
+  if (existing.operatorResolutionReceipt) {
+    return new AppError("CONFLICT", "This QuickBooks write has already been resolved by an operator attestation, and that attestation is immutable.", {
+      httpStatus: 409,
+      details: {
+        failureLayer: "PROVIDER_OUTCOME",
+        reasonCodes: ["OPERATOR_RESOLUTION_ALREADY_RECORDED"],
+        finding: existing.operatorResolutionReceipt.finding,
+        attestedAt: existing.operatorResolutionReceipt.attestedAt,
+      },
+    });
+  }
+  return new AppError("CONFLICT", `Only a QuickBooks write whose outcome is unknown can be resolved by attestation; this one is in ${existing.state}.`, {
+    httpStatus: 409,
+    details: {
+      failureLayer: "PROVIDER_OUTCOME",
+      reasonCodes: ["OPERATOR_RESOLUTION_STATE_INVALID"],
+      state: existing.state,
     },
   });
 }

@@ -18,6 +18,7 @@ import {
   createQuickBooksMcpServer,
   QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
   QUICKBOOKS_CAPABILITY_TOOL_ALLOWLIST,
+  QUICKBOOKS_OPERATOR_RESOLUTION_TOOL_ALLOWLIST,
   QUICKBOOKS_READ_TOOL_ALLOWLIST,
   QUICKBOOKS_RELEASE_VERSION,
 } from "./mcp.js";
@@ -196,6 +197,7 @@ export function createQuickBooksHttpApp(options: {
       ...QUICKBOOKS_READ_TOOL_ALLOWLIST,
       ...(mutations ? QUICKBOOKS_CAPABILITY_TOOL_ALLOWLIST : []),
       ...QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST,
+      ...(mutations ? QUICKBOOKS_OPERATOR_RESOLUTION_TOOL_ALLOWLIST : []),
     ];
     const runtime = await readinessState();
     const promotionReasons = [

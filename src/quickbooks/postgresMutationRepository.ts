@@ -55,6 +55,7 @@ interface MutationRow extends QueryResultRow {
   provider_outcome_recorded_at: Date | null;
   execution_resolution_receipt: Record<string, unknown> | null;
   execution_attempt_created_at: Date | null;
+  operator_resolution_receipt: QuickBooksMutationPreparation["operatorResolutionReceipt"] | null;
   provider_outcome_receipt: Record<string, unknown> | null;
   write_receipt: Record<string, unknown> | null;
   readback: Record<string, unknown> | null;
@@ -116,6 +117,9 @@ function map(row: MutationRow): QuickBooksMutationPreparation {
           updatedAt: row.updated_at,
         },
       } : {}),
+    ...(row.operator_resolution_receipt
+      ? { operatorResolutionReceipt: row.operator_resolution_receipt }
+      : {}),
     ...(row.provider_outcome_receipt ? { providerOutcomeReceipt: row.provider_outcome_receipt } : {}),
     ...(row.write_receipt ? { writeReceipt: row.write_receipt } : {}),
     ...(row.readback ? { readback: row.readback } : {}),
@@ -262,6 +266,26 @@ export class QuickBooksPostgresMutationRepository implements QuickBooksMutationR
                     ('standing:' || (autonomous_authorization_evidence->'authorizationReceipt'->>'delegationId'))
                 )
               )
+          )
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'quickbooks_mutation_preparations'
+              AND column_name = 'operator_resolution_receipt'
+              AND data_type = 'jsonb'
+              AND is_nullable = 'YES'
+          )
+          AND EXISTS (
+            SELECT 1 FROM pg_constraint constraint_meta
+            WHERE constraint_meta.conrelid = 'public.quickbooks_mutation_preparations'::regclass
+              AND constraint_meta.conname = 'quickbooks_mutation_operator_resolution_shape'
+              AND constraint_meta.contype = 'c' AND constraint_meta.convalidated
+          )
+          AND EXISTS (
+            SELECT 1 FROM pg_trigger trigger_meta
+            WHERE trigger_meta.tgrelid = 'public.quickbooks_mutation_preparations'::regclass
+              AND trigger_meta.tgname = 'quickbooks_mutation_operator_resolution_immutable'
+              AND NOT trigger_meta.tgisinternal AND trigger_meta.tgenabled = 'O'
           )
           AND EXISTS (
             SELECT 1 FROM information_schema.columns
@@ -731,6 +755,29 @@ export class QuickBooksPostgresMutationRepository implements QuickBooksMutationR
     });
   }
 
+  async recordOperatorResolution(
+    input: Parameters<QuickBooksMutationRepository["recordOperatorResolution"]>[0],
+  ) {
+    // The WHERE clause is the proof, not a convenience, and migration 038's
+    // trigger checks the same facts from OLD. The attestation accretes: only
+    // the new column and updated_at move, so the immutable record of what the
+    // machine knew is left exactly as the failed dispatch wrote it.
+    const result = await this.pool.query<MutationRow>(
+      `UPDATE quickbooks_mutation_preparations
+         SET operator_resolution_receipt=$3::jsonb, updated_at=$4
+       WHERE preparation_id=$1 AND actor_id=$2
+         AND state='WRITE_RESULT_UNKNOWN_NO_ID'
+         AND execution_attempt_state='WRITE_RESULT_UNKNOWN_NO_ID'
+         AND operator_resolution_receipt IS NULL
+         AND provider_entity_id IS NULL AND provider_outcome_receipt IS NULL
+         AND write_receipt IS NULL AND readback IS NULL
+       RETURNING *`,
+      [input.preparationId, input.actorId, JSON.stringify(input.receipt), input.now],
+    );
+    if (result.rows[0]) return map(result.rows[0]);
+    throw notAttestable(await this.get(input.preparationId));
+  }
+
   async releasePreDispatchLease(input: Parameters<QuickBooksMutationRepository["releasePreDispatchLease"]>[0]) {
     const result = await this.pool.query<MutationRow>(
       `UPDATE quickbooks_mutation_preparations SET execution_lease_until=$4,updated_at=$4
@@ -825,6 +872,31 @@ function inFlight(row: MutationRow): AppError {
       failureLayer: "EXECUTION_FENCING",
       reasonCodes: ["EXECUTION_LEASE_ACTIVE"],
       providerMutationPossible: row.dispatch_started_at !== null,
+    },
+  });
+}
+
+function notAttestable(existing: QuickBooksMutationPreparation | undefined): AppError {
+  if (!existing) {
+    return new AppError("NOT_FOUND", "QuickBooks mutation preparation was not found.", { httpStatus: 404 });
+  }
+  if (existing.operatorResolutionReceipt) {
+    return new AppError("CONFLICT", "This QuickBooks write has already been resolved by an operator attestation, and that attestation is immutable.", {
+      httpStatus: 409,
+      details: {
+        failureLayer: "PROVIDER_OUTCOME",
+        reasonCodes: ["OPERATOR_RESOLUTION_ALREADY_RECORDED"],
+        finding: existing.operatorResolutionReceipt.finding,
+        attestedAt: existing.operatorResolutionReceipt.attestedAt,
+      },
+    });
+  }
+  return new AppError("CONFLICT", `Only a QuickBooks write whose outcome is unknown can be resolved by attestation; this one is in ${existing.state}.`, {
+    httpStatus: 409,
+    details: {
+      failureLayer: "PROVIDER_OUTCOME",
+      reasonCodes: ["OPERATOR_RESOLUTION_STATE_INVALID"],
+      state: existing.state,
     },
   });
 }

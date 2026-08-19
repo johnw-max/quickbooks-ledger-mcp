@@ -128,4 +128,40 @@ describe("QuickBooks Accounting Case migration", () => {
     }
   });
 
+  it("lets an operator attest what QuickBooks holds without letting anything else be rewritten", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/038_quickbooks_operator_unknown_write_resolution.sql",
+      import.meta.url,
+    ), "utf8");
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS operator_resolution_receipt jsonb");
+    // The record of what the machine knew is not amended by what a person found.
+    expect(sql).not.toMatch(/SET\s+execution_resolution_receipt/u);
+    expect(sql).toContain("quickbooks_mutation_operator_resolution_shape");
+    expect(sql).toContain("QuickBooks operator resolution receipt is immutable");
+    expect(sql).toContain("may only attest a write whose durable outcome is unknown");
+    expect(sql).toContain("must not alter the recorded write outcome");
+    for (const clause of [
+      // Only a row the machine itself resolved as unknown-no-Id may be attested.
+      "execution_resolution_receipt->>'resolution' = 'WRITE_RESULT_UNKNOWN_NO_ID'",
+      "dispatch_started_at IS NOT NULL",
+      // Delegated authority is unrepresentable.
+      "operator_resolution_receipt->>'attestationAuthority' = 'HUMAN_EXPLICIT_CONFIRMATION'",
+      "operator_resolution_receipt->>'attestedBy' NOT LIKE 'standing:%'",
+      // The confirmation is recomputed here, not believed.
+      "encode(sha256(convert_to(",
+      "'CONFIRM QUICKBOOKS OPERATOR RESOLUTION '",
+      // The dangerous direction: an absence claim carries its failed search,
+      // and such a row can never afterwards acquire a Provider id.
+      "operator_resolution_receipt->'naturalKeySearch'->>'matchCount' = '0'",
+      "operator_resolution_receipt->>'finding' = 'ABSENT'",
+      // A present claim pins the only id that may ever be adopted.
+      "provider_entity_id = operator_resolution_receipt->>'providerEntityId'",
+    ]) {
+      expect(sql).toContain(clause);
+    }
+    // A missing key makes a comparison NULL and a CHECK admits NULL, so the
+    // whole conjunction is folded to false rather than trusted.
+    expect(sql).toContain("COALESCE((");
+  });
+
 });

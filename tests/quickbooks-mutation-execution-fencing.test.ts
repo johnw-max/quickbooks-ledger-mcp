@@ -717,3 +717,91 @@ describe("QuickBooks confirmed non-write supersession", () => {
       .rejects.toMatchObject({ code: "CONFLICT" });
   });
 });
+
+describe("QuickBooks replayed terminal success verification", () => {
+  const caseRequestId = "qbocase.replay0000000000000000000000000000";
+
+  function caseOperationInput(requestId: string) {
+    return {
+      target_session_ref: targetSessionRef,
+      request_id: requestId,
+      entity: "Customer" as const,
+      operation: "CREATE" as const,
+      payload: { DisplayName: "Marina Bay Consulting Pte Ltd" },
+      business_reason: "Accounting Case stable source operation.",
+    };
+  }
+
+  async function completedCaseOperation() {
+    const repository = new InMemoryQuickBooksMutationRepository();
+    const executeMutation = vi.fn(async (
+      input: QuickBooksProviderMutationCommand,
+      permit: QuickBooksProviderWritePermit,
+      recordProviderOutcome: (outcome: { providerEntityId: string; receipt: Record<string, unknown> }) => Promise<void>,
+      markProviderDispatch: () => Promise<void>,
+    ) => {
+      consumeQuickBooksProviderWritePermit(permit, { realmId, command: input });
+      await markProviderDispatch();
+      await recordProviderOutcome({ providerEntityId: "63", receipt: { requestId: input.requestId } });
+      return {
+        providerEntityId: "63",
+        receipt: { requestId: input.requestId },
+        readback: { Id: "63", DisplayName: "Marina Bay Consulting Pte Ltd" },
+      };
+    });
+    const { service, provider } = mutationRuntime(repository, executeMutation);
+    const first = await service.prepareCaseOperation("actor-fencing", caseOperationInput(caseRequestId));
+    await service.executeWithConfirmation("actor-fencing", {
+      preparation_id: first.preparation_id,
+      request_id: caseRequestId,
+      confirmation_phrase: first.confirmation_phrase as string,
+    });
+    return { repository, service, provider, first };
+  }
+
+  it("replays a terminal success only after confirming the object is still in the Company", async () => {
+    const { service, provider, first } = await completedCaseOperation();
+    vi.mocked(provider.getMutationTarget).mockResolvedValue({ Id: "63", DisplayName: "Renamed By The Accountant" });
+
+    const replayed = await service.prepareCaseOperation("actor-fencing", caseOperationInput(caseRequestId));
+
+    expect(replayed.preparation_id).toBe(first.preparation_id);
+    expect(replayed.provider_write_executed).toBe(true);
+    expect(provider.getMutationTarget).toHaveBeenCalledWith("Customer", "63");
+    // Existence is the whole assertion. A rename is still the object this
+    // operation created, so "was created" stays true and this must not
+    // supersede.
+    expect(replayed.state).toBe("POSTED_READBACK_VERIFIED");
+  });
+
+  it("supersedes a terminal success whose object was removed from QuickBooks", async () => {
+    // The routine case: a mis-coded Bill is deleted in QuickBooks and the same
+    // invoice is re-entered. Before this check the Case reported it as booked
+    // while the Company held nothing.
+    const { repository, service, provider, first } = await completedCaseOperation();
+    vi.mocked(provider.getMutationTarget).mockRejectedValue(
+      new AppError("NOT_FOUND", "QuickBooks Customer target was not found.", { httpStatus: 404 }),
+    );
+
+    const reissued = await service.prepareCaseOperation("actor-fencing", caseOperationInput(caseRequestId));
+
+    expect(reissued.preparation_id).not.toBe(first.preparation_id);
+    expect(reissued.state).toBe("PREPARED");
+    expect(reissued.provider_write_executed).toBe(false);
+    const superseding = await repository.get(reissued.preparation_id);
+    expect(superseding?.clientRequestId).toBe(`${caseRequestId}.g2`);
+  });
+
+  it("refuses to conclude anything when the confirming read itself fails", async () => {
+    // Not knowing must never be reported as done. Only NOT_FOUND is proof.
+    const { repository, service, provider, first } = await completedCaseOperation();
+    vi.mocked(provider.getMutationTarget).mockRejectedValue(
+      new AppError("PROVIDER_UNAVAILABLE", "QuickBooks is temporarily unavailable.", { httpStatus: 503, retryable: true }),
+    );
+
+    await expect(service.prepareCaseOperation("actor-fencing", caseOperationInput(caseRequestId)))
+      .rejects.toMatchObject({ code: "PROVIDER_UNAVAILABLE" });
+    // The stored outcome is untouched: nothing was superseded on a failed read.
+    expect((await repository.get(first.preparation_id))?.state).toBe("POSTED_READBACK_VERIFIED");
+  });
+});

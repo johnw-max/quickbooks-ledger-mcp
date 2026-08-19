@@ -48,7 +48,7 @@ describeWithPostgres("QuickBooks structured runtime readiness", () => {
       },
       migrations: {
         status: "READY",
-        latestExpected: "037_quickbooks_rearm_on_durable_evidence.sql",
+        latestExpected: "038_quickbooks_operator_unknown_write_resolution.sql",
         missingCount: 0,
         unexpectedCount: 0,
         checksumMismatchCount: 0,

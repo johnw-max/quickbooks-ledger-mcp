@@ -111,8 +111,12 @@ describe("QuickBooks MCP surface", () => {
     const listedTools = (await client.listTools()).tools;
     const names = listedTools.map((tool) => tool.name);
     expect(names.sort()).toEqual([...QUICKBOOKS_RUNTIME_TOOL_ALLOWLIST].sort());
-    expect(names).toHaveLength(18);
+    expect(names).toHaveLength(19);
     expect(QUICKBOOKS_ACCOUNTING_CASE_TOOL_ALLOWLIST.every((name) => names.includes(name))).toBe(true);
+    // The operator exit from an unknown write outcome ships with the mutation
+    // runtime, and only with it: without a durable mutation repository there is
+    // nothing stranded to attest about.
+    expect(names).toContain("quickbooks_resolve_unknown_write");
     const prepareCaseTool = listedTools.find((tool) => tool.name === "quickbooks_prepare_accounting_case");
     expect(prepareCaseTool?.description).toContain("zero Provider operations");
     expect(prepareCaseTool?.description).toContain("does not create fact ids");

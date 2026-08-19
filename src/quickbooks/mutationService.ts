@@ -56,6 +56,16 @@ import {
   resolvedNoWriteReceipt,
   unknownNoIdResolutionReceipt,
 } from "./mutationExecutionAttempt.js";
+import { assertInternalQuickBooksCaller } from "./callerPolicy.js";
+import {
+  issueQuickBooksOperatorResolutionReceipt,
+  quickBooksOperatorAttestedAbsent,
+  quickBooksOperatorResolutionPhrase,
+  type QuickBooksNaturalKeySearchEvidence,
+  type QuickBooksOperatorResolutionFinding,
+  type QuickBooksOperatorResolutionReceipt,
+} from "./operatorResolution.js";
+import type { QuickBooksExistingDocumentMatch } from "../providers/quickbooksProvider.js";
 
 export interface QuickBooksMutationRuntimePolicy {
   writeEnabled: boolean;
@@ -112,17 +122,35 @@ export const QUICKBOOKS_MAX_WRITE_GENERATIONS = 10;
  * reads a column that is immutable once set, so unlike an error receipt this
  * cannot be talked out of by a later unrelated failure — the lesson migration
  * 037 exists to record.
+ *
+ * There are two sources of that proof and they lead to the same exit:
+ *
+ *   - Provider evidence. Intuit completed a response and refused in its own
+ *     Fault structure, so the adapter resolved the attempt as a non-write.
+ *   - Operator evidence. Nothing completed, so the machine could not know; a
+ *     person looked in QuickBooks and attested that the object is not there,
+ *     after a natural-key search failed to falsify the claim.
+ *
+ * The second case deliberately leaves the state at WRITE_RESULT_UNKNOWN_NO_ID.
+ * Rewriting it would falsify history: the outcome genuinely was unknown, and
+ * what changed afterwards is the evidence beside it, not what was known then.
  */
 export function quickBooksPreparationConfirmedNotWritten(
   preparation: QuickBooksMutationPreparation,
 ): boolean {
-  return preparation.state === "BLOCKED_VALIDATION" &&
-    preparation.providerEntityId === undefined &&
-    preparation.providerOutcomeReceipt === undefined &&
-    preparation.writeReceipt === undefined &&
-    preparation.readback === undefined &&
-    preparation.executionAttempt?.state === "RESOLVED_NO_WRITE" &&
-    preparation.executionAttempt.resolutionReceipt?.providerMutationPossible === false;
+  if (preparation.providerEntityId !== undefined || preparation.providerOutcomeReceipt !== undefined ||
+    preparation.writeReceipt !== undefined || preparation.readback !== undefined) {
+    return false;
+  }
+  if (preparation.state === "BLOCKED_VALIDATION") {
+    return preparation.executionAttempt?.state === "RESOLVED_NO_WRITE" &&
+      preparation.executionAttempt.resolutionReceipt?.providerMutationPossible === false;
+  }
+  if (preparation.state === "WRITE_RESULT_UNKNOWN_NO_ID") {
+    return preparation.executionAttempt?.state === "WRITE_RESULT_UNKNOWN_NO_ID" &&
+      quickBooksOperatorAttestedAbsent(preparation.operatorResolutionReceipt);
+  }
+  return false;
 }
 
 function preparationWarnings(
@@ -251,6 +279,45 @@ export class QuickBooksMutationService {
     }));
   }
 
+  /**
+   * A replayed terminal success asserts one thing to the Case: this work is
+   * already in QuickBooks, so do not do it again. That assertion was never
+   * rechecked — the stored Provider Id was trusted however old it was.
+   *
+   * Deleting a mis-coded Bill and re-entering the corrected invoice is routine
+   * accounting. The corrected invoice keeps its supplier and document number,
+   * so it hashes to the same operation, replays, and the Case reports the Bill
+   * as booked while the Company holds nothing. A silently missing ledger entry
+   * reported as success is the worst failure this connector can produce, and it
+   * is the one place the system's own exact-read-back discipline was skipped.
+   *
+   * Only existence is checked, never field equality. A renamed vendor or an
+   * amount an accountant edited afterwards is still the object this operation
+   * created, and "was created" stays true. Non-existence is the single fact
+   * that falsifies the assertion.
+   *
+   * CREATE only. Absence is the intended outcome of a DELETE and re-running one
+   * against a missing target is neither needed nor safe; an UPDATE cannot be
+   * re-run against a target that is gone either.
+   *
+   * Only NOT_FOUND counts as proof. Any other read failure propagates: not
+   * knowing must never be recorded as done, which is the whole point here.
+   */
+  async #verifiedCreateNoLongerInLedger(
+    resolved: { provider: QuickBooksProviderCapabilities },
+    preparation: QuickBooksMutationPreparation,
+  ): Promise<boolean> {
+    if (preparation.state !== "POSTED_READBACK_VERIFIED") return false;
+    if (preparation.operation !== "CREATE" || !preparation.providerEntityId) return false;
+    try {
+      await resolved.provider.getMutationTarget(preparation.entity, preparation.providerEntityId);
+      return false;
+    } catch (error) {
+      if (toSafeError(error).code !== "NOT_FOUND") throw error;
+      return true;
+    }
+  }
+
   async #prepare(
     actorId: string,
     input: QuickBooksPrepareMutationInput,
@@ -355,13 +422,10 @@ export class QuickBooksMutationService {
     // is never superseded.
     let created = await prepareGeneration(input.request_id);
     if (options.allowSupersedeConfirmedNotWritten === true) {
-      for (
-        let generation = 2;
-        generation <= QUICKBOOKS_MAX_WRITE_GENERATIONS &&
-          !created.created &&
-          quickBooksPreparationConfirmedNotWritten(created.preparation);
-        generation += 1
-      ) {
+      for (let generation = 2; generation <= QUICKBOOKS_MAX_WRITE_GENERATIONS && !created.created; generation += 1) {
+        const supersede = quickBooksPreparationConfirmedNotWritten(created.preparation) ||
+          await this.#verifiedCreateNoLongerInLedger(resolved, created.preparation);
+        if (!supersede) break;
         created = await prepareGeneration(`${input.request_id}.g${generation}`);
       }
     }
@@ -755,6 +819,354 @@ export class QuickBooksMutationService {
 
   getPreparation(actorId: string, preparationId: string) {
     return this.#owned(preparationId, actorId);
+  }
+
+  /**
+   * The exit from WRITE_RESULT_UNKNOWN_NO_ID, which is reached only when no
+   * Provider response completed. Nothing can be inferred from there — that is
+   * what unknown means — so the exit is a person: they look in QuickBooks and
+   * attest what is there, and the machine guards the one error that causes a
+   * double post.
+   *
+   * ABSENT changes no state. The row keeps its unknown resolution receipt and
+   * gains the attestation beside it, which is enough for
+   * quickBooksPreparationConfirmedNotWritten to let the Case open a new
+   * generation. PRESENT adopts the attested id, but only after the existing
+   * exact-Id recovery path has read it back and matched it against the
+   * immutable prepared payload; an id that does not read back is refused and
+   * the row is left exactly as it was.
+   *
+   * Authority. This action is not a capability key and carries no compiled
+   * operation or deterministic validation receipt, so no standing delegation
+   * can express it and the ledger control kernel is never consulted here. The
+   * caller must confirm an exact phrase derived from the durable row, and
+   * migration 038 recomputes that phrase's hash in SQL and refuses any receipt
+   * whose attesting actor is a standing delegation identity.
+   */
+  async resolveUnknownWrite(context: RequestContext, input: {
+    targetSessionRef: string;
+    preparationId: string;
+    finding: QuickBooksOperatorResolutionFinding;
+    providerEntityId?: string;
+    operatorNote: string;
+    confirmationPhrase: string;
+  }) {
+    return this.#withAudit(context.actorId, "quickbooks_resolve_unknown_write", {
+      preparationId: input.preparationId,
+      finding: input.finding,
+      ...(input.providerEntityId ? { providerEntityId: input.providerEntityId } : {}),
+    }, async () => {
+      // An attestation is a statement by a principal about what they saw, so it
+      // fails closed on the same trusted binding tuple the autonomous write
+      // path requires. How strongly the Host identified that principal is
+      // recorded in the receipt rather than assumed.
+      requireOAuthBoundRequestContext(context);
+      // Standing delegation is representable in this system only as
+      // `standing:<delegationId>`. It may authorise a compiled Case operation;
+      // it may never be the principal that says what the ledger holds. The
+      // durable guard says the same thing in SQL (migration 038), because an
+      // application check alone would be the wrong place for it.
+      if (context.actorId.startsWith("standing:")) {
+        throw new AppError("FORBIDDEN", "A QuickBooks unknown-write resolution must be attested by a named principal, never by a standing delegation.", {
+          httpStatus: 403,
+          details: {
+            failureLayer: "AUTHORIZATION",
+            reasonCodes: ["OPERATOR_ATTESTATION_REQUIRES_A_NAMED_PRINCIPAL"],
+            denyReasons: ["STANDING_DELEGATION_CANNOT_ATTEST"],
+          },
+        });
+      }
+      const identityAssurance = assertInternalQuickBooksCaller(context);
+      const preparation = await this.#owned(input.preparationId, context.actorId);
+      const attempt = preparation.executionAttempt;
+      const existing = preparation.operatorResolutionReceipt;
+      if (!existing &&
+        (preparation.state !== "WRITE_RESULT_UNKNOWN_NO_ID" ||
+          preparation.executionAttempt?.state !== "WRITE_RESULT_UNKNOWN_NO_ID")) {
+        throw new AppError("CONFLICT", `Only a QuickBooks write whose outcome is unknown can be resolved by attestation; this one is in ${preparation.state}.`, {
+          httpStatus: 409,
+          details: {
+            failureLayer: "PROVIDER_OUTCOME",
+            reasonCodes: ["OPERATOR_RESOLUTION_STATE_INVALID"],
+            state: preparation.state,
+          },
+        });
+      }
+      if (!attempt) {
+        throw new AppError("CONFIGURATION_ERROR", "QuickBooks mutation has no durable execution attempt to resolve.", {
+          httpStatus: 503,
+          details: { failureLayer: "EXECUTION_FENCING", reasonCodes: ["EXECUTION_ATTEMPT_MISSING"] },
+        });
+      }
+      if (existing && (existing.finding !== input.finding ||
+        (existing.finding === "PRESENT" && !safeEqual(existing.providerEntityId, input.providerEntityId ?? "")))) {
+        throw new AppError("CONFLICT", "This QuickBooks write already carries an operator attestation, and that attestation is immutable.", {
+          httpStatus: 409,
+          details: {
+            failureLayer: "PROVIDER_OUTCOME",
+            reasonCodes: ["OPERATOR_RESOLUTION_ALREADY_RECORDED"],
+            finding: existing.finding,
+            attestedAt: existing.attestedAt,
+          },
+        });
+      }
+      const expectedPhrase = quickBooksOperatorResolutionPhrase({
+        finding: input.finding,
+        preparationId: preparation.preparationId,
+        boundTargetRefSafe: preparation.boundTargetRefSafe,
+        payloadHash: preparation.payloadHash,
+        ...(input.providerEntityId ? { providerEntityId: input.providerEntityId } : {}),
+      });
+      if (!safeEqual(input.confirmationPhrase, expectedPhrase)) {
+        // The phrase is not a secret; it exists so that an attestation is
+        // deliberate and so that a confirmation of one finding can never be
+        // replayed as another. Naming it keeps the refusal actionable.
+        throw new AppError("APPROVAL_INVALID", "The QuickBooks operator resolution confirmation phrase does not match this exact preparation and finding.", {
+          httpStatus: 409,
+          details: {
+            failureLayer: "STALE_AUTHORITY",
+            reasonCodes: ["OPERATOR_CONFIRMATION_PHRASE_MISMATCH"],
+            expectedConfirmationPhrase: expectedPhrase,
+            recoveryAction: "CONFIRM_THE_EXACT_OPERATOR_RESOLUTION_PHRASE",
+          },
+        });
+      }
+      const resolved = await this.resolver.resolve(context.actorId, input.targetSessionRef);
+      if (!safeEqual(preparation.realmId, resolved.realmId) ||
+        !safeEqual(preparation.bindingRevision, resolved.bindingRevision)) {
+        throw new AppError("FORBIDDEN", "The stranded QuickBooks write belongs to a different Company binding than the resolved target.", {
+          httpStatus: 403,
+          details: { failureLayer: "TENANT_BINDING", denyReasons: ["TARGET_BINDING_INVALID"] },
+        });
+      }
+      const command = {
+        entity: preparation.entity,
+        operation: preparation.operation,
+        payload: preparation.payload,
+        ...(preparation.targetId ? { targetId: preparation.targetId } : {}),
+        ...(preparation.syncToken ? { syncToken: preparation.syncToken } : {}),
+        requestId: preparation.providerRequestId,
+      };
+      const attest = (
+        finding: { finding: "ABSENT"; naturalKeySearch: QuickBooksNaturalKeySearchEvidence }
+          | { finding: "PRESENT"; providerEntityId: string },
+      ): QuickBooksOperatorResolutionReceipt => issueQuickBooksOperatorResolutionReceipt({
+        preparationId: preparation.preparationId,
+        providerRequestId: preparation.providerRequestId,
+        attemptId: attempt.attemptId,
+        entity: preparation.entity,
+        operation: preparation.operation,
+        attestedBy: context.actorId,
+        attestedByIdentityAssurance: identityAssurance,
+        confirmationPhraseHash: sha256(expectedPhrase),
+        operatorNote: input.operatorNote,
+        attestedAt: this.clock(),
+        ...finding,
+      });
+
+      if (input.finding === "PRESENT") {
+        const providerEntityId = input.providerEntityId as string;
+        // Never trust an attested id. The exact-Id read-back is the same one
+        // every recovery uses, and it runs before anything is written, so a
+        // wrong id leaves the durable row untouched.
+        const verified = await resolved.provider.recoverMutation(command, providerEntityId);
+        if (!safeEqual(verified.providerEntityId, providerEntityId)) {
+          throw new AppError("READBACK_MISMATCH", "QuickBooks returned a different entity for the attested Id; the attestation was refused.", {
+            httpStatus: 502,
+            details: {
+              failureLayer: "READBACK",
+              reasonCodes: ["OPERATOR_ATTESTED_ID_READBACK_MISMATCH"],
+              providerEntityId,
+            },
+          });
+        }
+        const attested = existing
+          ? preparation
+          : await this.repository.recordOperatorResolution({
+              preparationId: preparation.preparationId,
+              actorId: context.actorId,
+              receipt: attest({ finding: "PRESENT", providerEntityId }),
+              now: this.clock(),
+            });
+        if (!existing) {
+          this.#logOperatorResolution(preparation, attempt.attemptId, "PRESENT", { providerEntityId });
+        }
+        const adopted = attested.providerEntityId
+          ? attested
+          : await this.repository.recordProviderOutcome({
+              preparationId: preparation.preparationId,
+              attemptId: attempt.attemptId,
+              leaseTokenHash: attempt.leaseTokenHash,
+              providerEntityId,
+              providerOutcomeReceipt: {
+                ...verified.receipt,
+                evidenceType: "PROVIDER_OUTCOME_CHECKPOINT",
+                realmId: preparation.realmId,
+                bindingRevision: preparation.bindingRevision,
+                entity: preparation.entity,
+                operation: preparation.operation,
+                providerRequestId: preparation.providerRequestId,
+                canonicalPayloadHash: preparation.payloadHash,
+                adoptedBy: "OPERATOR_RESOLUTION_EXACT_ID_READBACK",
+                providerMutationRetried: false,
+              },
+              now: this.clock(),
+            });
+        const completed = adopted.state === "POSTED_READBACK_VERIFIED"
+          ? this.#terminalResult(adopted, true)
+          : await this.#recoverExactProviderOutcome(adopted, resolved, command);
+        return {
+          preparation_id: preparation.preparationId,
+          finding: "PRESENT" as const,
+          state: completed.state,
+          provider_entity_id: completed.providerEntityId,
+          provider_write_executed: true,
+          supersession_available: false,
+          recovery_action: "NONE" as const,
+          receipt: completed.receipt,
+          readback: completed.readback,
+          operator_resolution_receipt: attested.operatorResolutionReceipt,
+        };
+      }
+
+      // The dangerous direction. Attesting absent when the object exists causes
+      // a double post, so the machine tries to falsify the claim against the
+      // Provider first. A search that cannot run at all propagates its error:
+      // a veto that did not happen must never read as a veto that passed.
+      const naturalKeySearch = existing?.finding === "ABSENT"
+        ? existing.naturalKeySearch
+        : await this.#searchProviderForNaturalKey(preparation, resolved);
+      if (naturalKeySearch.matchCount > 0) {
+        throw new AppError("CONFLICT", "QuickBooks holds an object matching this write's natural key, so it cannot be attested absent.", {
+          httpStatus: 409,
+          retryable: false,
+          details: {
+            failureLayer: "PROVIDER_OUTCOME",
+            reasonCodes: ["PROVIDER_OBJECT_FOUND_BY_NATURAL_KEY"],
+            providerEntityId: naturalKeySearch.matches?.[0],
+            providerEntityIds: naturalKeySearch.matches,
+            naturalKey: naturalKeySearch.naturalKey,
+            recoveryAction: "ATTEST_PROVIDER_OBJECT_PRESENT",
+          },
+        });
+      }
+      const attested = existing
+        ? preparation
+        : await this.repository.recordOperatorResolution({
+            preparationId: preparation.preparationId,
+            actorId: context.actorId,
+            receipt: attest({ finding: "ABSENT", naturalKeySearch }),
+            now: this.clock(),
+          });
+      if (!existing) {
+        this.#logOperatorResolution(preparation, attempt.attemptId, "ABSENT", {
+          naturalKeySearchMethod: naturalKeySearch.method,
+          naturalKeySearchChecked: naturalKeySearch.checked,
+        });
+      }
+      return {
+        preparation_id: preparation.preparationId,
+        finding: "ABSENT" as const,
+        // Deliberately unchanged: the outcome was unknown and that is what the
+        // durable record must keep saying. What is new is the evidence beside it.
+        state: attested.state,
+        provider_write_executed: false,
+        natural_key_check: naturalKeySearch,
+        supersession_available: quickBooksPreparationConfirmedNotWritten(attested),
+        recovery_action: "PREPARE_NEW_CASE_VERSION" as const,
+        operator_resolution_receipt: attested.operatorResolutionReceipt,
+      };
+    });
+  }
+
+  /**
+   * Tries to falsify an ABSENT attestation by looking the object up under the
+   * natural key QuickBooks would have given it. Only a CREATE can double post
+   * under such a key, and only some entities have one; anything else is
+   * recorded as unchecked rather than presented as a completed search.
+   */
+  async #searchProviderForNaturalKey(
+    preparation: QuickBooksMutationPreparation,
+    resolved: Awaited<ReturnType<QuickBooksProviderResolver["resolve"]>>,
+  ): Promise<QuickBooksNaturalKeySearchEvidence> {
+    const unchecked = (reasonCode: string): QuickBooksNaturalKeySearchEvidence => ({
+      method: "NONE",
+      checked: false,
+      matchCount: 0,
+      reasonCode,
+    });
+    if (preparation.operation !== "CREATE") {
+      return unchecked("ONLY_A_CREATE_CAN_DUPLICATE_UNDER_A_NATURAL_KEY");
+    }
+    const payload = preparation.payload;
+    const documentEntities: readonly QuickBooksExistingDocumentMatch["entity"][] =
+      ["Invoice", "Bill", "CreditMemo", "VendorCredit"];
+    const documentEntity = documentEntities.find((entity) => entity === preparation.entity);
+    if (documentEntity) {
+      const docNumber = typeof payload.DocNumber === "string" ? payload.DocNumber.trim() : "";
+      const referenceField = documentEntity === "Invoice" || documentEntity === "CreditMemo"
+        ? "CustomerRef"
+        : "VendorRef";
+      const reference = payload[referenceField] as { value?: unknown } | undefined;
+      const counterpartyId = typeof reference?.value === "string" ? reference.value : "";
+      if (!docNumber || !counterpartyId) {
+        return unchecked("PREPARED_DOCUMENT_CARRIES_NO_DOCUMENT_NUMBER_AND_COUNTERPARTY");
+      }
+      const matches = await resolved.provider.findExistingAccountingDocuments({
+        entity: documentEntity,
+        counterpartyId,
+        docNumber,
+      });
+      return {
+        method: "DOCUMENT_NUMBER_AND_COUNTERPARTY",
+        checked: true,
+        matchCount: matches.length,
+        naturalKey: { entity: documentEntity, docNumber, counterpartyId },
+        ...(matches.length > 0 ? { matches: matches.map((match) => match.providerEntityId) } : {}),
+        complete: true,
+      };
+    }
+    if (preparation.entity === "Customer" || preparation.entity === "Vendor") {
+      const displayName = typeof payload.DisplayName === "string" ? payload.DisplayName.trim() : "";
+      if (!displayName) return unchecked("PREPARED_CONTACT_CARRIES_NO_DISPLAY_NAME");
+      const found: {
+        records: readonly { Id?: string; DisplayName?: string }[];
+        searchWindow: { complete: boolean };
+      } = preparation.entity === "Customer"
+        ? await resolved.provider.searchCustomers(displayName, 100)
+        : await resolved.provider.searchVendors(displayName, 100);
+      const matches = found.records
+        .filter((record) => record.DisplayName?.trim().toLocaleLowerCase("en") ===
+          displayName.toLocaleLowerCase("en"))
+        .map((record) => record.Id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0);
+      return {
+        method: "CONTACT_DISPLAY_NAME",
+        checked: true,
+        matchCount: matches.length,
+        naturalKey: { entity: preparation.entity, displayName },
+        ...(matches.length > 0 ? { matches } : {}),
+        // A contact search that stopped at its scan boundary has not proven
+        // absence, and the receipt must say so rather than imply it did.
+        complete: found.searchWindow.complete,
+      };
+    }
+    return unchecked("NO_NATURAL_KEY_SEARCH_AVAILABLE_FOR_THIS_ENTITY");
+  }
+
+  #logOperatorResolution(
+    preparation: QuickBooksMutationPreparation,
+    attemptId: string,
+    finding: QuickBooksOperatorResolutionFinding,
+    extra: Record<string, unknown>,
+  ): void {
+    this.logger?.warn("QuickBooks unknown write outcome was resolved by an operator attestation.", {
+      preparationId: preparation.preparationId,
+      attemptId,
+      providerRequestId: preparation.providerRequestId,
+      operatorResolutionFinding: finding,
+      ...extra,
+    });
   }
 
   async #execute(options: {
