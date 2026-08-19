@@ -8,16 +8,25 @@
 
 ## 结论
 
-**本地可以收尾；线上不能声称通过，且当前线上跑不动。**
+**本地已收尾，构建已部署；线上 agent 验收仍未跑，不能声称通过。**
 
 本地这一层已经端到端跑通并有真实证据：完整 release gate 通过、角色分离验收
-四个会话行为通过、四个写入生命周期崩溃窗口有真实 SIGKILL 证据。
+五个会话行为通过、四个写入生命周期崩溃窗口有真实 SIGKILL 证据。
 
-线上是硬阻塞，不是"没人去跑"：`mcp.jiayuanwang.xyz/quickbooks/mcp` 当前跑的是
-**修复前的构建**（readiness 自报迁移头仍是 `034`）。在那个构建上，Accounting Case
-路由的 Bill 创建必然撞 `FORBIDDEN / MCP_SCOPE` —— 这正是 UAT 的 T13 六对象两阶段
-写入里的一条。2026-08-15 的线上 UAT 停在 T01、`conversations/` 为空，与这个缺陷
-一致。要恢复线上验收，必须先部署修复后的构建。
+2026-08-19 已把本分支部署到 `mcp.jiayuanwang.xyz/quickbooks/mcp`，线上迁移头
+现为 `035`，`ready: true`。剩下的缺口是 Work/DeepSeek-V4 的 16 轮线上会话本身
+（T01 已过，T02–T16 待跑），服务自己也仍报 `ONLINE_AGENT_UAT_REQUIRED`。
+
+### 一处先前的误判，已更正
+
+本文最初写的是"线上跑的是修复前的构建，Bill 创建必然撞 `FORBIDDEN / MCP_SCOPE`，
+UAT 因此跑不动"。**这是错的**，依据是 readiness 报的迁移头仍是 `034` 就推断整个
+构建是旧的。实际登上主机核对编译产物后：2026-08-15 部署的那个镜像
+（`0.6.0-case-scope-fix-20260815`）**已经包含** scope 修复与 provider 回读容差，
+缺的只是迁移 035 的重挂载逻辑与错误分层。
+
+所以线上 UAT 停在 T01 与该缺陷无关，真实原因不明——本文不再对此给出解释。
+教训是：迁移头只能证明 schema 版本，不能用来推断整个构建的内容。
 
 ## 本地角色分离验收（2026-08-19）
 
@@ -175,8 +184,8 @@ create-POST 调用日志都放在 PostgreSQL 表里，因此 provider 侧的受�
 
 | 事项 | 性质 | 处理建议 |
 |---|---|---|
-| 线上跑修复前构建 | **阻塞线上验收** | 部署当前构建；promote 脚本已加两网检查与 Intuit egress 实探针 |
-| Work / DeepSeek V4 线上 UAT | T01 通过，T02–T16 待跑 | 部署后重新连接并按 16 轮剧本执行 |
+| Work / DeepSeek V4 线上 UAT | T01 通过，T02–T16 待跑 | Work agent 需重新授权 OAuth 后按 16 轮剧本执行 |
+| 旧容器仍在运行 | 保留作回滚 | 线上稳定后再 `docker stop quickbooks-accounting-mcp-0.6-candidate` |
 | Case intake 信封无挂载文档 | 可用性缺陷 | 见下 |
 | 崩溃覆盖面 | 仅 `CREATE:Customer` 单操作、仅自主 Case 路径 | 两阶段联系人+单据、人工复核路径未崩溃测试 |
 | 无 PostgreSQL 侧故障注入 | 覆盖缺口 | 仅杀 Node 进程，未杀数据库、未测提交中途崩溃 |
@@ -222,3 +231,38 @@ QuickBooks 的 GitHub remote 是私有的（未认证访问 404），不存在 X
 QuickBooks 也没有 Xero 的 Gate L 独立评审装置（`independent-review-live`、
 requirements traceability、raw-replay 验证）。本判定不声称达到那个标准，只声称
 上述已实际执行并留下证据的检查通过。
+
+## 部署记录（2026-08-19）
+
+线上现为本分支构建，容器 `qbo-78e02bd-quickbooks-mcp-1`（`172.19.0.25:3000`），
+nginx upstream 已指向它；旧容器 `quickbooks-accounting-mcp-0.6-candidate`
+（`172.19.0.2`）仍在运行以备回滚。nginx 备份在
+`/var/backups/quickbooks-mcp-nginx/`。
+
+外部复核：迁移头 `035`、`ready: true`、`missing/unexpected` 均为 0、18 工具、
+6 条已释放能力、写闸开、常驻委托 `ACTIVE` rev 1、`/quickbooks/readyz` 200。
+
+这次部署是照着仓库自己声明并被 `verify-static.sh` 校验的 compose 规格起的，
+比原先在跑的那个容器更严：原容器是 `docker run` 起的，没有 healthcheck，也没有
+`read_only` / `no-new-privileges` / `cap_drop ALL` / tmpfs / 资源限制。
+
+### 实跑部署才暴露的三件事
+
+1. **promote 脚本只能跑一次**。它把 upstream 里的 `server 127.0.0.1:18003;` 换成
+   候选容器地址，第二次跑时那个模式已不存在，抛 `found 0`。候选容器名也写死，
+   而该名字正被现役容器占用。已改为匹配任意单个地址、候选名走参数，并拒绝
+   "已指向该地址"的空转。
+
+2. **promote 脚本的备份会弄坏它备份的那份配置**。备份写在 `sites-enabled/` 里，
+   而 nginx 会加载该目录下每一个文件，于是备份被当成第二份完整 server 配置，
+   `nginx -t` 因 `duplicate log_format` 失败——发生在新 upstream 被验证之前。
+   两次提升因此自我回滚，回滚路径里的 reload 也同样失败，留下一份要手工搬走
+   才能通过校验的配置。流量始终没被切走，但那是因为闸在 reload 之前就拦住了，
+   不是因为备份本身安全。已改到 `/var/backups/quickbooks-mcp-nginx/`。
+
+3. **向前迁移会让共库的旧构建变成 `NOT_READY`**。候选启动时应用了 035，而
+   readiness 把"不在本构建预期集合里的 quickbooks 迁移"计入 `unexpectedCount`，
+   于是仍在服务流量的 034 容器立刻变成 `ready: false`、`/readyz` 503。MCP 流量
+   本身不受影响（nginx 按 IP:3000 转发，不看 readyz），提升完成后即恢复。
+   但这意味着**灰度窗口内必然有一段旧构建自报未就绪**：要么接受，要么让候选
+   先不跑迁移。这条在只读部署演练里看不出来，只有真的起候选才会遇到。
