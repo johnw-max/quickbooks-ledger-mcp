@@ -1,0 +1,4 @@
+interface:
+  display_name: "Accounting Workflow Coordinator"
+  short_description: "Coordinate one accounting case across business actions"
+  default_prompt: "Use $accounting-workflow-coordinator to coordinate this accounting case and route the next business action."

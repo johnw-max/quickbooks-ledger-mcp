@@ -1,0 +1,4 @@
+interface:
+  display_name: "AP Reconciliation"
+  short_description: "Review payables evidence and payment status"
+  default_prompt: "Use $ap-reconciliation to review these payable materials without overstating payment or posting status."

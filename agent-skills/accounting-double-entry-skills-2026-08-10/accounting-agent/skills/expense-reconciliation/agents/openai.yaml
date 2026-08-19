@@ -1,0 +1,4 @@
+interface:
+  display_name: "Expense Reconciliation"
+  short_description: "Review expense evidence and open questions"
+  default_prompt: "Use $expense-reconciliation to review these expense materials and identify the smallest remaining evidence gap."

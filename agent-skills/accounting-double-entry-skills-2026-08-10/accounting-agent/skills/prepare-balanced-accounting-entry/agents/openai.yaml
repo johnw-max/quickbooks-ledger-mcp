@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Balanced Accounting Entry"
+  short_description: "Prepare balanced debit and credit proposals or 复式分录草案"
+  default_prompt: "Use $prepare-balanced-accounting-entry to prepare a balanced accounting-entry proposal from these source facts."

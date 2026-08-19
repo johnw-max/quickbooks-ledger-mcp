@@ -1,0 +1,4 @@
+interface:
+  display_name: "Execute Approved Accounting Entry"
+  short_description: "Execute approved entries through mounted accounting capabilities"
+  default_prompt: "Use $execute-approved-accounting-entry to execute this approved accounting entry through the available authorized capability and verify the result."

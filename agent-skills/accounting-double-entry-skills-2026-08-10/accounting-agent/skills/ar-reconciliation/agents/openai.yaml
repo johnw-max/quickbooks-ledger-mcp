@@ -1,0 +1,4 @@
+interface:
+  display_name: "AR Reconciliation"
+  short_description: "Review receivables and cash allocation evidence"
+  default_prompt: "Use $ar-reconciliation to review these receivable materials and preserve allocation uncertainty."

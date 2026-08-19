@@ -1,0 +1,4 @@
+interface:
+  display_name: "Accounting Material Intake"
+  short_description: "Receive and organize accounting source materials"
+  default_prompt: "Use $accounting-material-intake to receive, preserve, and inventory these accounting materials."

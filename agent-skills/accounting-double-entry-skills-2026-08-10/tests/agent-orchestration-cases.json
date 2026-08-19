@@ -1,0 +1,86 @@
+{
+  "routing_cases": [
+    {
+      "case_id": "chinese_double_entry_routes_prepare",
+      "user_request": "请按复式记账把这张供应商账单做成借贷平衡的草稿。",
+      "trigger_phrase": "复式记账",
+      "expected_skill": "prepare-balanced-accounting-entry",
+      "skill_load_required": true,
+      "connector_before_skill_allowed": false
+    },
+    {
+      "case_id": "chinese_journal_entry_routes_prepare",
+      "user_request": "请给这笔七月费用做一份会计分录建议。",
+      "trigger_phrase": "会计分录",
+      "expected_skill": "prepare-balanced-accounting-entry",
+      "skill_load_required": true,
+      "connector_before_skill_allowed": false
+    },
+    {
+      "case_id": "english_journal_entry_routes_prepare",
+      "user_request": "Prepare the journal entry for this supported accrual, but do not post it.",
+      "trigger_phrase": "journal entry",
+      "expected_skill": "prepare-balanced-accounting-entry",
+      "skill_load_required": true,
+      "connector_before_skill_allowed": false
+    }
+  ],
+  "degradation_cases": [
+    {
+      "case_id": "no_connector_visible_facts_allow_unsaved_proposal",
+      "connector_labels": [],
+      "destination_roles": [],
+      "available_capabilities": [],
+      "visible_fact_origin": "USER_ASSERTED",
+      "visible_facts": [
+        "supplier invoice date 2026-07-15",
+        "gross amount SGD 1,090.00",
+        "supported net expense SGD 1,000.00",
+        "supported recoverable GST SGD 90.00"
+      ],
+      "expected_skill": "prepare-balanced-accounting-entry",
+      "expected_state": "BALANCED_PROPOSAL_IN_CHAT",
+      "expected_persistence": "unsaved",
+      "proposal_allowed": true,
+      "blocked": false,
+      "ledger_scoped_use_allowed": false,
+      "forbidden_claims": [
+        "saved",
+        "provider draft",
+        "posted",
+        "current ledger account code verified"
+      ]
+    },
+    {
+      "case_id": "drive_only_visible_facts_allow_unsaved_proposal",
+      "connector_labels": [
+        "google_drive"
+      ],
+      "destination_roles": [
+        "source_store"
+      ],
+      "available_capabilities": [
+        "source.content.read"
+      ],
+      "visible_fact_origin": "USER_ASSERTED",
+      "visible_facts": [
+        "supplier invoice date 2026-07-15",
+        "gross amount SGD 1,090.00",
+        "supported net expense SGD 1,000.00",
+        "supported recoverable GST SGD 90.00"
+      ],
+      "expected_skill": "prepare-balanced-accounting-entry",
+      "expected_state": "BALANCED_PROPOSAL_IN_CHAT",
+      "expected_persistence": "unsaved",
+      "proposal_allowed": true,
+      "blocked": false,
+      "ledger_scoped_use_allowed": false,
+      "forbidden_claims": [
+        "saved",
+        "provider draft",
+        "posted",
+        "current ledger account code verified"
+      ]
+    }
+  ]
+}

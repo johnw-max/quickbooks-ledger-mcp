@@ -1,0 +1,4 @@
+interface:
+  display_name: "Close Readiness Handoff"
+  short_description: "Prepare month-end review and handoff drafts"
+  default_prompt: "Use $close-readiness-handoff to prepare a concise review-stage month-end handoff."

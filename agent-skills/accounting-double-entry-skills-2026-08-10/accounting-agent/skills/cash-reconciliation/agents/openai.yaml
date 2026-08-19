@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cash Reconciliation"
+  short_description: "Review bank and cash movement evidence"
+  default_prompt: "Use $cash-reconciliation to review these cash materials and surface unresolved movements."

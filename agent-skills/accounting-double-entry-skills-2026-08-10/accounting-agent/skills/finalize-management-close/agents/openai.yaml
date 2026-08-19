@@ -1,0 +1,4 @@
+interface:
+  display_name: "Finalize Management Close"
+  short_description: "Finalize an approved management close delivery"
+  default_prompt: "Use $finalize-management-close to finalize this approved management close delivery."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Accounting Follow-up Drafting"
+  short_description: "Draft safe accounting follow-up messages"
+  default_prompt: "Use $accounting-follow-up-drafting to draft the smallest evidence-based follow-up message."

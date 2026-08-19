@@ -1,0 +1,225 @@
+[
+  {
+    "case_id": "supplier_bill_then_payment",
+    "name": "Supplier bill and later payment stay as two events",
+    "expected_status": "balanced_proposal",
+    "entity": "Orchid Oak Pte. Ltd.",
+    "accounting_file": "TEST-SG-01",
+    "period": "2026-07",
+    "period_status": "open_confirmed_for_test",
+    "currency": "SGD",
+    "reporting_currency": "SGD",
+    "account_mapping_status": "account_family_candidates_require_live_mapping",
+    "entries": [
+      {
+        "entry_id": "BILL-001",
+        "event": "supplier_bill_recognition",
+        "transaction_date": "2026-07-15",
+        "proposed_route": "native_supplier_bill",
+        "source_refs": ["invoice-SUP-001"],
+        "lines": [
+          {"account_family": "expense", "debit": "1000.00", "credit": "0.00", "tax_treatment": "not_applicable_confirmed", "description": "Recognize supported supplier expense", "source_ref": "invoice-SUP-001"},
+          {"account_family": "accounts_payable", "debit": "0.00", "credit": "1000.00", "tax_treatment": "not_applicable_control_line", "description": "Recognize supplier payable", "source_ref": "invoice-SUP-001"}
+        ]
+      },
+      {
+        "entry_id": "PAY-001",
+        "event": "supplier_bill_payment",
+        "transaction_date": "2026-07-25",
+        "proposed_route": "native_bill_payment",
+        "source_refs": ["invoice-SUP-001", "bank-line-PAY-001"],
+        "lines": [
+          {"account_family": "accounts_payable", "debit": "1000.00", "credit": "0.00", "tax_treatment": "not_applicable_control_line", "description": "Settle the recognized supplier payable", "source_ref": "invoice-SUP-001"},
+          {"account_family": "bank", "debit": "0.00", "credit": "1000.00", "tax_treatment": "not_applicable_control_line", "description": "Record cash paid to supplier", "source_ref": "bank-line-PAY-001"}
+        ]
+      }
+    ],
+    "assertions": ["Do not debit expense again on payment", "Do not call either event posted"]
+  },
+  {
+    "case_id": "customer_invoice_partial_receipt",
+    "name": "Customer invoice and partial receipt preserve open AR",
+    "expected_status": "balanced_proposal",
+    "entity": "Orchid Oak Pte. Ltd.",
+    "accounting_file": "TEST-SG-01",
+    "period": "2026-07",
+    "period_status": "open_confirmed_for_test",
+    "currency": "SGD",
+    "reporting_currency": "SGD",
+    "account_mapping_status": "account_family_candidates_require_live_mapping",
+    "entries": [
+      {
+        "entry_id": "INV-001",
+        "event": "customer_invoice_recognition",
+        "transaction_date": "2026-07-10",
+        "proposed_route": "native_customer_invoice",
+        "source_refs": ["invoice-CUST-001"],
+        "lines": [
+          {"account_family": "accounts_receivable", "debit": "3800.00", "credit": "0.00", "tax_treatment": "not_applicable_control_line", "description": "Recognize customer receivable", "source_ref": "invoice-CUST-001"},
+          {"account_family": "revenue", "debit": "0.00", "credit": "3800.00", "tax_treatment": "not_applicable_confirmed", "description": "Recognize supported service revenue", "source_ref": "invoice-CUST-001"}
+        ]
+      },
+      {
+        "entry_id": "REC-001",
+        "event": "partial_customer_receipt",
+        "transaction_date": "2026-07-24",
+        "proposed_route": "native_customer_payment",
+        "source_refs": ["invoice-CUST-001", "bank-line-REC-001"],
+        "lines": [
+          {"account_family": "bank", "debit": "3000.00", "credit": "0.00", "tax_treatment": "not_applicable_control_line", "description": "Record partial customer cash receipt", "source_ref": "bank-line-REC-001"},
+          {"account_family": "accounts_receivable", "debit": "0.00", "credit": "3000.00", "tax_treatment": "not_applicable_control_line", "description": "Allocate receipt against customer invoice", "source_ref": "invoice-CUST-001"}
+        ]
+      }
+    ],
+    "assertions": ["Visible AR remains 800.00", "Do not call the invoice settled"]
+  },
+  {
+    "case_id": "customer_overpayment_compound",
+    "name": "Confirmed customer overpayment uses a compound receipt entry",
+    "expected_status": "balanced_proposal",
+    "entity": "Orchid Oak Pte. Ltd.",
+    "accounting_file": "TEST-SG-01",
+    "period": "2026-07",
+    "period_status": "open_confirmed_for_test",
+    "currency": "SGD",
+    "reporting_currency": "SGD",
+    "account_mapping_status": "account_family_candidates_require_live_mapping",
+    "entries": [
+      {
+        "entry_id": "REC-OVER-001",
+        "event": "allocated_customer_overpayment",
+        "transaction_date": "2026-07-28",
+        "proposed_route": "native_customer_payment_or_credit",
+        "source_refs": ["invoice-CUST-002", "remittance-002", "bank-line-REC-002"],
+        "lines": [
+          {"account_family": "bank", "debit": "3380.00", "credit": "0.00", "tax_treatment": "not_applicable_control_line", "description": "Record confirmed customer cash receipt", "source_ref": "bank-line-REC-002"},
+          {"account_family": "accounts_receivable", "debit": "0.00", "credit": "3270.00", "tax_treatment": "not_applicable_control_line", "description": "Allocate receipt to the outstanding invoice", "source_ref": "invoice-CUST-002"},
+          {"account_family": "customer_deposit_liability", "debit": "0.00", "credit": "110.00", "unresolved_tax_flag": "live deposit tax mapping required", "description": "Preserve confirmed excess as a customer deposit candidate", "source_ref": "remittance-002"}
+        ]
+      }
+    ],
+    "assertions": ["Do not recognize the excess 110.00 as revenue"]
+  },
+  {
+    "case_id": "loan_proceeds",
+    "name": "Loan proceeds create a liability rather than revenue",
+    "expected_status": "balanced_proposal",
+    "entity": "Orchid Oak Pte. Ltd.",
+    "accounting_file": "TEST-SG-01",
+    "period": "2026-07",
+    "period_status": "open_confirmed_for_test",
+    "currency": "SGD",
+    "reporting_currency": "SGD",
+    "account_mapping_status": "account_family_candidates_require_live_mapping",
+    "entries": [
+      {
+        "entry_id": "LOAN-001",
+        "event": "loan_funding_received",
+        "transaction_date": "2026-07-05",
+        "proposed_route": "native_receive_money_or_supported_provider_route",
+        "source_refs": ["loan-agreement-001", "bank-line-LOAN-001"],
+        "lines": [
+          {"account_family": "bank", "debit": "50000.00", "credit": "0.00", "tax_treatment": "outside_scope_confirmed", "description": "Record loan cash received", "source_ref": "bank-line-LOAN-001"},
+          {"account_family": "loan_liability", "debit": "0.00", "credit": "50000.00", "tax_treatment": "outside_scope_confirmed", "description": "Recognize supported loan principal liability", "source_ref": "loan-agreement-001"}
+        ]
+      }
+    ],
+    "assertions": ["Do not classify loan proceeds as revenue"]
+  },
+  {
+    "case_id": "inter_account_transfer",
+    "name": "Transfer between company bank accounts has no income or expense",
+    "expected_status": "balanced_proposal",
+    "entity": "Orchid Oak Pte. Ltd.",
+    "accounting_file": "TEST-SG-01",
+    "period": "2026-07",
+    "period_status": "open_confirmed_for_test",
+    "currency": "SGD",
+    "reporting_currency": "SGD",
+    "account_mapping_status": "account_family_candidates_require_live_mapping",
+    "entries": [
+      {
+        "entry_id": "XFER-001",
+        "event": "company_bank_transfer",
+        "transaction_date": "2026-07-20",
+        "proposed_route": "native_bank_transfer",
+        "source_refs": ["bank-line-DBS-001", "bank-line-WISE-001"],
+        "lines": [
+          {"account_family": "destination_bank", "debit": "2500.00", "credit": "0.00", "tax_treatment": "not_applicable_confirmed", "description": "Increase destination company bank account", "source_ref": "bank-line-WISE-001"},
+          {"account_family": "source_bank", "debit": "0.00", "credit": "2500.00", "tax_treatment": "not_applicable_confirmed", "description": "Decrease source company bank account", "source_ref": "bank-line-DBS-001"}
+        ]
+      }
+    ],
+    "assertions": ["Do not create revenue or expense"]
+  },
+  {
+    "case_id": "bank_statement_debit_fee",
+    "name": "Bank-statement debit maps to a credit of the bank ledger account",
+    "expected_status": "balanced_proposal",
+    "entity": "Orchid Oak Pte. Ltd.",
+    "accounting_file": "TEST-SG-01",
+    "period": "2026-07",
+    "period_status": "open_confirmed_for_test",
+    "currency": "SGD",
+    "reporting_currency": "SGD",
+    "account_mapping_status": "account_family_candidates_require_live_mapping",
+    "bank_statement_direction": "debit",
+    "entries": [
+      {
+        "entry_id": "FEE-001",
+        "event": "bank_service_fee",
+        "transaction_date": "2026-07-31",
+        "proposed_route": "native_spend_money_or_bank_adjustment",
+        "source_refs": ["bank-line-FEE-001"],
+        "lines": [
+          {"account_family": "bank_fee_expense", "debit": "35.00", "credit": "0.00", "unresolved_tax_flag": "live fee tax mapping required", "description": "Recognize supported monthly bank fee", "source_ref": "bank-line-FEE-001"},
+          {"account_family": "bank", "debit": "0.00", "credit": "35.00", "tax_treatment": "not_applicable_control_line", "description": "Record cash reduction shown as statement debit", "source_ref": "bank-line-FEE-001"}
+        ]
+      }
+    ],
+    "assertions": ["Do not copy the statement debit label onto the bank ledger debit side"]
+  },
+  {
+    "case_id": "tax_bearing_supplier_bill",
+    "name": "Supported tax-bearing supplier bill permits a compound entry",
+    "expected_status": "balanced_proposal",
+    "entity": "Orchid Oak Pte. Ltd.",
+    "accounting_file": "TEST-SG-01",
+    "period": "2026-07",
+    "period_status": "open_confirmed_for_test",
+    "currency": "SGD",
+    "reporting_currency": "SGD",
+    "account_mapping_status": "account_family_candidates_require_live_mapping",
+    "entries": [
+      {
+        "entry_id": "GST-BILL-001",
+        "event": "supplier_bill_with_confirmed_recoverable_tax",
+        "transaction_date": "2026-07-18",
+        "proposed_route": "native_supplier_bill",
+        "source_refs": ["invoice-GST-001", "tax-review-GST-001"],
+        "lines": [
+          {"account_family": "expense_or_asset", "debit": "1000.00", "credit": "0.00", "tax_treatment": "net_amount_confirmed", "description": "Recognize supported net purchase amount", "source_ref": "invoice-GST-001"},
+          {"account_family": "recoverable_tax", "debit": "90.00", "credit": "0.00", "tax_treatment": "recoverable_tax_confirmed_for_test", "description": "Recognize supported recoverable GST", "source_ref": "tax-review-GST-001"},
+          {"account_family": "accounts_payable", "debit": "0.00", "credit": "1090.00", "tax_treatment": "gross_control_line", "description": "Recognize gross supplier payable", "source_ref": "invoice-GST-001"}
+        ]
+      }
+    ],
+    "assertions": ["Use only after tax basis and eligibility are confirmed"]
+  },
+  {
+    "case_id": "unknown_incoming_cash",
+    "name": "Unknown incoming cash stays blocked rather than being forced to revenue or suspense",
+    "expected_status": "blocked",
+    "entity": "Orchid Oak Pte. Ltd.",
+    "accounting_file": "TEST-SG-01",
+    "period": "2026-07",
+    "period_status": "open_confirmed_for_test",
+    "transaction_date": "2026-07-30",
+    "currency": "SGD",
+    "reporting_currency": "SGD",
+    "source_refs": ["bank-line-UNKNOWN-001"],
+    "entries": [],
+    "blockers": ["counter-account and business nature are not supported", "authorized suspense or clearing policy is not available"],
+    "assertions": ["Do not invent revenue", "Do not add a plug line merely to balance"]
+  }
+]
