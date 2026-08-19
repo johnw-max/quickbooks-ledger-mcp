@@ -603,23 +603,59 @@ describe("QuickBooks Accounting Case service", () => {
     expect(executeMutation.mock.calls.map(([mutation]) => mutation.entity)).toEqual(["Customer", "Invoice"]);
   });
 
-  it("blocks a foreign-currency NativeDocument even when QuickBooks multi-currency is enabled", async () => {
-    const { service } = fixture();
+  // A foreign-currency document was previously refused outright, with a message
+  // naming an exchange-rate policy the intake had no way to supply. Deciding the
+  // rate is not this service's job; the Agent names one and the ledger is what
+  // the claim is checked against. These three assert the checks that replaced it.
+  let foreignCurrencyCaseSeq = 0;
+  const foreignCurrencyCase = (mutate: (fact: Record<string, unknown>) => void) => {
     const foreign = structuredClone(input);
-    foreign.case_id = "case-foreign-currency-001";
+    foreign.case_id = `case-foreign-currency-${++foreignCurrencyCaseSeq}`;
     const [foreignFact] = foreign.facts;
     if (!foreignFact || foreignFact.kind !== "NATIVE_DOCUMENT") throw new Error("test fixture requires a native document");
-    foreignFact.currency = "USD";
+    mutate(foreignFact as unknown as Record<string, unknown>);
+    return foreign;
+  };
 
-    const prepared = await service.prepare(context, foreign);
-    expect(prepared).toMatchObject({
-      state: "BLOCKED_VALIDATION",
-      operations: [],
-    });
+  it("refuses a foreign-currency NativeDocument that carries no exchange rate, and names the field", async () => {
+    const { service } = fixture();
+    const prepared = await service.prepare(context, foreignCurrencyCase((fact) => { fact.currency = "USD"; }));
+    expect(prepared).toMatchObject({ state: "BLOCKED_VALIDATION", operations: [] });
     expect(prepared.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         disposition: "BLOCKED_VALIDATION",
-        reason_codes: ["FOREIGN_CURRENCY_EXCHANGE_RATE_POLICY_NOT_RELEASED"],
+        reason_codes: ["EXCHANGE_RATE_REQUIRED_FOR_FOREIGN_CURRENCY"],
+      }),
+    ]));
+  });
+
+  it("refuses a foreign-currency NativeDocument when the company has multicurrency turned off", async () => {
+    const { service, provider } = fixture();
+    vi.mocked(provider.getCompanyContext).mockResolvedValue({
+      CompanyName: "Sandbox", HomeCurrency: { value: "SGD" }, MultiCurrencyEnabled: false,
+    } as never);
+    const prepared = await service.prepare(context, foreignCurrencyCase((fact) => {
+      fact.currency = "USD";
+      fact.exchangeRate = "1.34";
+    }));
+    // Not BLOCKED_VALIDATION: nothing about the submitted facts is wrong, and
+    // re-preparing cannot clear it. Someone has to decide something in QuickBooks.
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        disposition: "REVIEW_REQUIRED",
+        reason_codes: ["COMPANY_MULTICURRENCY_DISABLED"],
+      }),
+    ]));
+  });
+
+  it("refuses an exchange rate on a home-currency NativeDocument", async () => {
+    const { service } = fixture();
+    const prepared = await service.prepare(context, foreignCurrencyCase((fact) => { fact.exchangeRate = "1.34"; }));
+    expect(prepared).toMatchObject({ state: "BLOCKED_VALIDATION", operations: [] });
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        disposition: "BLOCKED_VALIDATION",
+        reason_codes: ["EXCHANGE_RATE_NOT_APPLICABLE_TO_HOME_CURRENCY"],
       }),
     ]));
   });

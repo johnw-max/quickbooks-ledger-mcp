@@ -13,6 +13,9 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).refine((value) => {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().startsWith(value);
 }, "must be a real calendar date");
 const currency = z.string().regex(/^[A-Z]{3}$/u);
+// A rate needs finer precision than money and must be strictly positive;
+// "0" and "0.0" are rejected by the leading-digit alternation.
+const exchangeRate = z.string().regex(/^(?:0\.\d*[1-9]\d*|[1-9]\d*(?:\.\d{1,10})?)$/u);
 const decimal4 = z.string().regex(/^(?:0|[1-9]\d{0,15})(?:\.\d{1,4})?$/u);
 const money = z.string().regex(/^(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$/u);
 const positiveDecimal4 = decimal4.refine((value) => Number(value) > 0, "must be greater than zero");
@@ -50,6 +53,13 @@ const businessDocument = z.object({
   due_date: date.optional(),
   document_number: z.string().trim().min(1).max(21).optional(),
   currency,
+  /**
+   * Home-currency units per one unit of `currency`, as QuickBooks defines it.
+   * Required only when `currency` differs from the ledger's home currency —
+   * which this schema cannot know, so the service enforces it and says which
+   * currencies it compared. Omit it for a home-currency document.
+   */
+  exchange_rate: exchangeRate.optional(),
   tax_mode: z.enum(["NO_TAX", "TAX_EXCLUDED", "TAX_INCLUSIVE"]),
   lines: z.array(businessDocumentLine).min(1).max(100),
   declared_net: money,
@@ -220,6 +230,7 @@ export function normalizeQuickBooksAccountingCaseBusinessIntake(raw: QuickBooksA
         ...(fact.due_date ? { dueDate: fact.due_date } : {}),
         ...(fact.document_number ? { documentNumber: fact.document_number } : {}),
         currency: fact.currency,
+        ...(fact.exchange_rate ? { exchangeRate: fact.exchange_rate } : {}),
         taxMode: fact.tax_mode,
         lines: fact.lines.map((line, lineIndex) => ({
           lineId: derivedId("line", { ...identity, lineIndex }),

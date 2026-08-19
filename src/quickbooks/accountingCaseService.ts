@@ -473,12 +473,19 @@ export class QuickBooksAccountingCaseService {
           const failureLayer = safe.details?.failureLayer;
           if (safe.code !== "VALIDATION_FAILED" ||
               (failureLayer !== "PROVIDER_REFERENCE" && failureLayer !== "DETERMINISTIC_VALIDATION" &&
-               failureLayer !== "ALREADY_SATISFIED")) {
+               failureLayer !== "ALREADY_SATISFIED" && failureLayer !== "PROVIDER_CONFIGURATION")) {
             throw error;
           }
           const event = draft.events.find((entry) => entry.eventId === candidate.eventId);
           if (event) {
-            event.disposition = failureLayer === "PROVIDER_REFERENCE" ? "REVIEW_REQUIRED"
+            // PROVIDER_CONFIGURATION is a fact about the ledger, not about the
+            // facts submitted, so re-preparing cannot clear it — someone has to
+            // decide something in QuickBooks. It also must not sink the whole
+            // Case: when a company cannot hold foreign currency, its contacts
+            // are still perfectly creatable, and failing the prepare outright
+            // would throw that work away along with the documents.
+            event.disposition = failureLayer === "PROVIDER_REFERENCE" ||
+              failureLayer === "PROVIDER_CONFIGURATION" ? "REVIEW_REQUIRED"
               : failureLayer === "ALREADY_SATISFIED" ? "EVIDENCE_ONLY"
                 : "BLOCKED_VALIDATION";
             const reasonCodes = Array.isArray(safe.details?.reasonCodes)
@@ -1016,12 +1023,51 @@ export class QuickBooksAccountingCaseService {
     fact: QuickBooksNativeDocumentFact,
     company: QuickBooksCompanyContext,
   ): Promise<Record<string, unknown>> {
-    if (fact.currency !== company.HomeCurrency.value) {
-      throw new AppError("VALIDATION_FAILED", "Foreign-currency NativeDocument writes are not released until an exact exchange-rate policy is supplied.", {
+    // A foreign-currency document used to be refused outright, on the grounds
+    // that no exchange-rate policy had been released. Nothing could supply one:
+    // the intake had no field for a rate, so the refusal named a remedy that did
+    // not exist and every SGD document against a USD ledger was unbookable.
+    //
+    // Deciding the rate was never this service's job. It is the same shape as a
+    // tax code: the Agent names an explicit value, and the ledger is what the
+    // claim is checked against. So there are now two checkable facts instead of
+    // one policy — whether the company can hold foreign currency at all, which
+    // QuickBooks answers, and whether a rate was actually supplied. The rate
+    // itself is recorded in the receipt and confirmed by exact read-back.
+    const foreignCurrency = fact.currency !== company.HomeCurrency.value;
+    if (foreignCurrency && company.MultiCurrencyEnabled !== true) {
+      throw new AppError("VALIDATION_FAILED", `This QuickBooks company keeps its books in ${company.HomeCurrency.value} and does not have multicurrency turned on, so a ${fact.currency} document cannot be created in it.`, {
+        httpStatus: 422,
+        details: {
+          failureLayer: "PROVIDER_CONFIGURATION",
+          reasonCodes: ["COMPANY_MULTICURRENCY_DISABLED"],
+          homeCurrency: company.HomeCurrency.value,
+          documentCurrency: fact.currency,
+          recoveryAction: "USE_HOME_CURRENCY_OR_A_MULTICURRENCY_COMPANY",
+        },
+      });
+    }
+    if (foreignCurrency && !fact.exchangeRate) {
+      throw new AppError("VALIDATION_FAILED", `A ${fact.currency} document in a ${company.HomeCurrency.value} ledger needs an explicit exchange_rate: how many ${company.HomeCurrency.value} one ${fact.currency} converts to on the document date.`, {
         httpStatus: 422,
         details: {
           failureLayer: "DETERMINISTIC_VALIDATION",
-          reasonCodes: ["FOREIGN_CURRENCY_EXCHANGE_RATE_POLICY_NOT_RELEASED"],
+          reasonCodes: ["EXCHANGE_RATE_REQUIRED_FOR_FOREIGN_CURRENCY"],
+          homeCurrency: company.HomeCurrency.value,
+          documentCurrency: fact.currency,
+          invalidFields: ["exchange_rate"],
+          recoveryAction: "CORRECT_CASE_FACTS",
+        },
+      });
+    }
+    if (!foreignCurrency && fact.exchangeRate) {
+      throw new AppError("VALIDATION_FAILED", `This document is already in the ledger's home currency ${company.HomeCurrency.value}, so it must not carry an exchange_rate.`, {
+        httpStatus: 422,
+        details: {
+          failureLayer: "DETERMINISTIC_VALIDATION",
+          reasonCodes: ["EXCHANGE_RATE_NOT_APPLICABLE_TO_HOME_CURRENCY"],
+          invalidFields: ["exchange_rate"],
+          recoveryAction: "CORRECT_CASE_FACTS",
         },
       });
     }
@@ -1103,6 +1149,7 @@ export class QuickBooksAccountingCaseService {
         : {}),
       ...(fact.documentNumber ? { DocNumber: fact.documentNumber } : {}),
       CurrencyRef: { value: fact.currency },
+      ...(fact.exchangeRate ? { ExchangeRate: Number(fact.exchangeRate) } : {}),
       GlobalTaxCalculation: fact.taxMode === "NO_TAX" ? "NotApplicable" :
         fact.taxMode === "TAX_INCLUSIVE" ? "TaxInclusive" : "TaxExcluded",
       ...(fact.taxMode === "NO_TAX" ? {} : { TxnTaxDetail: { TotalTax: Number(fact.declaredTax) } }),

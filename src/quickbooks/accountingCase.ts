@@ -114,6 +114,8 @@ export interface QuickBooksNativeDocumentFact extends QuickBooksFactBase {
   dueDate?: string;
   documentNumber?: string;
   currency: string;
+  /** Home-currency units per one unit of `currency`; present only for a foreign-currency document. */
+  exchangeRate?: string;
   taxMode: "NO_TAX" | "TAX_EXCLUDED" | "TAX_INCLUSIVE";
   lines: QuickBooksNativeDocumentLine[];
   declaredNet: string;

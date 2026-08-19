@@ -106,6 +106,7 @@ const document = z.object({
   dueDate: date.optional(),
   documentNumber: z.string().trim().min(1).max(21).optional(),
   currency,
+  exchangeRate: z.string().regex(/^(?:0\.\d*[1-9]\d*|[1-9]\d*(?:\.\d{1,10})?)$/u).optional(),
   taxMode: z.enum(["NO_TAX", "TAX_EXCLUDED", "TAX_INCLUSIVE"]),
   lines: z.array(documentLine).min(1).max(100)
     .refine((lines) => new Set(lines.map((line) => line.lineId)).size === lines.length, "line IDs must be unique"),
