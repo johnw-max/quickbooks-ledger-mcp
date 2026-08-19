@@ -43,7 +43,9 @@ QUICKBOOKS_APP_IMAGE="${IMAGE}" \
 QUICKBOOKS_LOOPBACK_PORT="${CANDIDATE_PORT}" \
   docker compose -f deploy/compose.yaml --env-file deploy/.env.deploy up -d
 
-CANDIDATE="$(docker compose -p "${PROJECT}" -f deploy/compose.yaml ps -q quickbooks-mcp | head -1)"
+# compose interpolates the network names for every subcommand, not just "up",
+# so the env file is required here too or this resolves to nothing.
+CANDIDATE="$(docker compose -p "${PROJECT}" -f deploy/compose.yaml --env-file deploy/.env.deploy ps -q quickbooks-mcp | head -1)"
 [ -n "${CANDIDATE}" ] || die "the candidate container did not start"
 CANDIDATE_NAME="$(docker inspect -f '{{.Name}}' "${CANDIDATE}" | sed 's|^/||')"
 echo "candidate: ${CANDIDATE_NAME}"
