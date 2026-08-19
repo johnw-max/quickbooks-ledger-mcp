@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 
 // The promoted candidate keeps running and serving traffic under its own name,
 // so a redeploy must bring up a differently named candidate beside it. Passing
@@ -63,7 +64,13 @@ if (serverMatches[0] === `server ${candidateAddress}:3000;`) {
 const replacementBlock = upstreamMatches[0].replace(serverPattern, `server ${candidateAddress}:3000;`);
 const updated = original.replace(upstreamPattern, replacementBlock);
 const timestamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
-const backup = `${targetConfig}.pre-qbo-0.6-${timestamp}`;
+// Never write the backup beside the live config: nginx loads *every* file in
+// sites-enabled, so a backup left there is parsed as a second server config and
+// `nginx -t` fails with a duplicate log_format before the new upstream is ever
+// tested. That turned a routine promotion into a rollback, twice.
+const backupDirectory = "/var/backups/quickbooks-mcp-nginx";
+mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
+const backup = resolve(backupDirectory, `${basename(targetConfig)}.pre-qbo-0.6-${timestamp}`);
 const mode = lstatSync(targetConfig).mode;
 copyFileSync(targetConfig, backup);
 
