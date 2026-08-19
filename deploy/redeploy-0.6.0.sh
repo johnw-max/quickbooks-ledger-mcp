@@ -38,14 +38,15 @@ step "Building ${IMAGE}"
 docker build -f deploy/Dockerfile -t "${IMAGE}" .
 
 step "Starting the candidate (the live container keeps serving)"
-COMPOSE_PROJECT_NAME="${PROJECT}" \
-QUICKBOOKS_APP_IMAGE="${IMAGE}" \
-QUICKBOOKS_LOOPBACK_PORT="${CANDIDATE_PORT}" \
-  docker compose -f deploy/compose.yaml --env-file deploy/.env.deploy up -d
+# compose interpolates the whole file on every subcommand, not only "up", so
+# both the env file and these three variables have to be in scope for the
+# lookup below as well. Exporting once is what keeps them in agreement.
+export COMPOSE_PROJECT_NAME="${PROJECT}"
+export QUICKBOOKS_APP_IMAGE="${IMAGE}"
+export QUICKBOOKS_LOOPBACK_PORT="${CANDIDATE_PORT}"
+docker compose -f deploy/compose.yaml --env-file deploy/.env.deploy up -d
 
-# compose interpolates the network names for every subcommand, not just "up",
-# so the env file is required here too or this resolves to nothing.
-CANDIDATE="$(docker compose -p "${PROJECT}" -f deploy/compose.yaml --env-file deploy/.env.deploy ps -q quickbooks-mcp | head -1)"
+CANDIDATE="$(docker compose -f deploy/compose.yaml --env-file deploy/.env.deploy ps -q quickbooks-mcp | head -1)"
 [ -n "${CANDIDATE}" ] || die "the candidate container did not start"
 CANDIDATE_NAME="$(docker inspect -f '{{.Name}}' "${CANDIDATE}" | sed 's|^/||')"
 echo "candidate: ${CANDIDATE_NAME}"
