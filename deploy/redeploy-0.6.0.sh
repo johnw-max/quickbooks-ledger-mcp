@@ -8,13 +8,15 @@
 #
 #   sudo bash deploy/redeploy-0.6.0.sh <commit-ish>
 #
-# Defaults to the commit that carries both the scope fix and a promotion script
-# that can run a second time.
+# Defaults to the commit that completes the write-outcome state machine: proven
+# non-writes supersede, unknown outcomes have an operator-attested exit, and a
+# replayed terminal success is confirmed against the Company before it is
+# reported as done.
 set -euo pipefail
 
-COMMIT="${1:-8d0300b}"
-REQUIRED_MIGRATION="035_quickbooks_mcp_scope_predispatch_rearm.sql"
-EXPECTED_TOOL_COUNT=18
+COMMIT="${1:-8de5b8a}"
+REQUIRED_MIGRATION="${QUICKBOOKS_REQUIRED_MIGRATION:-038_quickbooks_operator_unknown_write_resolution.sql}"
+EXPECTED_TOOL_COUNT="${QUICKBOOKS_EXPECTED_TOOL_COUNT:-19}"
 PROJECT="qbo-0-6-${COMMIT}"
 IMAGE="quickbooks-ledger-mcp:0.6.0-${COMMIT}"
 CANDIDATE_PORT="${QUICKBOOKS_CANDIDATE_PORT:-18004}"
@@ -48,8 +50,10 @@ echo "candidate: ${CANDIDATE_NAME}"
 
 step "Waiting for the candidate to become healthy"
 # An unhealthy candidate here is usually the migration gate doing its job:
-# readiness stays closed until the database has 035. Read the logs, do not
-# reach for nginx.
+# readiness stays closed until the database has the expected head. Read the
+# logs, do not reach for nginx. Note that applying a forward migration also
+# flips the still-serving older container to NOT_READY, because readiness counts
+# migrations outside its own expected set — that window is expected.
 for _ in $(seq 1 40); do
   health="$(docker inspect -f '{{.State.Health.Status}}' "${CANDIDATE}" 2>/dev/null || echo starting)"
   [ "${health}" = "healthy" ] && break
