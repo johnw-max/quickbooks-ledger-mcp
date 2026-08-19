@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { AppError, toSafeError } from "../errors.js";
+import { AppError, toSafeError, type AppErrorCode } from "../errors.js";
 import type { RequestContext } from "../security/requestContext.js";
 import { normalizedQuickBooksReadPayload } from "./readEvidence.js";
 import type { QuickBooksReadBindingEvidence } from "./readEvidence.js";
@@ -96,18 +96,95 @@ function successPayload(payload: Record<string, unknown>): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
 }
 
+/** Closed vocabularies. A new default that is not one of these fails to compile. */
+type QuickBooksFailureLayer =
+  | "AUTHENTICATION"
+  | "AUTHORIZATION"
+  | "CONNECTION"
+  | "RESOURCE"
+  | "DETERMINISTIC_VALIDATION"
+  | "CONCURRENCY_OR_VERSION"
+  | "LEGACY_AUTHORITY"
+  | "STALE_AUTHORITY"
+  | "READBACK"
+  | "PROVIDER_OUTCOME"
+  | "PROVIDER"
+  | "CONFIGURATION";
+
+type QuickBooksRecoveryAction =
+  | "REAUTHENTICATE_MCP"
+  | "INSPECT_AUTHORIZATION_BINDING"
+  | "VERIFY_RESOURCE_REFERENCE"
+  | "RECONNECT_QUICKBOOKS"
+  | "PIN_EXACT_QUICKBOOKS_COMPANY"
+  | "CORRECT_CASE_FACTS"
+  | "GET_CURRENT_CASE_STATUS"
+  | "USE_STANDING_DELEGATION_CASE_FLOW"
+  | "PREPARE_NEW_CASE_VERSION"
+  | "FREEZE_AND_RECONCILE_READBACK"
+  | "READBACK_RECOVERY_ONLY"
+  | "OPERATOR_RESOLUTION_REQUIRED_NO_AUTOMATIC_REARM"
+  | "RETRY_WITH_BACKOFF"
+  | "RETRY_AFTER_PROVIDER_RECOVERS"
+  | "INSPECT_PROVIDER_RESPONSE"
+  | "FIX_MCP_CONFIGURATION";
+
+/**
+ * Every code gets its own layer and next move. A `Record` keyed by the whole
+ * union means adding a code to `AppErrorCode` breaks this build until someone
+ * decides what an Agent should do about it, rather than silently inheriting a
+ * generic string that names no move at all.
+ */
+const QUICKBOOKS_FAILURE_PROJECTION: Readonly<Record<AppErrorCode, {
+  layer: QuickBooksFailureLayer;
+  recovery: QuickBooksRecoveryAction;
+}>> = Object.freeze({
+  AUTH_REQUIRED: { layer: "AUTHENTICATION", recovery: "REAUTHENTICATE_MCP" },
+  // FORBIDDEN covers transport scope, closed write gate, unreleased capability
+  // and changed OAuth binding. Those need different operator fixes, so the
+  // default names the evidence to read (reason_codes, binding) rather than
+  // asserting one repair that would be wrong for the other three.
+  FORBIDDEN: { layer: "AUTHORIZATION", recovery: "INSPECT_AUTHORIZATION_BINDING" },
+  NOT_FOUND: { layer: "RESOURCE", recovery: "VERIFY_RESOURCE_REFERENCE" },
+  NOT_CONNECTED: { layer: "AUTHENTICATION", recovery: "RECONNECT_QUICKBOOKS" },
+  AMBIGUOUS_CONNECTION: { layer: "CONNECTION", recovery: "PIN_EXACT_QUICKBOOKS_COMPANY" },
+  VALIDATION_FAILED: { layer: "DETERMINISTIC_VALIDATION", recovery: "CORRECT_CASE_FACTS" },
+  CONFLICT: { layer: "CONCURRENCY_OR_VERSION", recovery: "GET_CURRENT_CASE_STATUS" },
+  APPROVAL_REQUIRED: { layer: "LEGACY_AUTHORITY", recovery: "USE_STANDING_DELEGATION_CASE_FLOW" },
+  APPROVAL_INVALID: { layer: "STALE_AUTHORITY", recovery: "PREPARE_NEW_CASE_VERSION" },
+  READBACK_MISMATCH: { layer: "READBACK", recovery: "FREEZE_AND_RECONCILE_READBACK" },
+  WRITE_RESULT_UNKNOWN: { layer: "PROVIDER_OUTCOME", recovery: "READBACK_RECOVERY_ONLY" },
+  WRITE_RESULT_UNKNOWN_NO_ID: {
+    layer: "PROVIDER_OUTCOME",
+    recovery: "OPERATOR_RESOLUTION_REQUIRED_NO_AUTOMATIC_REARM",
+  },
+  RATE_LIMITED: { layer: "PROVIDER", recovery: "RETRY_WITH_BACKOFF" },
+  PROVIDER_UNAVAILABLE: { layer: "PROVIDER", recovery: "RETRY_AFTER_PROVIDER_RECOVERS" },
+  PROVIDER_ERROR: { layer: "PROVIDER", recovery: "INSPECT_PROVIDER_RESPONSE" },
+  CONFIGURATION_ERROR: { layer: "CONFIGURATION", recovery: "FIX_MCP_CONFIGURATION" },
+});
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string").slice(0, 32);
+}
+
 function failure(error: unknown): CallToolResult {
   const safe = toSafeError(error);
-  const fallbackLayer = safe.code === "AUTH_REQUIRED" || safe.code === "NOT_CONNECTED" ? "AUTHENTICATION" :
-    safe.code === "FORBIDDEN" ? "AUTHORIZATION" :
-      safe.code === "VALIDATION_FAILED" ? "DETERMINISTIC_VALIDATION" :
-        safe.code === "CONFLICT" ? "CONCURRENCY_OR_VERSION" :
-          safe.code === "READBACK_MISMATCH" ? "READBACK" :
-            safe.code === "WRITE_RESULT_UNKNOWN" || safe.code === "WRITE_RESULT_UNKNOWN_NO_ID"
-              ? "PROVIDER_OUTCOME" :
-              safe.code === "PROVIDER_ERROR" || safe.code === "PROVIDER_UNAVAILABLE" || safe.code === "RATE_LIMITED"
-                ? "PROVIDER" : "CONFIGURATION";
-  const failureLayer = typeof safe.details?.failureLayer === "string" ? safe.details.failureLayer : fallbackLayer;
+  const projection = QUICKBOOKS_FAILURE_PROJECTION[safe.code];
+  // A throw site that named its own layer or recovery knows more than the code
+  // does, so its value is forwarded verbatim. It is deliberately not checked
+  // against the unions above: an unregistered value silently replaced by the
+  // generic default would hand the Agent a different instruction from the one
+  // the throw site chose, which is worse than forwarding an unfamiliar word.
+  const failureLayer = typeof safe.details?.failureLayer === "string" ? safe.details.failureLayer : projection.layer;
+  const recoveryAction = typeof safe.details?.recoveryAction === "string"
+    ? safe.details.recoveryAction
+    : projection.recovery;
+  // Machine-readable fields belong at the top of a snake_case envelope, not
+  // buried under a camelCase `details` key an Agent has to guess at.
+  const reasonCodes = stringArray(safe.details?.reasonCodes);
+  const invalidFields = stringArray(safe.details?.invalidFields);
   const payload = {
     error: {
       code: safe.code,
@@ -115,9 +192,9 @@ function failure(error: unknown): CallToolResult {
       retryable: safe.retryable,
       failure_layer: failureLayer,
       provider_mutation_possible: safe.code === "WRITE_RESULT_UNKNOWN" || safe.code === "WRITE_RESULT_UNKNOWN_NO_ID",
-      recovery_action: safe.code === "WRITE_RESULT_UNKNOWN_NO_ID"
-        ? "OPERATOR_RESOLUTION_REQUIRED_NO_AUTOMATIC_REARM"
-        : safe.code === "WRITE_RESULT_UNKNOWN" ? "READBACK_RECOVERY_ONLY" : "INSPECT_ERROR_AND_STATUS",
+      recovery_action: recoveryAction,
+      ...(reasonCodes.length > 0 ? { reason_codes: reasonCodes } : {}),
+      ...(invalidFields.length > 0 ? { invalid_fields: invalidFields } : {}),
       ...(safe.details ? { details: safe.details } : {}),
     },
   };

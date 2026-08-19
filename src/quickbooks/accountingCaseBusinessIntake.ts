@@ -56,7 +56,28 @@ const businessDocument = z.object({
   declared_tax: money,
   declared_gross: money,
   business_reason: z.string().trim().min(3).max(1_000),
-}).strict();
+}).strict().superRefine((value, context) => {
+  // These four rules also exist on the internal Case schema, which stays the
+  // trusted boundary. Stating them here as well is what makes them reachable:
+  // the SDK validates this schema before the handler runs, so an Agent gets
+  // the snake_case path it actually sent instead of a re-parse failure raised
+  // from inside the handler against internal camelCase field names.
+  if (value.due_date && value.due_date < value.document_date) {
+    context.addIssue({ code: "custom", path: ["due_date"], message: "must not be before document_date" });
+  }
+  const salesSide = value.document_type === "INVOICE" || value.document_type === "CREDIT_MEMO";
+  for (const [index, line] of value.lines.entries()) {
+    if (salesSide && line.coding_type !== "ITEM") {
+      context.addIssue({ code: "custom", path: ["lines", index, "coding_type"], message: "sales documents require ITEM coding" });
+    }
+    if (value.tax_mode === "NO_TAX" && line.tax_code_name !== undefined) {
+      context.addIssue({ code: "custom", path: ["lines", index, "tax_code_name"], message: "NO_TAX lines must not provide a tax code" });
+    }
+    if (value.tax_mode !== "NO_TAX" && line.tax_code_name === undefined) {
+      context.addIssue({ code: "custom", path: ["lines", index, "tax_code_name"], message: "taxable lines require an exact tax code name" });
+    }
+  }
+});
 
 const businessUnsupportedEvent = z.object({
   kind: z.literal("UNSUPPORTED_EVENT"),

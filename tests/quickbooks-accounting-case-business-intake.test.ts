@@ -109,6 +109,81 @@ describe("QuickBooks Accounting Case business intake", () => {
     });
   });
 
+  it("refuses the four document rules at the Agent-facing boundary", () => {
+    // Each of these used to pass the Agent-facing schema and fail only on the
+    // internal re-parse inside the handler, where it surfaced as a retryable
+    // provider outage against internal camelCase field names.
+    const document = {
+      kind: "DOCUMENT" as const,
+      document_type: "INVOICE" as const,
+      counterparty_name: "Lion City Digital Pte. Ltd.",
+      document_date: "2026-07-02",
+      currency: "SGD",
+      tax_mode: "TAX_EXCLUDED" as const,
+      lines: [{
+        description: "Consulting services",
+        quantity: "20",
+        unit_amount: "200.00",
+        source_tax_amount: "360.00",
+        coding_type: "ITEM" as const,
+        coding_name: "Consulting",
+        tax_code_name: "GST 9%",
+      }],
+      declared_net: "4000.00",
+      declared_tax: "360.00",
+      declared_gross: "4360.00",
+      business_reason: "Record the approved July consulting invoice.",
+    };
+    const intake = (overrides: Record<string, unknown>) => ({
+      target_session_ref: targetSessionRef,
+      case_id: "case-business-document-rules",
+      expected_version: 0,
+      source_set_complete: true as const,
+      sources: [{
+        source_key: "INV-2026-0702",
+        label: "Sales tax invoice",
+        units: [{ unit_key: "invoice-main", facts: [{ ...document, ...overrides }] }],
+      }],
+    });
+
+    const violations: Array<[string, Record<string, unknown>, string[]]> = [
+      ["due date before document date", { due_date: "2026-07-01" }, ["due_date"]],
+      [
+        "sales document coded to an account",
+        { lines: [{ ...document.lines[0]!, coding_type: "ACCOUNT" }] },
+        ["lines", "0", "coding_type"],
+      ],
+      [
+        "NO_TAX line carrying a tax code",
+        { tax_mode: "NO_TAX", lines: [{ ...document.lines[0]!, source_tax_amount: "0.00" }] },
+        ["lines", "0", "tax_code_name"],
+      ],
+      [
+        "taxable line missing its tax code",
+        {
+          lines: [{
+            description: "Consulting services",
+            quantity: "20",
+            unit_amount: "200.00",
+            source_tax_amount: "360.00",
+            coding_type: "ITEM",
+            coding_name: "Consulting",
+          }],
+        },
+        ["lines", "0", "tax_code_name"],
+      ],
+    ];
+
+    for (const [label, overrides, tail] of violations) {
+      const parsed = quickBooksAccountingCaseBusinessIntakeSchema.safeParse(intake(overrides));
+      expect(parsed.success, label).toBe(false);
+      const paths = parsed.error?.issues.map((issue) => issue.path.join(".")) ?? [];
+      expect(paths, label).toContain(["sources", "0", "units", "0", "facts", "0", ...tail].join("."));
+    }
+
+    expect(quickBooksAccountingCaseBusinessIntakeSchema.safeParse(intake({ due_date: "2026-08-01" })).success).toBe(true);
+  });
+
   it("rejects duplicate business source and unit keys", () => {
     const duplicateSource = {
       ...residualIntake,

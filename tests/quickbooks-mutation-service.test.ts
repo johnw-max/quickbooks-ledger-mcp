@@ -403,4 +403,43 @@ describe("QuickBooks generic mutation service", () => {
       }],
     });
   });
+
+  it("answers agentMayExecute for the route that is actually mounted", () => {
+    // Under the Case route these four are executed by the Agent. Reporting the
+    // legacy human-review answer alongside accountingCaseReleased: true told an
+    // Agent it had permission for the contact stage and not the document stage
+    // of the same mandated flow.
+    const released = ["CREATE:Customer", "CREATE:Vendor", "CREATE:Invoice", "CREATE:Bill"];
+    const { service } = fixture({ accountingCaseReleasedCapabilities: released });
+
+    for (const entity of ["Customer", "Vendor", "Invoice", "Bill"] as const) {
+      expect(service.capabilities({ entity, operation: "CREATE" }).capabilities[0], entity).toMatchObject({
+        accountingCaseReleased: true,
+        runtimeExecutionEnabled: true,
+        agentMayExecute: true,
+      });
+    }
+    // Unreleased capabilities stay refused, and the legacy answer survives.
+    expect(service.capabilities({ entity: "JournalEntry", operation: "CREATE" }).capabilities[0]).toMatchObject({
+      accountingCaseReleased: false,
+      runtimeExecutionEnabled: false,
+      agentMayExecute: false,
+      legacyObjectMutationAgentMayExecute: false,
+    });
+    expect(service.capabilities({ entity: "Invoice", operation: "CREATE" }).capabilities[0])
+      .toMatchObject({ legacyObjectMutationAgentMayExecute: false, executionMode: "HUMAN_REVIEW" });
+
+    // A closed write gate is still a refusal, on the Case route as well.
+    const gated = fixture({ accountingCaseReleasedCapabilities: released, writeEnabled: false });
+    expect(gated.service.capabilities({ entity: "Invoice", operation: "CREATE" }).capabilities[0])
+      .toMatchObject({ accountingCaseReleased: true, runtimeExecutionEnabled: false, agentMayExecute: false });
+
+    // With no Case release configured the legacy object-mutation route is the
+    // mounted one, so the static policy answer is the correct answer.
+    const legacy = fixture();
+    expect(legacy.service.capabilities({ entity: "Customer", operation: "CREATE" }).capabilities[0])
+      .toMatchObject({ agentMayExecute: true, legacyObjectMutationAgentMayExecute: true });
+    expect(legacy.service.capabilities({ entity: "Invoice", operation: "CREATE" }).capabilities[0])
+      .toMatchObject({ agentMayExecute: false, legacyObjectMutationAgentMayExecute: false });
+  });
 });
