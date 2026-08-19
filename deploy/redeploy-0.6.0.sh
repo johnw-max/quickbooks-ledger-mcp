@@ -85,6 +85,15 @@ step "Promoting"
 node deploy/promote-qbo-candidate.mjs "${CANDIDATE_NAME}"
 
 step "Confirming from outside"
+# nginx finishes reloading asynchronously, so the first request after promotion
+# can still be served by the old upstream. That is not a failed promotion and
+# must not send anyone to the rollback instructions; poll briefly instead.
+for attempt in $(seq 1 12); do
+  live_head="$(curl -s https://mcp.jiayuanwang.xyz/quickbooks/healthz \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['readiness']['migrations']['latestExpected'])" 2>/dev/null || true)"
+  [ "${live_head}" = "${REQUIRED_MIGRATION}" ] && break
+  sleep 5
+done
 curl -s https://mcp.jiayuanwang.xyz/quickbooks/healthz \
   | python3 -c "
 import json,sys
