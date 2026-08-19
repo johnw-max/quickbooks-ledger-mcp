@@ -16,6 +16,7 @@ function fixture(options: {
   bindingRevision?: string;
   allowedCapabilities?: string[];
   accountingCaseReleasedCapabilities?: string[];
+  executeScopeAuthorizer?: (actorId: string, requiredScope: string) => Promise<boolean>;
 } = {}) {
   const executeMutation = vi.fn(async (
     input: QuickBooksProviderMutationCommand,
@@ -61,8 +62,9 @@ function fixture(options: {
       provider,
     })),
   };
+  const repository = new InMemoryQuickBooksMutationRepository();
   const service = new QuickBooksMutationService(
-    new InMemoryQuickBooksMutationRepository(),
+    repository,
     resolver,
     {
       writeEnabled: options.writeEnabled ?? true,
@@ -73,9 +75,10 @@ function fixture(options: {
       ...(options.accountingCaseReleasedCapabilities
         ? { accountingCaseReleasedCapabilities: options.accountingCaseReleasedCapabilities }
         : {}),
+      ...(options.executeScopeAuthorizer ? { executeScopeAuthorizer: options.executeScopeAuthorizer } : {}),
     },
   );
-  return { service, resolver, executeMutation, recoverMutation, getMutationTarget };
+  return { service, repository, resolver, executeMutation, recoverMutation, getMutationTarget };
 }
 
 const customerInput = {
@@ -88,6 +91,49 @@ const customerInput = {
 };
 
 describe("QuickBooks generic mutation service", () => {
+  it("uses the generic mutation execute scope for Bill while legacy supplier Bill keeps its separate gate", async () => {
+    const observedScopes: string[] = [];
+    const { service, repository } = fixture({
+      allowedCapabilities: ["CREATE:Bill"],
+      executeScopeAuthorizer: async (_actorId, requiredScope) => {
+        observedScopes.push(requiredScope);
+        return requiredScope === "quickbooks.mutation.execute";
+      },
+    });
+    const prepared = await service.prepare("actor-a", {
+      target_session_ref: targetSessionRef,
+      request_id: "qbo.bill.scope-001",
+      entity: "Bill",
+      operation: "CREATE",
+      payload: {
+        VendorRef: { value: "60" },
+        Line: [{
+          Amount: 80,
+          DetailType: "AccountBasedExpenseLineDetail",
+          AccountBasedExpenseLineDetail: { AccountRef: { value: "15" } },
+        }],
+      },
+      business_reason: "Verify Accounting Case and generic Bill use the mutation transport scope.",
+    });
+
+    await repository.saveReviewCsrf({
+      csrfHash: "csrf-hash",
+      sessionHash: "session-hash",
+      actorId: "actor-a",
+      preparationId: prepared.preparation_id,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await service.executeAfterHumanReview({
+      actorId: "actor-a",
+      preparationId: prepared.preparation_id,
+      approvedBy: "reviewer-a",
+      sessionHash: "session-hash",
+      csrfHash: "csrf-hash",
+    });
+
+    expect(observedScopes).toEqual(["quickbooks.mutation.execute"]);
+  });
+
   it("prepares without provider mutation, then executes a low-risk create after exact confirmation", async () => {
     const { service, executeMutation } = fixture();
     const prepared = await service.prepare("actor-a", customerInput);

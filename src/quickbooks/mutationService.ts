@@ -1010,9 +1010,12 @@ export class QuickBooksMutationService {
       });
     }
     if (this.policy.executeScopeAuthorizer) {
-      const requiredScope = preparation.entity === "Bill" && preparation.operation === "CREATE"
-        ? "quickbooks.bill.execute"
-        : "quickbooks.mutation.execute";
+      // Generic mutations and Accounting Cases are exposed behind the single
+      // mutation.execute transport scope.  The legacy supplier-bill workflow
+      // has its own bill.execute gate in QuickBooksWorkflowService; applying
+      // that legacy scope again here makes Case Bills impossible even though
+      // the caller passed the Case tool's transport authorization.
+      const requiredScope = "quickbooks.mutation.execute";
       if (!await this.policy.executeScopeAuthorizer(preparation.actorId, requiredScope)) {
         throw new AppError("FORBIDDEN", `The connected MCP installation does not grant ${requiredScope}.`, {
           httpStatus: 403, details: { failureLayer: "MCP_SCOPE", denyReasons: ["TRANSPORT_SCOPE_MISSING"] },

@@ -60,4 +60,18 @@ describe("QuickBooks Accounting Case migration", () => {
     expect(sql).toContain("preparation.realm_id = NEW.realm_id");
     expect(sql).toContain("preparation.payload_hash = NEW.preparation_payload_hash");
   });
+
+  it("re-arms only an MCP scope rejection with durable proof that Provider dispatch never started", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/035_quickbooks_mcp_scope_predispatch_rearm.sql",
+      import.meta.url,
+    ), "utf8");
+    expect(sql).toContain("OLD.state='PROVIDER_REJECTED' AND NEW.state='PREPARED'");
+    expect(sql).toContain("OLD.error_receipt->>'code'='FORBIDDEN'");
+    expect(sql).toContain("OLD.error_receipt->'details'->>'failureLayer'='MCP_SCOPE'");
+    expect(sql).toContain("'TRANSPORT_SCOPE_MISSING'");
+    expect(sql).toContain("preparation.state='PREPARED'");
+    expect(sql).toContain("preparation.execution_attempt_id IS NULL");
+    expect(sql).toContain("preparation.dispatch_started_at IS NULL");
+  });
 });

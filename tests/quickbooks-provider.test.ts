@@ -456,6 +456,126 @@ describe("QuickBooks accounting provider", () => {
     })).rejects.toMatchObject({ code: "READBACK_MISMATCH" });
   });
 
+  it("accepts QBO CreditMemo presentation normalization while preserving economic readback checks", async () => {
+    const request = vi.fn(async (path: string, options: QuickBooksRequestOptions = {}) => {
+      if (path === "/creditmemo" && options.method === "POST") return { CreditMemo: { Id: "147" } };
+      if (path === "/creditmemo/147") return {
+        CreditMemo: {
+          Id: "147",
+          CustomerRef: { value: "59", name: "Lion City Digital" },
+          TxnDate: "2026-07-22",
+          DocNumber: "UAT-CM-260722-0815",
+          CurrencyRef: { value: "USD" },
+          TxnTaxDetail: { TotalTax: 0 },
+          TotalAmt: 400,
+          PrivateNote: "Controlled UAT",
+          Line: [
+            {
+              Id: "1", Amount: 400, Description: "Services", DetailType: "SalesItemLineDetail",
+              SalesItemLineDetail: {
+                ItemRef: { value: "1", name: "Services" }, UnitPrice: 200, Qty: 2,
+                TaxCodeRef: { value: "NON" }, ItemAccountRef: { value: "1", name: "Services" },
+              },
+            },
+            { Amount: 400, DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+          ],
+        },
+      };
+      throw new Error(`Unexpected request ${path}`);
+    });
+    const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
+    const provider = new QuickBooksAccountingProvider(client);
+    const command: QuickBooksProviderMutationCommand = {
+      entity: "CreditMemo",
+      operation: "CREATE",
+      payload: {
+        CustomerRef: { value: "59" },
+        TxnDate: "2026-07-22",
+        DueDate: "2026-08-01",
+        DocNumber: "UAT-CM-260722-0815",
+        CurrencyRef: { value: "USD" },
+        GlobalTaxCalculation: "NotApplicable",
+        PrivateNote: "Controlled UAT",
+        Line: [{
+          Amount: 400, Description: "Services", DetailType: "SalesItemLineDetail",
+          SalesItemLineDetail: { ItemRef: { value: "1" }, UnitPrice: 200, Qty: 2 },
+        }],
+      },
+      requestId: "zc.creditmemo.qbo-normalization.001",
+    };
+    await expect(executeProviderMutation(provider, command)).resolves.toMatchObject({
+      providerEntityId: "147",
+      readback: { Id: "147", TotalAmt: 400 },
+    });
+  });
+
+  it("accepts exact-Id recovery for the same QBO CreditMemo normalization without a second write", async () => {
+    const request = vi.fn(async (path: string, options?: QuickBooksRequestOptions) => {
+      expect(options?.method).not.toBe("POST");
+      if (path === "/creditmemo/147") return {
+        CreditMemo: {
+          Id: "147", CustomerRef: { value: "59" }, TxnDate: "2026-07-22",
+          DocNumber: "UAT-CM-260722-0815", CurrencyRef: { value: "USD" },
+          TxnTaxDetail: { TotalTax: 0 }, TotalAmt: 400, PrivateNote: "Controlled UAT",
+          Line: [
+            {
+              Amount: 400, Description: "Services", DetailType: "SalesItemLineDetail",
+              SalesItemLineDetail: {
+                ItemRef: { value: "1", name: "Services" }, UnitPrice: 200, Qty: 2,
+                TaxCodeRef: { value: "NON" },
+              },
+            },
+            { Amount: 400, DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+          ],
+        },
+      };
+      throw new Error(`Unexpected recovery request ${path}`);
+    });
+    const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
+    const provider = new QuickBooksAccountingProvider(client);
+    await expect(provider.recoverMutation({
+      entity: "CreditMemo", operation: "CREATE", requestId: "zc.creditmemo.qbo-normalization.001",
+      payload: {
+        CustomerRef: { value: "59" }, TxnDate: "2026-07-22", DueDate: "2026-08-01",
+        DocNumber: "UAT-CM-260722-0815", CurrencyRef: { value: "USD" },
+        GlobalTaxCalculation: "NotApplicable", PrivateNote: "Controlled UAT",
+        Line: [{
+          Amount: 400, Description: "Services", DetailType: "SalesItemLineDetail",
+          SalesItemLineDetail: { ItemRef: { value: "1" }, UnitPrice: 200, Qty: 2 },
+        }],
+      },
+    }, "147")).resolves.toMatchObject({
+      providerEntityId: "147", receipt: { verification: "RECOVERY_EXACT_ID_READBACK", recoveryOnly: true },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("still rejects an extra economic CreditMemo line after removing QBO's derived subtotal", async () => {
+    const request = vi.fn(async (path: string, options: QuickBooksRequestOptions = {}) => {
+      if (path === "/creditmemo" && options.method === "POST") return { CreditMemo: { Id: "148" } };
+      if (path === "/creditmemo/148") return {
+        CreditMemo: {
+          Id: "148", CustomerRef: { value: "59" }, TotalAmt: 450, TxnTaxDetail: { TotalTax: 0 },
+          Line: [
+            { Amount: 400, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "1" } } },
+            { Amount: 50, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "2" } } },
+            { Amount: 450, DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+          ],
+        },
+      };
+      throw new Error(`Unexpected request ${path}`);
+    });
+    const client = { realmId: "934145", request, query: vi.fn() } as unknown as QuickBooksApiClient;
+    const provider = new QuickBooksAccountingProvider(client);
+    await expect(executeProviderMutation(provider, {
+      entity: "CreditMemo", operation: "CREATE", requestId: "zc.creditmemo.extra-economic-line.001",
+      payload: {
+        CustomerRef: { value: "59" }, GlobalTaxCalculation: "NotApplicable",
+        Line: [{ Amount: 400, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "1" } } }],
+      },
+    })).rejects.toMatchObject({ code: "READBACK_MISMATCH" });
+  });
+
   it("rejects a tax-excluded readback whose total omits the approved tax", async () => {
     const request = vi.fn(async (path: string, options: QuickBooksRequestOptions = {}) => {
       if (path === "/invoice" && options.method === "POST") return { Invoice: { Id: "903" } };

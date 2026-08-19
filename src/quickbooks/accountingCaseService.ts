@@ -101,6 +101,16 @@ function planHash(caseBinding: QuickBooksCaseBinding, compiled: CompiledQuickBoo
   return hashObject({ schemaVersion: "quickbooks-accounting-case-plan:v1", binding: durableBinding, compiled });
 }
 
+function isResumableMcpScopePreDispatchRejection(record: QuickBooksCaseOperationRecord): boolean {
+  const details = record.errorReceipt?.details && typeof record.errorReceipt.details === "object"
+    ? record.errorReceipt.details as Record<string, unknown>
+    : undefined;
+  return record.state === "PROVIDER_REJECTED" && record.errorReceipt?.code === "FORBIDDEN" &&
+    details?.failureLayer === "MCP_SCOPE" && Array.isArray(details.denyReasons) &&
+    details.denyReasons.includes("TRANSPORT_SCOPE_MISSING") && Boolean(record.preparationId) &&
+    !record.providerEntityId && !record.authorizationReceipt && !record.writeReceipt && !record.readback;
+}
+
 function operationStatus(
   record: QuickBooksCaseOperationRecord,
   caseRecord: Pick<QuickBooksAccountingCaseRecord, "binding" | "compiled">,
@@ -147,6 +157,8 @@ function operationStatus(
   const nextAction = record.state === "PENDING" ? "EXECUTE_ACCOUNTING_CASE" :
     record.state === "PREPARED" ? "RESUME_IDEMPOTENT_EXECUTION" :
       record.state === "READBACK_VERIFIED" ? "NONE" :
+        isResumableMcpScopePreDispatchRejection(record)
+          ? "RESUME_AFTER_MCP_EXECUTE_SCOPE_RESTORED" :
         record.state === "WRITE_UNCERTAIN" || record.state === "READBACK_MISMATCH"
           ? record.providerEntityId
             ? "RECOVER_BY_EXACT_PROVIDER_ID_NO_SECOND_WRITE"
@@ -596,6 +608,27 @@ export class QuickBooksAccountingCaseService {
       const operationRequestId = `qbocase.${operation.stableOperationKey.slice(0, 40)}`;
       let preparationId = current.preparationId;
       try {
+        if (current.state === "PROVIDER_REJECTED") {
+          if (!isResumableMcpScopePreDispatchRejection(current) || !preparationId) {
+            throw new AppError("CONFLICT", "A definitive QuickBooks operation rejection cannot be retried in place.", {
+              httpStatus: 409,
+              details: { failureLayer: "PROVIDER_OUTCOME", reasonCodes: ["TERMINAL_REJECTION_NOT_RETRYABLE"] },
+            });
+          }
+          const preDispatchPreparation = await this.mutations.getPreparation(context.actorId, preparationId);
+          if (preDispatchPreparation.state !== "PREPARED" || preDispatchPreparation.providerEntityId ||
+            preDispatchPreparation.providerOutcomeReceipt || preDispatchPreparation.executionAttempt) {
+            throw new AppError("CONFIGURATION_ERROR", "MCP scope rejection cannot be re-armed because durable no-dispatch evidence is incomplete.", {
+              httpStatus: 503,
+              details: { failureLayer: "PROVIDER_OUTCOME", reasonCodes: ["NO_DISPATCH_EVIDENCE_INVALID"] },
+            });
+          }
+          record = await this.repository.updateOperation({
+            binding: caseBinding, caseId: input.case_id, version: input.case_version,
+            operationId: operation.operationId, requestId: input.request_id,
+            expectedStates: ["PROVIDER_REJECTED"], state: "PREPARED", now: this.#clock(),
+          });
+        }
         if ((current.state === "WRITE_UNCERTAIN" || current.state === "READBACK_MISMATCH") && !preparationId) {
           throw new AppError("CONFIGURATION_ERROR", "Accounting Case recovery has no linked durable mutation preparation.", {
             httpStatus: 503, details: { failureLayer: "PERSISTENCE", reasonCodes: ["RECOVERY_PREPARATION_MISSING"] },
@@ -669,6 +702,9 @@ export class QuickBooksAccountingCaseService {
         }
         const currentPreDispatchTransient = safe.details?.failureLayer === "PRE_DISPATCH_TRANSIENT" &&
           safe.details.providerMutationPossible === false;
+        const currentMcpScopePreDispatchFailure = safe.details?.failureLayer === "MCP_SCOPE" &&
+          durablePreparation?.state === "PREPARED" && !durablePreparation.providerEntityId &&
+          !durablePreparation.providerOutcomeReceipt && !durablePreparation.executionAttempt;
         if (!currentPreDispatchTransient && durablePreparation?.state === "EXECUTING" &&
           durablePreparation.executionAttempt && !durablePreparation.executionAttempt.dispatchStartedAt) {
           throw new AppError(
@@ -760,7 +796,7 @@ export class QuickBooksAccountingCaseService {
           )
         );
         const preDispatchTransient = currentPreDispatchTransient;
-        if (executionFenced || preDispatchTransient) {
+        if (executionFenced || preDispatchTransient || currentMcpScopePreDispatchFailure) {
           // Another Case owns the same stable durable mutation right now. Keep
           // this Case resumable under its existing execution request. A
           // transient pre-dispatch failure is equally safe to retry because
@@ -1049,7 +1085,9 @@ export class QuickBooksAccountingCaseService {
       [salesSide ? "CustomerRef" : "VendorRef"]: { value: counterpartyId },
       Line: lines,
       TxnDate: fact.documentDate,
-      ...(fact.dueDate ? { DueDate: fact.dueDate } : {}),
+      ...((fact.documentType === "INVOICE" || fact.documentType === "BILL") && fact.dueDate
+        ? { DueDate: fact.dueDate }
+        : {}),
       ...(fact.documentNumber ? { DocNumber: fact.documentNumber } : {}),
       CurrencyRef: { value: fact.currency },
       GlobalTaxCalculation: fact.taxMode === "NO_TAX" ? "NotApplicable" :

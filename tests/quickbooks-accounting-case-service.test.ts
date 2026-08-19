@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AppError } from "../src/errors.js";
+import { sha256 } from "../src/security/hash.js";
 import type { RequestContext } from "../src/security/requestContext.js";
 import { QuickBooksAccountingCaseService } from "../src/quickbooks/accountingCaseService.js";
 import { quickBooksPrepareAccountingCaseSchema } from "../src/quickbooks/accountingCaseSchemas.js";
@@ -55,13 +56,15 @@ function fixture(options: {
   providerDelayMs?: number;
   beforeProviderDispatch?: () => Promise<void>;
   afterProviderDispatch?: () => Promise<void>;
+  executeScopeAllowed?: boolean;
 } = {}) {
   let customerExists = !options.customerInitiallyMissing;
   let delegationActions = options.delegationActions ?? ["invoice.create"];
   const documents = new Map<string, { entity: string; counterpartyId: string; docNumber: string; providerEntityId: string }>();
   let crashAfterProviderOutcome = options.crashAfterProviderOutcome ?? false;
+  let executeScopeAllowed = options.executeScopeAllowed ?? true;
   const executeMutation = vi.fn(async (
-    mutation: { entity: string; requestId: string },
+    mutation: { entity: string; requestId: string; payload?: Record<string, unknown> },
     _permit: unknown,
     recordProviderOutcome: (outcome: { providerEntityId: string; receipt: Record<string, unknown> }) => Promise<void>,
     markProviderDispatch: () => Promise<void>,
@@ -126,6 +129,8 @@ function fixture(options: {
       allowedRealmId: "9341457701636490",
       publicBaseUrl: "https://mcp.test",
       accountingCaseReleasedCapabilities: QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES,
+      executeScopeAuthorizer: async (_actorId, requiredScope) =>
+        executeScopeAllowed && requiredScope === "quickbooks.mutation.execute",
       standingDelegationProvider: async () => [{
         delegationId: "delegation-1", revision: 1, status: "ACTIVE", providerId: "quickbooks",
         workspaceId: "ws-1", agentId: "agent-1", installationId: "inst-1",
@@ -141,6 +146,7 @@ function fixture(options: {
   return {
     service, repository, executeMutation, recoverMutation, provider, documents,
     setDelegationActions: (actions: string[]) => { delegationActions = [...actions]; },
+    setExecuteScopeAllowed: (allowed: boolean) => { executeScopeAllowed = allowed; },
   };
 }
 
@@ -233,6 +239,81 @@ describe("QuickBooks Accounting Case service", () => {
     });
     expect(executeMutation).toHaveBeenCalledTimes(1);
     expect(recoverMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-arms an historical MCP-scope rejection only while the durable mutation still proves no dispatch", async () => {
+    const { service, repository, executeMutation, setExecuteScopeAllowed } = fixture({ executeScopeAllowed: false });
+    await service.prepare(context, input);
+    const execution = {
+      target_session_ref: targetSessionRef,
+      case_id: input.case_id,
+      case_version: 1,
+      request_id: "execute-scope-rearm",
+    };
+    await expect(service.execute(context, execution)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      details: { failureLayer: "MCP_SCOPE" },
+    });
+    const status = await service.status(context, {
+      target_session_ref: targetSessionRef,
+      case_id: input.case_id,
+      case_version: 1,
+    });
+    const operationId = status.operations[0]?.operation_id as string;
+    const preparationId = (await repository.getBound({
+      binding: {
+        actorId: context.actorId,
+        workspaceId: context.workspaceId as string,
+        subjectType: context.subjectType as "USER",
+        subjectId: context.subjectId as string,
+        agentId: context.agentId as string,
+        installationId: context.oauthInstallationId as string,
+        bindingId: context.bindingId as string,
+        bindingRevision: context.bindingRevision as number,
+        connectionId: context.connectionId as string,
+        realmId: "9341457701636490",
+        targetSessionHash: sha256(targetSessionRef),
+      },
+      caseId: input.case_id,
+      version: 1,
+    }))?.operations[0]?.preparationId as string;
+    await repository.updateOperation({
+      binding: {
+        actorId: context.actorId,
+        workspaceId: context.workspaceId as string,
+        subjectType: context.subjectType as "USER",
+        subjectId: context.subjectId as string,
+        agentId: context.agentId as string,
+        installationId: context.oauthInstallationId as string,
+        bindingId: context.bindingId as string,
+        bindingRevision: context.bindingRevision as number,
+        connectionId: context.connectionId as string,
+        realmId: "9341457701636490",
+        targetSessionHash: sha256(targetSessionRef),
+      },
+      caseId: input.case_id,
+      version: 1,
+      operationId,
+      requestId: execution.request_id,
+      expectedStates: ["PREPARED"],
+      state: "PROVIDER_REJECTED",
+      preparationId,
+      errorReceipt: {
+        code: "FORBIDDEN",
+        message: "The connected MCP installation does not grant mutation execution.",
+        retryable: false,
+        details: { failureLayer: "MCP_SCOPE", denyReasons: ["TRANSPORT_SCOPE_MISSING"] },
+      },
+      now,
+    });
+
+    setExecuteScopeAllowed(true);
+    const recovered = await service.execute(context, execution);
+    expect(recovered).toMatchObject({
+      state: "TERMINAL",
+      operations: [{ state: "READBACK_VERIFIED", provider_entity_id: "9001" }],
+    });
+    expect(executeMutation).toHaveBeenCalledTimes(1);
   });
 
   it("classifies post-dispatch no-Id as operator recovery and never terminalizes it as Provider rejection", async () => {
@@ -544,7 +625,7 @@ describe("QuickBooks Accounting Case service", () => {
   });
 
   it("recomputes OfficeHub 9% GST and blocks 7.21 while accepting 7.20", async () => {
-    const { service, provider } = fixture();
+    const { service, provider, executeMutation, setDelegationActions } = fixture();
     vi.mocked(provider.searchVendors).mockResolvedValue({
       records: [{ Id: "56", DisplayName: "OfficeHub", Active: true }], searchWindow: {} as never,
     });
@@ -581,6 +662,12 @@ describe("QuickBooks Accounting Case service", () => {
     line.sourceTax = "7.20";
     const valid = await service.prepare(context, vendorCredit);
     expect(valid).toMatchObject({ state: "PLANNED_NEEDS_PREFLIGHT", operations: [{ entity: "VendorCredit" }] });
+    setDelegationActions(["vendor_credit.create"]);
+    await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: vendorCredit.case_id, case_version: 1,
+      request_id: "execute-officehub-720",
+    });
+    expect(executeMutation.mock.calls.at(-1)?.[0].payload).not.toHaveProperty("DueDate");
   });
 
   it("fails closed for unresolved and compound QuickBooks tax definitions", async () => {

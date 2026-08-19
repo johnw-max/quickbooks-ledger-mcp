@@ -98,6 +98,77 @@ function expectedSubset(actual: unknown, expected: unknown): boolean {
     .every(([key, value]) => expectedSubset((actual as Record<string, unknown>)[key], value));
 }
 
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function roundedAmount(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Compare the immutable approved accounting meaning, not QBO's presentation
+ * serialization. QBO may add a derived SubTotalLineDetail and may omit fields
+ * that are not represented by CreditMemo/VendorCredit. All economic lines,
+ * references, amounts, tax and the provider-computed TotalAmt remain strict.
+ */
+function mutationReadbackMatches(
+  entity: QuickBooksWritableEntity,
+  actualValue: Record<string, unknown>,
+  expectedValue: Record<string, unknown>,
+): boolean {
+  const normalizedActual = objectRecord(normalizeForMutationReadback(actualValue));
+  const normalizedExpected = objectRecord(normalizeForMutationReadback(expectedValue));
+  if (!normalizedActual || !normalizedExpected) return false;
+
+  if (TOTAL_BEARING_TRANSACTION_ENTITIES.has(entity)) {
+    const expectedLines = Array.isArray(normalizedExpected.Line) ? normalizedExpected.Line : undefined;
+    const actualLines = Array.isArray(normalizedActual.Line) ? normalizedActual.Line : undefined;
+    if (expectedLines && actualLines) {
+      const expectedHasSubtotal = expectedLines.some((line) => objectRecord(line)?.DetailType === "SubTotalLineDetail");
+      if (!expectedHasSubtotal) {
+        const expectedLineTotal = roundedAmount(expectedLines.reduce((sum, line) => {
+          const amount = finiteNumber(objectRecord(line)?.Amount);
+          return amount === undefined ? sum : sum + amount;
+        }, 0));
+        let derivedSubtotalCount = 0;
+        const economicLines: unknown[] = [];
+        for (const line of actualLines) {
+          const record = objectRecord(line);
+          if (record?.DetailType === "SubTotalLineDetail") {
+            derivedSubtotalCount += 1;
+            if (derivedSubtotalCount > 1 || finiteNumber(record.Amount) !== expectedLineTotal ||
+                !objectRecord(record.SubTotalLineDetail)) return false;
+            continue;
+          }
+          economicLines.push(line);
+        }
+        normalizedActual.Line = economicLines;
+      }
+    }
+
+    if (normalizedExpected.GlobalTaxCalculation === "NotApplicable") {
+      const actualTax = objectRecord(normalizedActual.TxnTaxDetail)?.TotalTax;
+      if (actualTax !== undefined && finiteNumber(actualTax) !== 0) return false;
+      delete normalizedActual.GlobalTaxCalculation;
+      delete normalizedExpected.GlobalTaxCalculation;
+    }
+  }
+
+  if (entity === "CreditMemo" || entity === "VendorCredit") {
+    delete normalizedActual.DueDate;
+    delete normalizedExpected.DueDate;
+  }
+
+  return expectedSubset(normalizedActual, normalizedExpected);
+}
+
 const TOTAL_BEARING_TRANSACTION_ENTITIES = new Set<QuickBooksWritableEntity>([
   "Invoice", "Bill", "CreditMemo", "VendorCredit",
 ]);
@@ -1334,7 +1405,7 @@ export class QuickBooksAccountingProvider {
       : softDeactivation
         ? { Id: providerEntityId, Active: false }
         : { ...providerPayload, Id: providerEntityId };
-    if (!invoiceVoidFallback && !expectedSubset(normalizeForMutationReadback(readback), normalizeForMutationReadback(expected))) {
+    if (!invoiceVoidFallback && !mutationReadbackMatches(input.entity, readback, expected)) {
       throw new AppError("READBACK_MISMATCH", `QuickBooks ${input.entity} readback did not contain the approved fields.`, {
         httpStatus: 502,
       });
@@ -1419,7 +1490,7 @@ export class QuickBooksAccountingProvider {
           : input.entity === "Invoice"
             ? { Id: providerEntityId, TotalAmt: 0, Balance: 0 }
             : undefined;
-    if (!expected || !expectedSubset(normalizeForMutationReadback(readback), normalizeForMutationReadback(expected))) {
+    if (!expected || !mutationReadbackMatches(input.entity, readback, expected)) {
       throw new AppError("READBACK_MISMATCH", "QuickBooks exact-Id recovery did not match the immutable approved mutation.", {
         httpStatus: 502, details: { providerEntityId, recoveryOnly: true },
       });
