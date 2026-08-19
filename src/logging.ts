@@ -20,6 +20,12 @@ const safeContextKeys = new Set([
   "durationMs",
   "errorClass",
   "errorCode",
+  // Why a token rejection was refused, and a purpose-salted digest of which
+  // token. Neither is the value or the repository lookup hash. Without these on
+  // the allowlist an operator sees "[REDACTED]" for both — and no test catches
+  // it, because tests inject a mock logger that never redacts.
+  "rejectionReason",
+  "tokenIdHash",
   "host",
   "method",
   "originalErrorCode",

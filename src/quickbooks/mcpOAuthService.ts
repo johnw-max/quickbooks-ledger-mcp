@@ -24,6 +24,63 @@ export const QUICKBOOKS_MCP_OAUTH_SCOPES = [
 ] as const;
 export const QUICKBOOKS_MCP_REFRESH_RETRY_GRACE_MS = 10_000;
 
+/**
+ * Internal, server-side-only diagnosis of an access-token verification.
+ * `NO_CONNECTION` is deliberately NOT a rejection: the token is valid and the
+ * grant is live, only the QuickBooks company is missing. It is reported on the
+ * verified branch so the tool layer can answer with a typed NOT_CONNECTED and a
+ * recovery action instead of a 401 the Host would answer with a refresh loop.
+ */
+export type QuickBooksMcpAccessTokenReason =
+  | "TOKEN_MALFORMED"
+  | "TOKEN_NOT_FOUND"
+  | "ACTOR_MALFORMED"
+  | "CLIENT_UNKNOWN"
+  | "NO_CONNECTION";
+
+export type QuickBooksMcpAccessTokenRejectionReason = Exclude<QuickBooksMcpAccessTokenReason, "NO_CONNECTION">;
+
+export interface QuickBooksMcpAccessTokenRejection {
+  reason: QuickBooksMcpAccessTokenRejectionReason;
+  /**
+   * Log-only correlation digest. Derived from the stored token id once the
+   * bearer resolves to a row, otherwise from the presented bearer. Salted with
+   * a log-specific purpose and truncated, so it never equals the lookup hash.
+   */
+  tokenIdHash: string;
+}
+
+/** Claims that come from the access-token record and the Host client registry alone. */
+type QuickBooksMcpTokenClaims = Omit<
+  ResolvedMcpAccessToken,
+  "bindingId" | "bindingRevision" | "connectionId" | "tenantId"
+> & {
+  actorId: string;
+  allowedOrigins: string[];
+};
+
+/** A verified token whose actor also has exactly one active QuickBooks company. */
+export interface QuickBooksMcpBoundPrincipal extends QuickBooksMcpTokenClaims {
+  bindingId: string;
+  bindingRevision: number;
+  connectionId: string;
+  tenantId: string;
+}
+
+/**
+ * A verified token with no attached QuickBooks company. The absence is explicit
+ * so no caller can mistake a missing binding for a present one; every binding
+ * gate downstream still fails closed on the missing fields.
+ */
+export interface QuickBooksMcpUnboundPrincipal extends QuickBooksMcpTokenClaims {
+  bindingId?: undefined;
+  bindingRevision?: undefined;
+  connectionId?: undefined;
+  tenantId?: undefined;
+}
+
+export type QuickBooksMcpVerifiedPrincipal = QuickBooksMcpBoundPrincipal | QuickBooksMcpUnboundPrincipal;
+
 export interface QuickBooksMcpOAuthConfig {
   resourceUri: string;
   hostClients: readonly QuickBooksMcpOAuthHostClientConfig[];
@@ -45,6 +102,14 @@ function secret(prefix: string): string {
 
 function hashSecret(purpose: string, value: string): string {
   return sha256(`quickbooks-mcp-oauth:${purpose}:${value}`);
+}
+
+/**
+ * Correlates 401 log lines without emitting anything usable as a credential or
+ * as the repository lookup hash: a distinct purpose salt plus truncation.
+ */
+function logCorrelationHash(value: string): string {
+  return hashSecret("log-correlation", value).slice(0, 16);
 }
 
 function exactString(value: string | undefined, maxLength = 2_048): value is string {
@@ -347,26 +412,34 @@ export class QuickBooksMcpOAuthService {
     return this.#tokenResponse(accessToken, nextRefreshToken, result.token.grantedScopes);
   }
 
-  async verifyAccessToken(accessToken: string): Promise<(
-    ResolvedMcpAccessToken & { actorId: string; allowedOrigins: string[] }
-  ) | undefined> {
-    if (!exactString(accessToken, 256)) return undefined;
+  /**
+   * Verifies the bearer and returns the principal it proves. Only genuine token
+   * failures return `undefined`; a valid token whose actor has no attached
+   * QuickBooks company returns an unbound principal, because that is a provider
+   * connection state and not an authorization failure. `onRejected` reports the
+   * internal reason for the caller's server-side 401 log; the caller must keep
+   * the wire response opaque.
+   */
+  async verifyAccessToken(
+    accessToken: string,
+    onRejected?: (rejection: QuickBooksMcpAccessTokenRejection) => void,
+  ): Promise<QuickBooksMcpVerifiedPrincipal | undefined> {
+    const reject = (reason: QuickBooksMcpAccessTokenRejectionReason, tokenIdHash: string): undefined => {
+      onRejected?.({ reason, tokenIdHash });
+      return undefined;
+    };
+    const presentedHash = logCorrelationHash(accessToken);
+    if (!exactString(accessToken, 256)) return reject("TOKEN_MALFORMED", presentedHash);
     const token = await this.#repository.getAccessToken(hashSecret("access", accessToken), this.#clock());
-    if (!token) return undefined;
+    if (!token) return reject("TOKEN_NOT_FOUND", presentedHash);
+    const tokenIdHash = logCorrelationHash(token.tokenId);
     const separator = token.actorId.indexOf(":user:");
-    if (separator < 1) return undefined;
+    if (separator < 1) return reject("ACTOR_MALFORMED", tokenIdHash);
     const workspaceId = token.actorId.slice(0, separator);
     const subjectId = token.actorId.slice(separator + ":user:".length);
-    if (!workspaceId || !subjectId) return undefined;
-    if (!this.#hostClients.hasClient(token.clientId)) return undefined;
-    let connection: Awaited<ReturnType<QuickBooksClientManager["resolveSingleConnection"]>>;
-    try {
-      connection = await this.#manager.resolveSingleConnection(token.actorId);
-    } catch (error) {
-      if (error instanceof AppError && error.code === "NOT_CONNECTED") return undefined;
-      throw error;
-    }
-    return {
+    if (!workspaceId || !subjectId) return reject("ACTOR_MALFORMED", tokenIdHash);
+    if (!this.#hostClients.hasClient(token.clientId)) return reject("CLIENT_UNKNOWN", tokenIdHash);
+    const claims: QuickBooksMcpTokenClaims = {
       tokenId: token.tokenId,
       clientId: token.clientId,
       actorId: token.actorId,
@@ -380,14 +453,27 @@ export class QuickBooksMcpOAuthService {
       subjectId,
       agentId: token.clientId,
       installationId: token.tokenId,
+      authorizationId: `qboa_${sha256(token.tokenId).slice(0, 32)}`,
+      policyId: `qbop_${sha256(token.clientId).slice(0, 32)}`,
+      allowedOrigins: this.#hostClients.allowedOrigins(token.clientId),
+      identityAssurance: "INSTALLATION_ONLY",
+    };
+    let connection: Awaited<ReturnType<QuickBooksClientManager["resolveSingleConnection"]>>;
+    try {
+      connection = await this.#manager.resolveSingleConnection(token.actorId);
+    } catch (error) {
+      // The token is valid and the grant is live; only the company is missing.
+      // Returning the unbound principal keeps read-only diagnostics reachable so
+      // the Agent can be handed a connect URL instead of retrying its refresh.
+      if (error instanceof AppError && error.code === "NOT_CONNECTED") return claims;
+      throw error;
+    }
+    return {
+      ...claims,
       bindingId: `qbob_${sha256(connection.connectionId).slice(0, 32)}`,
       bindingRevision: 1,
       connectionId: connection.connectionId,
-      authorizationId: `qboa_${sha256(token.tokenId).slice(0, 32)}`,
-      policyId: `qbop_${sha256(token.clientId).slice(0, 32)}`,
       tenantId: connection.realmId,
-      allowedOrigins: this.#hostClients.allowedOrigins(token.clientId),
-      identityAssurance: "INSTALLATION_ONLY",
     };
   }
 

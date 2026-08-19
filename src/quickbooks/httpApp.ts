@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -7,6 +7,7 @@ import { AppError, toSafeError } from "../errors.js";
 import type { Logger } from "../logging.js";
 import { hashObject, safeEqual } from "../security/hash.js";
 import {
+  actorIdForResolvedBinding,
   createLegacySharedBearerRequestContext,
   createOAuthRequestContext,
   type RequestContext,
@@ -21,7 +22,11 @@ import {
   QUICKBOOKS_MUTATION_TOOL_ALLOWLIST,
 } from "./mcp.js";
 import type { QuickBooksOAuthService } from "./oauthService.js";
-import { QUICKBOOKS_MCP_OAUTH_SCOPES, type QuickBooksMcpOAuthService } from "./mcpOAuthService.js";
+import {
+  QUICKBOOKS_MCP_OAUTH_SCOPES,
+  type QuickBooksMcpOAuthService,
+  type QuickBooksMcpUnboundPrincipal,
+} from "./mcpOAuthService.js";
 import type { QuickBooksReviewService } from "./reviewService.js";
 import type { QuickBooksWorkflowService } from "./service.js";
 import type { QuickBooksMutationService } from "./mutationService.js";
@@ -68,6 +73,40 @@ function escapeHtml(value: string): string {
 function bearerFrom(request: Request): string | undefined {
   const value = request.headers.authorization;
   return value?.startsWith("Bearer ") ? value.slice("Bearer ".length) : undefined;
+}
+
+/**
+ * Builds the request principal for a verified token whose actor has no attached
+ * QuickBooks company. It mirrors createOAuthRequestContext's identity claims but
+ * deliberately omits bindingId/connectionId/bindingRevision, so every binding
+ * gate (requireOAuthBoundRequestContext, assertInternalQuickBooksCaller) still
+ * fails closed while read-only diagnostics stay dispatchable.
+ */
+function createUnboundOAuthRequestContext(options: {
+  issuer: string;
+  principal: QuickBooksMcpUnboundPrincipal;
+}): RequestContext {
+  const principal = options.principal;
+  return Object.freeze({
+    requestId: randomUUID(),
+    actorId: actorIdForResolvedBinding(principal),
+    workspaceId: principal.workspaceId,
+    subjectType: principal.subjectType,
+    subjectId: principal.subjectId,
+    ...(principal.subjectType === "USER" ? { userId: principal.subjectId } : {}),
+    agentId: principal.agentId,
+    oauthInstallationId: principal.installationId,
+    scopes: Object.freeze([...principal.grantedScopes]),
+    roles: Object.freeze([] as string[]),
+    identityAssurance: principal.identityAssurance,
+    authn: Object.freeze({
+      issuer: options.issuer,
+      subject: `${principal.subjectType.toLowerCase()}:${principal.subjectId}`,
+      audience: principal.audience,
+      tokenId: principal.tokenId,
+    }),
+    legacyDemo: false,
+  });
 }
 
 function jsonRpcError(response: Response, status: number, message: string): void {
@@ -293,15 +332,27 @@ export function createQuickBooksHttpApp(options: {
     });
   });
 
+  const resourceMetadataUrl = `${config.publicBaseUrl}/.well-known/oauth-protected-resource/quickbooks/mcp`;
+  /**
+   * RFC 9728 / MCP authorization: without this challenge a Host reads a bare 401
+   * as "refresh and retry", and a still-valid refresh token turns that into an
+   * unbounded token -> 401 -> refresh loop. Both the missing-bearer and the
+   * invalid-token branch must advertise it. It discloses nothing an
+   * unauthenticated caller cannot already read from the metadata document.
+   */
+  const setBearerChallenge = (response: Response, invalidToken: boolean): void => {
+    response.setHeader(
+      "WWW-Authenticate",
+      invalidToken
+        ? `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`
+        : `Bearer resource_metadata="${resourceMetadataUrl}"`,
+    );
+  };
+
   app.all("/quickbooks/mcp", async (request, response, next) => {
     const supplied = bearerFrom(request);
     if (!supplied) {
-      if (mcpOAuth) {
-        response.setHeader(
-          "WWW-Authenticate",
-          `Bearer resource_metadata="${config.publicBaseUrl}/.well-known/oauth-protected-resource/quickbooks/mcp"`,
-        );
-      }
+      if (mcpOAuth) setBearerChallenge(response, false);
       jsonRpcError(response, 401, "Unauthorized");
       return;
     }
@@ -320,8 +371,23 @@ export function createQuickBooksHttpApp(options: {
         tokenId: "quickbooks-test-shared-bearer",
       });
     } else {
-      const verified = mcpOAuth ? await mcpOAuth.verifyAccessToken(supplied) : undefined;
+      // The internal reason is logged server-side only; the wire response stays
+      // opaque so an unauthenticated caller gets no token-validity oracle.
+      // Both keys are on logging.ts's allowlist, so they survive redaction —
+      // borrowing an unrelated safe key would read as the wrong thing in a log.
+      const verified = mcpOAuth
+        ? await mcpOAuth.verifyAccessToken(supplied, (rejection) => {
+          logger.warn("QuickBooks MCP access token rejected.", {
+            method: request.method,
+            path: "/quickbooks/mcp",
+            errorCode: "AUTH_REQUIRED",
+            rejectionReason: rejection.reason,
+            tokenIdHash: rejection.tokenIdHash,
+          });
+        })
+        : undefined;
       if (!verified) {
+        if (mcpOAuth) setBearerChallenge(response, true);
         jsonRpcError(response, 401, "Unauthorized");
         return;
       }
@@ -329,10 +395,18 @@ export function createQuickBooksHttpApp(options: {
         jsonRpcError(response, 403, "Forbidden Origin");
         return;
       }
-      response.locals.requestContext = createOAuthRequestContext({
-        issuer: `${config.publicBaseUrl}/quickbooks/oauth`,
-        resolvedToken: verified,
-      });
+      const issuer = `${config.publicBaseUrl}/quickbooks/oauth`;
+      if (verified.connectionId === undefined) {
+        logger.debug("QuickBooks MCP request has no connected company.", {
+          method: request.method,
+          path: "/quickbooks/mcp",
+          rejectionReason: "NO_CONNECTION",
+          actorId: verified.actorId,
+        });
+        response.locals.requestContext = createUnboundOAuthRequestContext({ issuer, principal: verified });
+      } else {
+        response.locals.requestContext = createOAuthRequestContext({ issuer, resolvedToken: verified });
+      }
     }
     next();
   });
