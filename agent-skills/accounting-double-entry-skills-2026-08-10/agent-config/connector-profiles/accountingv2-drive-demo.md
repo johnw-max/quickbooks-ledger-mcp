@@ -16,7 +16,16 @@ Apply each mapping only when that exact tool is mounted and authorized:
 | Tool | Capability ID | Supported object types | Control requirement |
 |---|---|---|---|
 | `list_google_drive_files` | `source.metadata.read` | Drive file/folder metadata | Bounded authorized query; no body-read claim |
-| `read_google_drive_file` | `source.content.read` | Google Docs and supported text-like files | Exact file reference; PDF body extraction is unsupported |
+| `read_google_drive_file` | `source.content.read` | Google Docs and supported text-like files | Exact file reference; a PDF or a Google Sheet returns `unsupported mime type` — verified live 2026-08-19 |
+
+A PDF is not unreadable, it is unreadable *through this connector*. The platform
+extracts the text of a file attached to the conversation, so a PDF the accountant
+attaches in chat can be read and booked normally — a supplier invoice attached
+that way was posted end to end on 2026-08-19. `ingest_source_material` stores a
+Drive reference for a PDF but leaves `rawText` null, so it records provenance
+rather than content. When a client's document lives in Drive as a PDF and its
+figures are needed, ask for it as an attachment instead of reporting that it
+cannot be read.
 | `read_google_drive_file` | `work.proposal.readback` | Text-like proposal artifact | Exact returned file ID and supported MIME only |
 | `upload_google_drive_file_auto` | `source.original.preserve` | Original binary only when the channel exposes complete bytes | Preserve upload receipt separately; this is not material registration or original-byte read-back |
 | `create_google_drive_text_file` | `work.proposal.persist` | Explicitly requested text proposal/handoff artifact | Never treat as source-original preservation or ledger write |

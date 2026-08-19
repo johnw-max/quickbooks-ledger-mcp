@@ -370,3 +370,49 @@ provider 写入计数从 5 增至 7 —— 只多了这两笔，没有重复写�
 - 错误信封原先丢弃 `details.recoveryAction`，且 16 个码里 14 个共用同一条通用恢复
   串。现为按码穷尽的映射，词表是封闭联合类型 —— 未登记的值编译期失败，而不是像
   兄弟连接器那样被静默替换成通用建议。
+
+## 集成验收完成（2026-08-19 深夜）
+
+Drive、会计 skills 与本 MCP 第一次串通并跑到底。三轮，全部由线上产品 agent
+（Work / DeepSeek-V4）按真实会计交办的口吻驱动，判定取服务端审计而非 agent 自述。
+
+| 轮次 | 材料来源 | 结果 |
+|---|---|---|
+| 一 | Drive 真实客户资料（SGD） | 六笔凭证被正确拦下，暴露一处设计错误 |
+| 二 | Drive 中的 Google Doc 单据 | Vendor `61` + Bill `152`，写入 +2 |
+| 三 | 对话附件中的真实 PDF 发票 | Vendor `62` + Bill `153`，写入 +2 |
+
+两次成功入账的每一个字段都与原始单据一致，到期日由账期自行推算，
+本位币单据未附带汇率（新规则要求如此）。
+
+### 第一轮拦下的六笔，是设计错误而非环境问题
+
+拒绝理由是「尚未提供准确的汇率策略」，而 intake 里没有任何字段能提供它 ——
+一条没有出口的拒绝。这违反本项目自己的 ADR-002：MCP 只核验，不判断。税码是
+正确示范：系统不替人选，而要求指名一个账套里真实存在的，再零容差校验。
+
+已把一条判断换成两条可核验的事实：账套能否持有外币（`MultiCurrencyEnabled`，
+QuickBooks 自己回答），以及汇率是否被指名（`exchange_rate`，要求显式）。
+provider 层本就允许 `ExchangeRate`，公司上下文本就带 `MultiCurrencyEnabled` ——
+没有新增能力，删掉了一个不该存在的判断并接上了已有的东西。
+
+多币种关闭时归 `REVIEW_REQUIRED` 而非 `BLOCKED_VALIDATION`：重新准备清不掉它，
+需要人在 QuickBooks 里拍板；同时不能让整个 Case 陪葬 —— 该账套的联系人仍然可建。
+
+### PDF 的真实边界
+
+三条路径实测：`read_google_drive_file` 对 PDF 与 Google Sheets 返回
+`unsupported mime type`；`ingest_source_material` 能存来源记录但 `rawText` 为 null；
+46 个工具（28 accountingv2 + 18 QuickBooks）逐个看过，无导出、取字节、OCR 或解析工具。
+
+但**平台会提取对话附件的文本**，第三轮据此端到端入账成功。所以限制是
+「不能从 Drive 读 PDF」，不是「不能处理 PDF」——这正是产品架构一直写着的分工
+（Work 负责提取，MCP 不接管文件库）。挂载的连接器 profile 原本只写「PDF 正文
+提取不支持」，会让 agent 放弃整类 PDF；已改写并同步到三份副本。
+
+### 仍未验证
+
+外币单据落账。Intuit 沙盒只能是美国公司且多币种默认关闭，因此
+`COMPANY_MULTICURRENCY_DISABLED` 之后的正向路径在沙盒里无法验证。代码路径已就绪，
+需要一个非美元本位或已开多币种的账套；换账套还需同步更新线上
+`QUICKBOOKS_ALLOWED_REALM_ID`，否则 `exact_allowlist` 会拒掉新账套的每一笔写入。
