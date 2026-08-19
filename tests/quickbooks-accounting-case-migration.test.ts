@@ -74,4 +74,26 @@ describe("QuickBooks Accounting Case migration", () => {
     expect(sql).toContain("preparation.execution_attempt_id IS NULL");
     expect(sql).toContain("preparation.dispatch_started_at IS NULL");
   });
+  it("permits clearing authorization evidence only for a preparation that never reached the Provider", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/036_quickbooks_expired_preparation_reseal.sql",
+      import.meta.url,
+    ), "utf8");
+    // Every column that could record Provider contact must be NULL on both
+    // sides, and evidence may only be cleared — never rewritten.
+    expect(sql).toContain("NEW.autonomous_authorization_evidence IS NULL");
+    for (const column of [
+      "approved_by", "approved_at", "execution_attempt_id", "dispatch_started_at",
+      "provider_entity_id", "provider_outcome_receipt", "write_receipt", "readback",
+      "execution_resolution_receipt",
+    ]) {
+      expect(sql).toContain(`OLD.${column} IS NULL AND NEW.${column} IS NULL`);
+    }
+    expect(sql).toContain("OLD.state = 'PREPARED' AND NEW.state = 'PREPARED'");
+    // The other three guards from 034 must survive untouched.
+    expect(sql).toContain("QuickBooks autonomous authorization claim timestamp is immutable");
+    expect(sql).toContain("requires durable prior authorization evidence");
+    expect(sql).toContain("can only be claimed by its original standing delegation");
+  });
+
 });

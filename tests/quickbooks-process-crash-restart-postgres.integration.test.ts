@@ -52,7 +52,7 @@ describeWithPostgres("QuickBooks process crash and restart integration", () => {
       // The restart really did reload durable PostgreSQL state.
       expect(scenario.durable_state_after_restart.observed_by_pid).toBeGreaterThan(0);
       expect(scenario.durable_state_after_restart.migration_head)
-        .toBe("035_quickbooks_mcp_scope_predispatch_rearm.sql");
+        .toBe("036_quickbooks_expired_preparation_reseal.sql");
     }
   });
 

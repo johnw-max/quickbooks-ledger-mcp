@@ -445,6 +445,31 @@ export class QuickBooksPostgresMutationRepository implements QuickBooksMutationR
     );
   }
 
+  async resealNeverDispatchedPreparation(
+    input: Parameters<QuickBooksMutationRepository["resealNeverDispatchedPreparation"]>[0],
+  ): Promise<QuickBooksMutationPreparation | undefined> {
+    // The WHERE clause is the proof, not a convenience: every column that could
+    // record contact with the Provider must still be NULL. If any is set, the
+    // row is not resealable and the caller keeps the expiry error it already
+    // gets. Migration 036 relaxes the 034 immutability guard for exactly this
+    // shape, so a drift between the two would surface as a 23514 rather than a
+    // silent write.
+    const result = await this.pool.query<MutationRow>(
+      `UPDATE quickbooks_mutation_preparations
+         SET autonomous_authorization_evidence=NULL, expires_at=$3, updated_at=$4
+       WHERE preparation_id=$1 AND actor_id=$2
+         AND state='PREPARED' AND expires_at<=$4
+         AND approved_by IS NULL AND approved_at IS NULL
+         AND execution_attempt_id IS NULL AND dispatch_started_at IS NULL
+         AND provider_entity_id IS NULL AND provider_outcome_receipt IS NULL
+         AND write_receipt IS NULL AND readback IS NULL
+         AND execution_resolution_receipt IS NULL
+       RETURNING *`,
+      [input.preparationId, input.actorId, input.expiresAt, input.now],
+    );
+    return result.rows[0] ? map(result.rows[0]) : undefined;
+  }
+
   async claimForExecution(
     input: Parameters<QuickBooksMutationRepository["claimForExecution"]>[0],
   ): Promise<QuickBooksMutationClaim> {

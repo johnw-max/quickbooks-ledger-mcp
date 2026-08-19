@@ -27,6 +27,19 @@ export interface QuickBooksMutationRepository {
     preparationId: string;
     expiresAt: Date;
   }): Promise<void>;
+  /**
+   * Re-opens a preparation that expired without ever reaching the Provider, by
+   * clearing its recorded authorization evidence so the caller must authorize
+   * again. Returns undefined unless the row itself proves nothing was
+   * dispatched — that is the case the expiry is genuinely protecting, and it
+   * must keep failing.
+   */
+  resealNeverDispatchedPreparation(input: {
+    preparationId: string;
+    actorId: string;
+    expiresAt: Date;
+    now: Date;
+  }): Promise<QuickBooksMutationPreparation | undefined>;
   claimForExecution(input: {
     preparationId: string;
     actorId: string;

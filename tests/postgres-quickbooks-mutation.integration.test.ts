@@ -127,6 +127,90 @@ describeWithPostgres("Postgres QuickBooks governed mutation integration", () => 
     });
   });
 
+  it("reseals a preparation that expired without dispatching, and refuses one that reached the Provider", async () => {
+    if (!repository) throw new Error("TEST_DATABASE_URL is required");
+    const suffix = randomUUID();
+    const now = new Date();
+    const base = {
+      actorId: `actor-${suffix}`,
+      realmId: "9341457701636490",
+      connectionRefSafe: `qbc-${suffix}`,
+      boundTargetRefSafe: `qbt-${suffix}`,
+      bindingRevision: `qbr-${suffix}`,
+      entity: "Customer" as const,
+      operation: "CREATE" as const,
+      risk: "LOW" as const,
+      executionMode: "EXPLICIT_CONFIRMATION" as const,
+      providerEffect: "MASTER_DATA" as const,
+      businessReason: "Reseal coverage.",
+      confirmationPhraseHash: randomBytes(32).toString("hex"),
+      // Written two hours ago with a one-hour window, so it is expired now.
+      // This is what an Accounting Case resumed the next day actually finds;
+      // the row cannot simply be inserted pre-expired because a CHECK requires
+      // expires_at > created_at.
+      expiresAt: new Date(now.getTime() - 60 * 60_000),
+      now: new Date(now.getTime() - 120 * 60_000),
+    };
+    const expired = {
+      ...base,
+      preparationId: `qbm_${randomBytes(16).toString("hex")}`,
+      clientRequestId: `qbo.reseal.${suffix}`,
+      providerRequestId: `zc.${randomBytes(16).toString("hex")}`,
+      payload: { DisplayName: `Reseal ${suffix}` },
+      payloadHash: randomBytes(32).toString("hex"),
+    };
+    await repository.createOrGet(expired);
+
+    // Claiming it is exactly the deadlock this fixes.
+    await expect(repository.claimForExecution({
+      preparationId: expired.preparationId, actorId: expired.actorId,
+      requestId: expired.clientRequestId, approvedBy: `actor-${suffix}`,
+      leaseOwner: `w-${suffix}`, leaseTokenHash: randomBytes(32).toString("hex"),
+      leaseDurationMs: 120_000, now: new Date(),
+    })).rejects.toMatchObject({ code: "APPROVAL_INVALID" });
+
+    const resealed = await repository.resealNeverDispatchedPreparation({
+      preparationId: expired.preparationId, actorId: expired.actorId,
+      expiresAt: new Date(Date.now() + 30 * 60_000), now: new Date(),
+    });
+    expect(resealed).toMatchObject({ state: "PREPARED" });
+    // Clearing the recorded authorization is what forces re-authorization; the
+    // relaxation that permits it is asserted against migration 036 directly.
+    expect(resealed?.autonomousAuthorizationEvidence).toBeUndefined();
+    // Re-authorization is the point of the reseal, so the claim must work now.
+    await expect(repository.claimForExecution({
+      preparationId: expired.preparationId, actorId: expired.actorId,
+      requestId: expired.clientRequestId, approvedBy: `actor-${suffix}`,
+      leaseOwner: `w-${suffix}`, leaseTokenHash: randomBytes(32).toString("hex"),
+      leaseDurationMs: 120_000, now: new Date(),
+    })).resolves.toMatchObject({ shouldExecute: true });
+
+    // A row that reached the Provider must keep failing: it is no longer
+    // PREPARED, so the reseal predicate cannot match it.
+    const dispatched = {
+      ...base,
+      preparationId: `qbm_${randomBytes(16).toString("hex")}`,
+      clientRequestId: `qbo.reseal.dispatched.${suffix}`,
+      providerRequestId: `zc.${randomBytes(16).toString("hex")}`,
+      payload: { DisplayName: `Dispatched ${suffix}` },
+      payloadHash: randomBytes(32).toString("hex"),
+      expiresAt: new Date(now.getTime() + 30 * 60_000),
+      now,
+    };
+    await repository.createOrGet(dispatched);
+    const claim = await repository.claimForExecution({
+      preparationId: dispatched.preparationId, actorId: dispatched.actorId,
+      requestId: dispatched.clientRequestId, approvedBy: `actor-${suffix}`,
+      leaseOwner: `w-${suffix}`, leaseTokenHash: randomBytes(32).toString("hex"),
+      leaseDurationMs: 120_000, now: new Date(),
+    });
+    expect(claim.shouldExecute).toBe(true);
+    await expect(repository.resealNeverDispatchedPreparation({
+      preparationId: dispatched.preparationId, actorId: dispatched.actorId,
+      expiresAt: new Date(Date.now() + 30 * 60_000), now: new Date(),
+    })).resolves.toBeUndefined();
+  });
+
   it("persists a Provider outcome checkpoint and exact-Id recovery completes without a new execution claim", async () => {
     if (!repository) throw new Error("TEST_DATABASE_URL is required");
     const suffix = randomUUID();

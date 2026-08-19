@@ -154,6 +154,23 @@ export class InMemoryQuickBooksMutationRepository implements QuickBooksMutationR
     this.#reviewCsrf.set(input.csrfHash, { ...input, consumed: false });
   }
 
+  async resealNeverDispatchedPreparation(
+    input: Parameters<QuickBooksMutationRepository["resealNeverDispatchedPreparation"]>[0],
+  ) {
+    const preparation = this.#preparations.get(input.preparationId);
+    if (!preparation || !safeEqual(preparation.actorId, input.actorId)) return undefined;
+    // Mirrors the Postgres predicate exactly: any evidence of Provider contact
+    // makes the row unresealable, which is the case the expiry protects.
+    if (preparation.state !== "PREPARED" || preparation.expiresAt > input.now) return undefined;
+    if (preparation.approvedBy || preparation.approvedAt || preparation.executionAttempt ||
+      preparation.providerEntityId || preparation.providerOutcomeReceipt ||
+      preparation.writeReceipt || preparation.readback) return undefined;
+    delete preparation.autonomousAuthorizationEvidence;
+    preparation.expiresAt = input.expiresAt;
+    preparation.updatedAt = input.now;
+    return copy(preparation);
+  }
+
   async claimForExecution(
     input: Parameters<QuickBooksMutationRepository["claimForExecution"]>[0],
   ): Promise<QuickBooksMutationClaim> {

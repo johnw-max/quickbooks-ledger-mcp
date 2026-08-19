@@ -105,6 +105,11 @@ function preparationWarnings(
   return warnings;
 }
 
+/** A prepared mutation is only good for this long, so that authority is
+  * re-evaluated rather than assumed. Reseal reopens the window; it does not
+  * widen it. */
+const QUICKBOOKS_PREPARATION_TTL_MS = 30 * 60_000;
+
 export class QuickBooksMutationService {
   constructor(
     private readonly repository: QuickBooksMutationRepository,
@@ -134,15 +139,27 @@ export class QuickBooksMutationService {
       capabilities: QUICKBOOKS_WRITE_CAPABILITIES.filter((capability) =>
         (!input.entity || capability.entity === input.entity) &&
         (!input.operation || capability.operation === input.operation))
-        .map((capability) => ({
-          ...capability,
-          runtimePolicyEnabled: enabledCapabilityKeys.includes(`${capability.operation}:${capability.entity}`),
-          accountingCaseReleased: caseReleased?.has(`${capability.operation}:${capability.entity}`) ?? false,
-          runtimeExecutionEnabled: this.policy.writeEnabled &&
-            enabledCapabilityKeys.includes(`${capability.operation}:${capability.entity}`) &&
-            (!caseReleased || caseReleased.has(`${capability.operation}:${capability.entity}`)) &&
-            (this.policy.writeTargetMode === "oauth_bound" || Boolean(this.policy.allowedRealmId)),
-        })),
+        .map((capability) => {
+          const key = `${capability.operation}:${capability.entity}`;
+          const runtimeExecutionEnabled = this.policy.writeEnabled &&
+            enabledCapabilityKeys.includes(key) &&
+            (!caseReleased || caseReleased.has(key)) &&
+            (this.policy.writeTargetMode === "oauth_bound" || Boolean(this.policy.allowedRealmId));
+          return {
+            ...capability,
+            // The plainest-named field must answer for the route that is
+            // actually mounted. Under ACCOUNTING_CASE the released document
+            // creates are executed by the Agent, so the legacy object-mutation
+            // answer ("false", human review) would contradict this same
+            // response's accountingCaseReleased and runtimeExecutionEnabled.
+            // The legacy answer is preserved verbatim under its own name.
+            agentMayExecute: caseReleased ? runtimeExecutionEnabled : capability.agentMayExecute,
+            legacyObjectMutationAgentMayExecute: capability.agentMayExecute,
+            runtimePolicyEnabled: enabledCapabilityKeys.includes(key),
+            accountingCaseReleased: caseReleased?.has(key) ?? false,
+            runtimeExecutionEnabled,
+          };
+        }),
     };
   }
 
@@ -236,7 +253,7 @@ export class QuickBooksMutationService {
       ...(sourceAttestationDigest ? { sourceAttestationDigest } : {}),
       ...(input.approval_ref ? { approvalRef: input.approval_ref } : {}),
       confirmationPhraseHash: sha256(phrase),
-      expiresAt: new Date(now.getTime() + 30 * 60_000),
+      expiresAt: new Date(now.getTime() + QUICKBOOKS_PREPARATION_TTL_MS),
       now,
     });
     if (!created.created && !safeEqual(created.preparation.payloadHash, payloadHash)) {
@@ -363,7 +380,24 @@ export class QuickBooksMutationService {
       caseVersion: input.caseVersion,
     }, async () => {
       const principal = requireOAuthBoundRequestContext(context);
-      const existing = await this.#owned(input.preparationId, context.actorId);
+      let existing = await this.#owned(input.preparationId, context.actorId);
+      if (existing.expiresAt <= this.clock()) {
+        // An Accounting Case can legitimately resume days later, and the
+        // operation's request id is a content hash, so every retry — including a
+        // new Case version — resolves back to this same row. Left as-is the Case
+        // is unexecutable forever. Reopening it is safe only because the reseal
+        // clears the recorded authorization, which forces the fresh standing
+        // delegation evaluation below; the expiry existed to demand exactly that
+        // re-check, not to end the work. A row that ever reached the Provider
+        // fails the reseal predicate and keeps its expiry error.
+        const resealed = await this.repository.resealNeverDispatchedPreparation({
+          preparationId: input.preparationId,
+          actorId: context.actorId,
+          expiresAt: new Date(this.clock().getTime() + QUICKBOOKS_PREPARATION_TTL_MS),
+          now: this.clock(),
+        });
+        if (resealed) existing = resealed;
+      }
       if (!safeEqual(existing.clientRequestId, input.requestId)) {
         throw new AppError("CONFLICT", "Accounting Case operation request_id does not match its immutable preparation.", {
           httpStatus: 409, details: { failureLayer: "IDEMPOTENCY" },
