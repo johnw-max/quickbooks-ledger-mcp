@@ -1,0 +1,61 @@
+{
+  "started": "2026-08-19T02:49:04.304Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_connection_status",
+      "arguments": {}
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"connected\":true,\"company\":{\"name\":\"zCloak Accounting Sandbox Pte Ltd\"},\"scopes\":[\"com.intuit.quickbooks.accounting\"]},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"connector_control_plane\",\"capability_id\":\"connector.connection.status.read\",\"tool_call_or_audit_ref\":\"qbo-tool-call:5c42d4fe-df24-406c-9783-c4b6a4efc304\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T02:49:04.310Z\",\"query_bounds\":{\"target_scope\":\"connection_binding_resolution\",\"requested\":{}},\"completeness\":{\"status\":\"connection_status_observation\",\"scope\":\"connection_binding_resolution\",\"ledger_data_completeness\":\"not_applicable\"},\"output_hash\":\"sha256:ceccda7c2f4399399a409d3eeeb0fc188c797e8924770cb48277fbc81ffc8783\",\"fact_paths\":[\"/result/connected\",\"/result/company\",\"/result/scopes\"],\"bound_target_ref_safe\":null,\"organisation_display_name\":null,\"binding_revision\":null,\"connection_ref_safe\":\"quickbooks-connection:local-synthetic-v1\",\"connection_state\":\"connected\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "connected": true,
+          "company": {
+            "name": "zCloak Accounting Sandbox Pte Ltd"
+          },
+          "scopes": [
+            "com.intuit.quickbooks.accounting"
+          ]
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "connector_control_plane",
+        "capability_id": "connector.connection.status.read",
+        "tool_call_or_audit_ref": "qbo-tool-call:5c42d4fe-df24-406c-9783-c4b6a4efc304",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T02:49:04.310Z",
+        "query_bounds": {
+          "target_scope": "connection_binding_resolution",
+          "requested": {}
+        },
+        "completeness": {
+          "status": "connection_status_observation",
+          "scope": "connection_binding_resolution",
+          "ledger_data_completeness": "not_applicable"
+        },
+        "output_hash": "sha256:ceccda7c2f4399399a409d3eeeb0fc188c797e8924770cb48277fbc81ffc8783",
+        "fact_paths": [
+          "/result/connected",
+          "/result/company",
+          "/result/scopes"
+        ],
+        "bound_target_ref_safe": null,
+        "organisation_display_name": null,
+        "binding_revision": null,
+        "connection_ref_safe": "quickbooks-connection:local-synthetic-v1",
+        "connection_state": "connected"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 4
+  }
+}

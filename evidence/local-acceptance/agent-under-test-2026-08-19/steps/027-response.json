@@ -1,0 +1,84 @@
+{
+  "started": "2026-08-19T02:56:49.717Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_search_vendors",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "query": "Lionheart",
+        "limit": 25
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"records\":[{\"DisplayName\":\"Lionheart Facilities Pte Ltd\",\"Id\":\"10000\",\"SyncToken\":\"0\",\"Active\":true}],\"searchWindow\":{\"requestedLimit\":25,\"returned\":1,\"scanned\":1,\"scanLimit\":10000,\"complete\":true,\"stoppedReason\":\"source_exhausted\"}},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.reference.counterparty.read\",\"tool_call_or_audit_ref\":\"qbo-tool-call:8378b97c-00a9-4ce6-aef1-4ad4af16f19a\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T02:56:49.725Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{\"query\":\"Lionheart\",\"limit\":25}},\"completeness\":{\"status\":\"bounded_query_result\",\"scope\":\"declared_search_window\",\"within_declared_query_bounds\":true,\"declared_result_complete\":true,\"whole_ledger_complete\":false,\"search_window\":{\"requestedLimit\":25,\"returned\":1,\"scanned\":1,\"scanLimit\":10000,\"complete\":true,\"stoppedReason\":\"source_exhausted\"}},\"output_hash\":\"sha256:eff161bcaf45f6a6463d5c3e20456d69d4c0c79e9afe8ed4ed1f62f0546cb5f4\",\"fact_paths\":[\"/result/records\",\"/result/searchWindow\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "records": [
+            {
+              "DisplayName": "Lionheart Facilities Pte Ltd",
+              "Id": "10000",
+              "SyncToken": "0",
+              "Active": true
+            }
+          ],
+          "searchWindow": {
+            "requestedLimit": 25,
+            "returned": 1,
+            "scanned": 1,
+            "scanLimit": 10000,
+            "complete": true,
+            "stoppedReason": "source_exhausted"
+          }
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.reference.counterparty.read",
+        "tool_call_or_audit_ref": "qbo-tool-call:8378b97c-00a9-4ce6-aef1-4ad4af16f19a",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T02:56:49.725Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {
+            "query": "Lionheart",
+            "limit": 25
+          }
+        },
+        "completeness": {
+          "status": "bounded_query_result",
+          "scope": "declared_search_window",
+          "within_declared_query_bounds": true,
+          "declared_result_complete": true,
+          "whole_ledger_complete": false,
+          "search_window": {
+            "requestedLimit": 25,
+            "returned": 1,
+            "scanned": 1,
+            "scanLimit": 10000,
+            "complete": true,
+            "stoppedReason": "source_exhausted"
+          }
+        },
+        "output_hash": "sha256:eff161bcaf45f6a6463d5c3e20456d69d4c0c79e9afe8ed4ed1f62f0546cb5f4",
+        "fact_paths": [
+          "/result/records",
+          "/result/searchWindow"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 30
+  }
+}

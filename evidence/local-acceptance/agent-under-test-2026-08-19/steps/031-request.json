@@ -1,0 +1,1 @@
+{ "method": "tools/call", "params": { "name": "quickbooks_search_customers", "arguments": { "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "query": "Blue Harbour", "limit": 50 } } }

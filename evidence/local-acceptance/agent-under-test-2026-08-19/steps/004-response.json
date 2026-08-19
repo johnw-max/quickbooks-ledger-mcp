@@ -1,0 +1,77 @@
+{
+  "started": "2026-08-19T02:50:08.210Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_search_vendors",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "query": "Lionheart",
+        "limit": 25
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"records\":[],\"searchWindow\":{\"requestedLimit\":25,\"returned\":0,\"scanned\":0,\"scanLimit\":10000,\"complete\":true,\"stoppedReason\":\"source_exhausted\"}},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.reference.counterparty.read\",\"tool_call_or_audit_ref\":\"qbo-tool-call:ff7b333b-5b20-4b57-bf56-9ebff772cb72\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T02:50:08.211Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{\"query\":\"Lionheart\",\"limit\":25}},\"completeness\":{\"status\":\"bounded_query_result\",\"scope\":\"declared_search_window\",\"within_declared_query_bounds\":true,\"declared_result_complete\":true,\"whole_ledger_complete\":false,\"search_window\":{\"requestedLimit\":25,\"returned\":0,\"scanned\":0,\"scanLimit\":10000,\"complete\":true,\"stoppedReason\":\"source_exhausted\"}},\"output_hash\":\"sha256:c28cfda93ba531434a17d60951543793af3993502df6752d4ffceabf74188fe8\",\"fact_paths\":[\"/result/records\",\"/result/searchWindow\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "records": [],
+          "searchWindow": {
+            "requestedLimit": 25,
+            "returned": 0,
+            "scanned": 0,
+            "scanLimit": 10000,
+            "complete": true,
+            "stoppedReason": "source_exhausted"
+          }
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.reference.counterparty.read",
+        "tool_call_or_audit_ref": "qbo-tool-call:ff7b333b-5b20-4b57-bf56-9ebff772cb72",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T02:50:08.211Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {
+            "query": "Lionheart",
+            "limit": 25
+          }
+        },
+        "completeness": {
+          "status": "bounded_query_result",
+          "scope": "declared_search_window",
+          "within_declared_query_bounds": true,
+          "declared_result_complete": true,
+          "whole_ledger_complete": false,
+          "search_window": {
+            "requestedLimit": 25,
+            "returned": 0,
+            "scanned": 0,
+            "scanLimit": 10000,
+            "complete": true,
+            "stoppedReason": "source_exhausted"
+          }
+        },
+        "output_hash": "sha256:c28cfda93ba531434a17d60951543793af3993502df6752d4ffceabf74188fe8",
+        "fact_paths": [
+          "/result/records",
+          "/result/searchWindow"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 7
+  }
+}

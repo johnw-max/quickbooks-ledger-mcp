@@ -1,0 +1,85 @@
+{
+  "started": "2026-08-19T03:03:32.563Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_search_customers",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "query": "Blue Harbour",
+        "limit": 50
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"records\":[{\"Id\":\"91\",\"DisplayName\":\"Blue Harbour Trading Pte Ltd\",\"Balance\":4300,\"Active\":true,\"SyncToken\":\"0\"}],\"searchWindow\":{\"requestedLimit\":50,\"returned\":1,\"scanned\":1,\"scanLimit\":10000,\"complete\":true,\"stoppedReason\":\"source_exhausted\"}},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.reference.counterparty.read\",\"tool_call_or_audit_ref\":\"qbo-tool-call:9cac15ea-e31f-46c7-8f86-78c029c6cbf1\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T03:03:32.572Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{\"query\":\"Blue Harbour\",\"limit\":50}},\"completeness\":{\"status\":\"bounded_query_result\",\"scope\":\"declared_search_window\",\"within_declared_query_bounds\":true,\"declared_result_complete\":true,\"whole_ledger_complete\":false,\"search_window\":{\"requestedLimit\":50,\"returned\":1,\"scanned\":1,\"scanLimit\":10000,\"complete\":true,\"stoppedReason\":\"source_exhausted\"}},\"output_hash\":\"sha256:af29b76e9f9a6bdf64d505823a9debb863440dc19b7a7e16674bd69c869859c0\",\"fact_paths\":[\"/result/records\",\"/result/searchWindow\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "records": [
+            {
+              "Id": "91",
+              "DisplayName": "Blue Harbour Trading Pte Ltd",
+              "Balance": 4300,
+              "Active": true,
+              "SyncToken": "0"
+            }
+          ],
+          "searchWindow": {
+            "requestedLimit": 50,
+            "returned": 1,
+            "scanned": 1,
+            "scanLimit": 10000,
+            "complete": true,
+            "stoppedReason": "source_exhausted"
+          }
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.reference.counterparty.read",
+        "tool_call_or_audit_ref": "qbo-tool-call:9cac15ea-e31f-46c7-8f86-78c029c6cbf1",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T03:03:32.572Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {
+            "query": "Blue Harbour",
+            "limit": 50
+          }
+        },
+        "completeness": {
+          "status": "bounded_query_result",
+          "scope": "declared_search_window",
+          "within_declared_query_bounds": true,
+          "declared_result_complete": true,
+          "whole_ledger_complete": false,
+          "search_window": {
+            "requestedLimit": 50,
+            "returned": 1,
+            "scanned": 1,
+            "scanLimit": 10000,
+            "complete": true,
+            "stoppedReason": "source_exhausted"
+          }
+        },
+        "output_hash": "sha256:af29b76e9f9a6bdf64d505823a9debb863440dc19b7a7e16674bd69c869859c0",
+        "fact_paths": [
+          "/result/records",
+          "/result/searchWindow"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 34
+  }
+}

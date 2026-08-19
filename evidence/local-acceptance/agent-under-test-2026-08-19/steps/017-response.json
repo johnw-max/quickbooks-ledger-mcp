@@ -1,0 +1,56 @@
+{
+  "started": "2026-08-19T02:52:48.943Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {
+                    "kind": "DOCUMENT",
+                    "document_type": "BILL",
+                    "counterparty_name": "X",
+                    "document_date": "2026-08-12",
+                    "currency": "SGD",
+                    "tax_mode": "TAX_EXCLUDED",
+                    "lines": [
+                      {}
+                    ],
+                    "declared_net": "1500.00",
+                    "declared_tax": "135.00",
+                    "declared_gross": "1635.00",
+                    "business_reason": "probe"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "MCP error -32602: Input validation error: Invalid arguments for tool quickbooks_prepare_accounting_case: Invalid input: expected string, received undefined at sources[0].units[0].facts[0].lines[0].description\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].lines[0].quantity\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].lines[0].unit_amount\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].lines[0].source_tax_amount\nInvalid option: expected one of \"ITEM\"|\"ACCOUNT\" at sources[0].units[0].facts[0].lines[0].coding_type\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].lines[0].coding_name"
+        }
+      ],
+      "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 20
+  }
+}

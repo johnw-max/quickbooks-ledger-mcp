@@ -1,0 +1,86 @@
+{
+  "started": "2026-08-19T02:55:07.959Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_get_bill",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "bill_id": "10001"
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"billId\":\"10001\",\"syncToken\":\"0\",\"paymentStatus\":\"OPEN\",\"vendor\":{\"id\":\"10000\"},\"txnDate\":\"2026-08-12\",\"dueDate\":\"2026-09-11\",\"docNumber\":\"LH-2026-0812\",\"currencyCode\":\"SGD\",\"total\":\"1635.00\",\"balance\":\"1635.00\",\"lines\":[{\"amount\":\"1500.00\",\"description\":\"Office cleaning services\",\"account\":{\"id\":\"9\"}}]},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.object.read_exact\",\"tool_call_or_audit_ref\":\"qbo-tool-call:80644374-12d8-4665-985a-2abf623a2fb7\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T02:55:07.961Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{\"bill_id\":\"10001\"}},\"completeness\":{\"status\":\"exact_object_identity\",\"scope\":\"exact_provider_object_id\",\"provider_field_completeness\":\"not_independently_verified\"},\"output_hash\":\"sha256:dbf6cf2e2bbc355a924c358f62bd0b912cf8a8d0a1e0867104d0d0d17b8f3bef\",\"fact_paths\":[\"/result/billId\",\"/result/syncToken\",\"/result/paymentStatus\",\"/result/vendor\",\"/result/txnDate\",\"/result/dueDate\",\"/result/docNumber\",\"/result/currencyCode\",\"/result/total\",\"/result/balance\",\"/result/lines\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "billId": "10001",
+          "syncToken": "0",
+          "paymentStatus": "OPEN",
+          "vendor": {
+            "id": "10000"
+          },
+          "txnDate": "2026-08-12",
+          "dueDate": "2026-09-11",
+          "docNumber": "LH-2026-0812",
+          "currencyCode": "SGD",
+          "total": "1635.00",
+          "balance": "1635.00",
+          "lines": [
+            {
+              "amount": "1500.00",
+              "description": "Office cleaning services",
+              "account": {
+                "id": "9"
+              }
+            }
+          ]
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.object.read_exact",
+        "tool_call_or_audit_ref": "qbo-tool-call:80644374-12d8-4665-985a-2abf623a2fb7",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T02:55:07.961Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {
+            "bill_id": "10001"
+          }
+        },
+        "completeness": {
+          "status": "exact_object_identity",
+          "scope": "exact_provider_object_id",
+          "provider_field_completeness": "not_independently_verified"
+        },
+        "output_hash": "sha256:dbf6cf2e2bbc355a924c358f62bd0b912cf8a8d0a1e0867104d0d0d17b8f3bef",
+        "fact_paths": [
+          "/result/billId",
+          "/result/syncToken",
+          "/result/paymentStatus",
+          "/result/vendor",
+          "/result/txnDate",
+          "/result/dueDate",
+          "/result/docNumber",
+          "/result/currencyCode",
+          "/result/total",
+          "/result/balance",
+          "/result/lines"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 28
+  }
+}

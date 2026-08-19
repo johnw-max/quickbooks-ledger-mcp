@@ -1,0 +1,44 @@
+{
+  "started": "2026-08-19T02:52:32.101Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {
+                    "kind": "DOCUMENT"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "MCP error -32602: Input validation error: Invalid arguments for tool quickbooks_prepare_accounting_case: Invalid option: expected one of \"INVOICE\"|\"BILL\"|\"CREDIT_MEMO\"|\"VENDOR_CREDIT\" at sources[0].units[0].facts[0].document_type\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].counterparty_name\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].document_date\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].currency\nInvalid option: expected one of \"NO_TAX\"|\"TAX_EXCLUDED\"|\"TAX_INCLUSIVE\" at sources[0].units[0].facts[0].tax_mode\nInvalid input: expected array, received undefined at sources[0].units[0].facts[0].lines\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].declared_net\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].declared_tax\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].declared_gross\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].business_reason"
+        }
+      ],
+      "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 19
+  }
+}

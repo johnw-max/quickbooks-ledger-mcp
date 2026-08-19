@@ -1,0 +1,838 @@
+{
+  "schema_version": "1.0",
+  "evidence_boundary": "LOCAL_SYNTHETIC_PROVIDER_SDK_BOUNDARY",
+  "release_version": "0.6.0",
+  "server_pid": 62462,
+  "write_enabled": true,
+  "started_at": "2026-08-19T02:46:57.239Z",
+  "updated_at": "2026-08-19T03:03:43.803Z",
+  "tool_calls": [
+    {
+      "server_call_id": "local_mcp_00001",
+      "jsonrpc_id": 4,
+      "tool": "quickbooks_connection_status",
+      "arguments": {},
+      "started_at": "2026-08-19T02:49:04.308Z",
+      "finished_at": "2026-08-19T02:49:04.318Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00002",
+      "jsonrpc_id": 5,
+      "tool": "quickbooks_resolve_target",
+      "arguments": {},
+      "started_at": "2026-08-19T02:49:19.775Z",
+      "finished_at": "2026-08-19T02:49:19.778Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00003",
+      "jsonrpc_id": 6,
+      "tool": "quickbooks_get_company",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>"
+      },
+      "started_at": "2026-08-19T02:49:51.357Z",
+      "finished_at": "2026-08-19T02:49:51.358Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00004",
+      "jsonrpc_id": 7,
+      "tool": "quickbooks_search_vendors",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "query": "Lionheart",
+        "limit": 25
+      },
+      "started_at": "2026-08-19T02:50:08.210Z",
+      "finished_at": "2026-08-19T02:50:08.211Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00005",
+      "jsonrpc_id": 8,
+      "tool": "quickbooks_list_accounts",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>"
+      },
+      "started_at": "2026-08-19T02:50:17.333Z",
+      "finished_at": "2026-08-19T02:50:17.333Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00006",
+      "jsonrpc_id": 9,
+      "tool": "quickbooks_list_tax_codes",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>"
+      },
+      "started_at": "2026-08-19T02:50:28.561Z",
+      "finished_at": "2026-08-19T02:50:28.562Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00007",
+      "jsonrpc_id": 10,
+      "tool": "quickbooks_list_bills",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>"
+      },
+      "started_at": "2026-08-19T02:50:43.294Z",
+      "finished_at": "2026-08-19T02:50:43.296Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00008",
+      "jsonrpc_id": 11,
+      "tool": "quickbooks_get_write_capabilities",
+      "arguments": {},
+      "started_at": "2026-08-19T02:51:15.574Z",
+      "finished_at": "2026-08-19T02:51:15.576Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00009",
+      "jsonrpc_id": 12,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>"
+      },
+      "started_at": "2026-08-19T02:51:30.315Z",
+      "finished_at": "2026-08-19T02:51:30.317Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00010",
+      "jsonrpc_id": 13,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {}
+        ]
+      },
+      "started_at": "2026-08-19T02:51:38.742Z",
+      "finished_at": "2026-08-19T02:51:38.744Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00011",
+      "jsonrpc_id": 14,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {}
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:51:46.465Z",
+      "finished_at": "2026-08-19T02:51:46.469Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00012",
+      "jsonrpc_id": 15,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {}
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:51:54.186Z",
+      "finished_at": "2026-08-19T02:51:54.187Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00013",
+      "jsonrpc_id": 16,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {
+                    "kind": "ZZZ_INVALID"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:52:05.419Z",
+      "finished_at": "2026-08-19T02:52:05.420Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00014",
+      "jsonrpc_id": 17,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {
+                    "kind": "CONTACT"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:52:14.549Z",
+      "finished_at": "2026-08-19T02:52:14.551Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00015",
+      "jsonrpc_id": 18,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {
+                    "kind": "NATIVE_DOCUMENT"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:52:24.376Z",
+      "finished_at": "2026-08-19T02:52:24.377Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00016",
+      "jsonrpc_id": 19,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {
+                    "kind": "DOCUMENT"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:52:32.102Z",
+      "finished_at": "2026-08-19T02:52:32.103Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00017",
+      "jsonrpc_id": 20,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {
+                    "kind": "DOCUMENT",
+                    "document_type": "BILL",
+                    "counterparty_name": "X",
+                    "document_date": "2026-08-12",
+                    "currency": "SGD",
+                    "tax_mode": "TAX_EXCLUDED",
+                    "lines": [
+                      {}
+                    ],
+                    "declared_net": "1500.00",
+                    "declared_tax": "135.00",
+                    "declared_gross": "1635.00",
+                    "business_reason": "probe"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:52:48.944Z",
+      "finished_at": "2026-08-19T02:52:48.946Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00018",
+      "jsonrpc_id": 21,
+      "tool": "quickbooks_search_vendors",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "query": "Facilities",
+        "limit": 50
+      },
+      "started_at": "2026-08-19T02:53:24.758Z",
+      "finished_at": "2026-08-19T02:53:24.762Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00019",
+      "jsonrpc_id": 22,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "case-ap-lionheart-lh-2026-0812",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "lionheart-lh-2026-0812",
+            "label": "Lionheart Facilities Pte Ltd supplier invoice LH-2026-0812",
+            "units": [
+              {
+                "unit_key": "vendor-lionheart-facilities",
+                "facts": [
+                  {
+                    "kind": "CONTACT",
+                    "role": "VENDOR",
+                    "display_name": "Lionheart Facilities Pte Ltd",
+                    "business_reason": "New supplier for office cleaning; no matching vendor found in the bound company (vendor search for 'Lionheart' and 'Facilities' returned no records). Vendor master record required before its supplier bill LH-2026-0812 can be recorded."
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:53:41.615Z",
+      "finished_at": "2026-08-19T02:53:41.617Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00020",
+      "jsonrpc_id": 23,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "case-ap-lionheart-lh-2026-0812",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "lionheart-lh-2026-0812",
+            "label": "Lionheart Facilities Pte Ltd supplier invoice LH-2026-0812",
+            "units": [
+              {
+                "unit_key": "vendor-lionheart-facilities",
+                "facts": [
+                  {
+                    "kind": "CONTACT",
+                    "role": "VENDOR",
+                    "display_name": "Lionheart Facilities Pte Ltd"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:53:50.746Z",
+      "finished_at": "2026-08-19T02:53:50.753Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00021",
+      "jsonrpc_id": 24,
+      "tool": "quickbooks_execute_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>"
+      },
+      "started_at": "2026-08-19T02:54:01.980Z",
+      "finished_at": "2026-08-19T02:54:01.981Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 0
+    },
+    {
+      "server_call_id": "local_mcp_00022",
+      "jsonrpc_id": 25,
+      "tool": "quickbooks_execute_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "case-ap-lionheart-lh-2026-0812",
+        "case_version": 1,
+        "request_id": "req-lionheart-lh-2026-0812-v1-56346fdd2402"
+      },
+      "started_at": "2026-08-19T02:54:11.102Z",
+      "finished_at": "2026-08-19T02:54:11.110Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 1
+    },
+    {
+      "server_call_id": "local_mcp_00023",
+      "jsonrpc_id": 26,
+      "tool": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "case-ap-lionheart-lh-2026-0812",
+        "expected_version": 1,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "lionheart-lh-2026-0812",
+            "label": "Lionheart Facilities Pte Ltd supplier invoice LH-2026-0812",
+            "units": [
+              {
+                "unit_key": "vendor-lionheart-facilities",
+                "facts": [
+                  {
+                    "kind": "CONTACT",
+                    "role": "VENDOR",
+                    "display_name": "Lionheart Facilities Pte Ltd"
+                  }
+                ]
+              },
+              {
+                "unit_key": "bill-lh-2026-0812",
+                "facts": [
+                  {
+                    "kind": "DOCUMENT",
+                    "document_type": "BILL",
+                    "counterparty_name": "Lionheart Facilities Pte Ltd",
+                    "document_date": "2026-08-12",
+                    "due_date": "2026-09-11",
+                    "document_number": "LH-2026-0812",
+                    "currency": "SGD",
+                    "tax_mode": "TAX_EXCLUDED",
+                    "lines": [
+                      {
+                        "description": "Office cleaning services",
+                        "quantity": "1",
+                        "unit_amount": "1500.00",
+                        "source_tax_amount": "135.00",
+                        "coding_type": "ACCOUNT",
+                        "coding_name": "Office Expenses",
+                        "tax_code_name": "GST 9% Purchases"
+                      }
+                    ],
+                    "declared_net": "1500.00",
+                    "declared_tax": "135.00",
+                    "declared_gross": "1635.00",
+                    "business_reason": "Supplier bill for office cleaning received from Lionheart Facilities Pte Ltd, invoice LH-2026-0812 dated 2026-08-12, 30-day terms (due 2026-09-11). Standard-rated input GST at 9% on a local purchase. No existing bill with this document number or vendor was found in the bound company."
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "started_at": "2026-08-19T02:54:42.682Z",
+      "finished_at": "2026-08-19T02:54:42.687Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 1
+    },
+    {
+      "server_call_id": "local_mcp_00024",
+      "jsonrpc_id": 27,
+      "tool": "quickbooks_execute_accounting_case",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "case_id": "case-ap-lionheart-lh-2026-0812",
+        "case_version": 2,
+        "request_id": "req-lionheart-lh-2026-0812-v2-096a428080af"
+      },
+      "started_at": "2026-08-19T02:54:54.615Z",
+      "finished_at": "2026-08-19T02:54:54.621Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    },
+    {
+      "server_call_id": "local_mcp_00025",
+      "jsonrpc_id": 28,
+      "tool": "quickbooks_get_bill",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "bill_id": "10001"
+      },
+      "started_at": "2026-08-19T02:55:07.960Z",
+      "finished_at": "2026-08-19T02:55:07.961Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    },
+    {
+      "server_call_id": "local_mcp_00026",
+      "jsonrpc_id": 29,
+      "tool": "quickbooks_list_bills",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>"
+      },
+      "started_at": "2026-08-19T02:56:34.975Z",
+      "finished_at": "2026-08-19T02:56:34.977Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    },
+    {
+      "server_call_id": "local_mcp_00027",
+      "jsonrpc_id": 30,
+      "tool": "quickbooks_search_vendors",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "query": "Lionheart",
+        "limit": 25
+      },
+      "started_at": "2026-08-19T02:56:49.724Z",
+      "finished_at": "2026-08-19T02:56:49.725Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    },
+    {
+      "server_call_id": "local_mcp_00028",
+      "jsonrpc_id": 31,
+      "tool": "quickbooks_get_bill",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "bill_id": "146"
+      },
+      "started_at": "2026-08-19T03:00:02.704Z",
+      "finished_at": "2026-08-19T03:00:02.705Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    },
+    {
+      "server_call_id": "local_mcp_00029",
+      "jsonrpc_id": 32,
+      "tool": "quickbooks_list_transactions",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "page_size": 50
+      },
+      "started_at": "2026-08-19T03:00:17.440Z",
+      "finished_at": "2026-08-19T03:00:17.440Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    },
+    {
+      "server_call_id": "local_mcp_00030",
+      "jsonrpc_id": 33,
+      "tool": "quickbooks_list_transactions",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "entity": "VendorCredit",
+        "page_size": 50
+      },
+      "started_at": "2026-08-19T03:00:24.463Z",
+      "finished_at": "2026-08-19T03:00:24.465Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    },
+    {
+      "server_call_id": "local_mcp_00031",
+      "jsonrpc_id": 34,
+      "tool": "quickbooks_search_customers",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>",
+        "query": "Blue Harbour",
+        "limit": 50
+      },
+      "started_at": "2026-08-19T03:03:32.568Z",
+      "finished_at": "2026-08-19T03:03:32.573Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    },
+    {
+      "server_call_id": "local_mcp_00032",
+      "jsonrpc_id": 35,
+      "tool": "quickbooks_list_accounts",
+      "arguments": {
+        "target_session_ref": "<redacted-target-session-ref>"
+      },
+      "started_at": "2026-08-19T03:03:43.802Z",
+      "finished_at": "2026-08-19T03:03:43.803Z",
+      "status": "PASS",
+      "error_code": null,
+      "error_message": null,
+      "failure_layer": null,
+      "provider_mutation_possible": null,
+      "recovery_action": null,
+      "reason_codes": null,
+      "provider_write_count_after": 2
+    }
+  ],
+  "provider_write_count": 2,
+  "provider_mutation_request_count": 2
+}

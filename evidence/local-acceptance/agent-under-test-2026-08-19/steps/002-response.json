@@ -1,0 +1,34 @@
+{
+  "started": "2026-08-19T02:49:19.772Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_resolve_target",
+      "arguments": {}
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"companyName\":\"zCloak Accounting Sandbox Pte Ltd\",\"connectionRefSafe\":\"quickbooks-connection:local-synthetic-v1\",\"boundTargetRefSafe\":\"quickbooks-target:local-synthetic-v1\",\"bindingRevision\":\"quickbooks-binding-revision:local-synthetic-v1\",\"targetSessionRef\":\"qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"expiresAt\":\"2026-08-19T03:49:19.777Z\",\"identityAssurance\":\"TRUSTED_HOST_CONTEXT\",\"externalRoleEnforcement\":\"ENFORCED_FROM_TRUSTED_HOST_CONTEXT\"}}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "companyName": "zCloak Accounting Sandbox Pte Ltd",
+          "connectionRefSafe": "quickbooks-connection:local-synthetic-v1",
+          "boundTargetRefSafe": "quickbooks-target:local-synthetic-v1",
+          "bindingRevision": "quickbooks-binding-revision:local-synthetic-v1",
+          "targetSessionRef": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "expiresAt": "2026-08-19T03:49:19.777Z",
+          "identityAssurance": "TRUSTED_HOST_CONTEXT",
+          "externalRoleEnforcement": "ENFORCED_FROM_TRUSTED_HOST_CONTEXT"
+        }
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 5
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "started": "2026-08-19T03:00:24.461Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_list_transactions",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "entity": "VendorCredit",
+        "page_size": 50
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"entity\":\"VendorCredit\",\"records\":[],\"pagination\":{\"page\":1,\"pageSize\":50,\"returned\":0,\"totalCount\":0,\"hasNextPage\":false}},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.transaction.search\",\"tool_call_or_audit_ref\":\"qbo-tool-call:cd06eef9-55ef-43cd-a460-318970945158\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T03:00:24.464Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{\"entity\":\"VendorCredit\",\"page\":1,\"page_size\":50}},\"completeness\":{\"status\":\"bounded_query_result\",\"scope\":\"declared_provider_page\",\"within_declared_query_bounds\":true,\"declared_result_complete\":true,\"whole_ledger_complete\":false,\"pagination\":{\"page\":1,\"pageSize\":50,\"returned\":0,\"totalCount\":0,\"hasNextPage\":false}},\"output_hash\":\"sha256:2e015b90fe823ef6be57d8657931584b9ecd70a2ee6ab20d7b74b94008e6fa9d\",\"fact_paths\":[\"/result/entity\",\"/result/records\",\"/result/pagination\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "entity": "VendorCredit",
+          "records": [],
+          "pagination": {
+            "page": 1,
+            "pageSize": 50,
+            "returned": 0,
+            "totalCount": 0,
+            "hasNextPage": false
+          }
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.transaction.search",
+        "tool_call_or_audit_ref": "qbo-tool-call:cd06eef9-55ef-43cd-a460-318970945158",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T03:00:24.464Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {
+            "entity": "VendorCredit",
+            "page": 1,
+            "page_size": 50
+          }
+        },
+        "completeness": {
+          "status": "bounded_query_result",
+          "scope": "declared_provider_page",
+          "within_declared_query_bounds": true,
+          "declared_result_complete": true,
+          "whole_ledger_complete": false,
+          "pagination": {
+            "page": 1,
+            "pageSize": 50,
+            "returned": 0,
+            "totalCount": 0,
+            "hasNextPage": false
+          }
+        },
+        "output_hash": "sha256:2e015b90fe823ef6be57d8657931584b9ecd70a2ee6ab20d7b74b94008e6fa9d",
+        "fact_paths": [
+          "/result/entity",
+          "/result/records",
+          "/result/pagination"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 33
+  }
+}

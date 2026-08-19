@@ -1,0 +1,99 @@
+{
+  "started": "2026-08-19T02:50:28.559Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_list_tax_codes",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":[{\"Id\":\"2\",\"Name\":\"GST 9% Purchases\",\"Active\":true,\"Taxable\":true,\"PurchaseTaxRateList\":{\"TaxRateDetail\":[{\"TaxRateRef\":{\"value\":\"902\"}}]}},{\"Id\":\"4\",\"Name\":\"GST 9%\",\"Active\":true,\"Taxable\":true,\"PurchaseTaxRateList\":{\"TaxRateDetail\":[{\"TaxRateRef\":{\"value\":\"904\"}}]},\"SalesTaxRateList\":{\"TaxRateDetail\":[{\"TaxRateRef\":{\"value\":\"904\"}}]}},{\"Id\":\"3\",\"Name\":\"Out of Scope\",\"Active\":true,\"Taxable\":false}],\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.reference.tax.read\",\"tool_call_or_audit_ref\":\"qbo-tool-call:31eb2a66-b22f-4f58-8edf-0bb7848de489\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T02:50:28.562Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{}},\"completeness\":{\"status\":\"bounded_query_result\",\"scope\":\"single_provider_response\",\"within_declared_query_bounds\":true,\"declared_result_complete\":\"not_independently_verified\",\"whole_ledger_complete\":false},\"output_hash\":\"sha256:e61eb335ce510b12b0ad587bce48cbc9422d8f61c76b45622b4318d5279e9634\",\"fact_paths\":[\"/result\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": [
+          {
+            "Id": "2",
+            "Name": "GST 9% Purchases",
+            "Active": true,
+            "Taxable": true,
+            "PurchaseTaxRateList": {
+              "TaxRateDetail": [
+                {
+                  "TaxRateRef": {
+                    "value": "902"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "Id": "4",
+            "Name": "GST 9%",
+            "Active": true,
+            "Taxable": true,
+            "PurchaseTaxRateList": {
+              "TaxRateDetail": [
+                {
+                  "TaxRateRef": {
+                    "value": "904"
+                  }
+                }
+              ]
+            },
+            "SalesTaxRateList": {
+              "TaxRateDetail": [
+                {
+                  "TaxRateRef": {
+                    "value": "904"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "Id": "3",
+            "Name": "Out of Scope",
+            "Active": true,
+            "Taxable": false
+          }
+        ],
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.reference.tax.read",
+        "tool_call_or_audit_ref": "qbo-tool-call:31eb2a66-b22f-4f58-8edf-0bb7848de489",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T02:50:28.562Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {}
+        },
+        "completeness": {
+          "status": "bounded_query_result",
+          "scope": "single_provider_response",
+          "within_declared_query_bounds": true,
+          "declared_result_complete": "not_independently_verified",
+          "whole_ledger_complete": false
+        },
+        "output_hash": "sha256:e61eb335ce510b12b0ad587bce48cbc9422d8f61c76b45622b4318d5279e9634",
+        "fact_paths": [
+          "/result"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 9
+  }
+}

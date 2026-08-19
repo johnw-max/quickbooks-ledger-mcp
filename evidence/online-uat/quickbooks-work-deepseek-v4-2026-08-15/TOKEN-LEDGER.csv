@@ -1,0 +1,3 @@
+case_id,turn,agent,balance_before,balance_after,delta,cumulative_delta,note
+QBO-RA-E2E-01,T01,QuickBooks 会计助手 UAT,UNAVAILABLE,UNAVAILABLE,UNAVAILABLE,UNAVAILABLE,Work shows context usage only; no spend balance
+

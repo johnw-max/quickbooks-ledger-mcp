@@ -1,0 +1,25 @@
+{
+  "started": "2026-08-19T02:54:01.979Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_execute_accounting_case",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "MCP error -32602: Input validation error: Invalid arguments for tool quickbooks_execute_accounting_case: Invalid input: expected string, received undefined at case_id\nInvalid input: expected number, received undefined at case_version\nInvalid input: expected string, received undefined at request_id"
+        }
+      ],
+      "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 24
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "started": "2026-08-19T03:00:17.440Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_list_transactions",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "page_size": 50
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "MCP error -32602: Input validation error: Invalid arguments for tool quickbooks_list_transactions: Invalid option: expected one of \"Invoice\"|\"Payment\"|\"Purchase\"|\"BillPayment\"|\"JournalEntry\"|\"CreditMemo\"|\"SalesReceipt\"|\"RefundReceipt\"|\"VendorCredit\" at entity"
+        }
+      ],
+      "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 32
+  }
+}

@@ -1,0 +1,157 @@
+{
+  "started": "2026-08-19T02:54:11.101Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_execute_accounting_case",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "case_id": "case-ap-lionheart-lh-2026-0812",
+        "case_version": 1,
+        "request_id": "req-lionheart-lh-2026-0812-v1-56346fdd2402"
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"case_id\":\"case-ap-lionheart-lh-2026-0812\",\"case_version\":1,\"state\":\"TERMINAL\",\"source_revision_hash\":\"ad1059fe5d08c474b12821c00a3ec5cf737b6ad463bf2a0424d711e98ef7b26f\",\"compiled_plan_hash\":\"56346fdd2402ef0e1ad7e9474c92e3a9d294eba643155ab80ee1c4c987bc9215\",\"compiler_version\":\"0.2.0\",\"policy_version\":\"quickbooks-sg-core-v1\",\"coverage\":{\"supplied_set\":\"COMPLETE\",\"expected_artifacts\":1,\"expected_source_units\":1,\"expected_fact_requirements\":1,\"satisfied_fact_requirements\":1,\"missing_fact_requirements\":[]},\"events\":[{\"event_id\":\"qboevt_eb63f50c6f988f73196a2f57d77a03d8\",\"event_key\":\"event-887ccc2fa19175bfa0eff770e83630f0\",\"source_unit_ids\":[\"unit-887ccc2fa19175bfa0eff770e83630f0\"],\"compiled_disposition\":\"AUTO_EXECUTE\",\"disposition\":\"POSTED_READBACK_VERIFIED\",\"route\":\"CONTACT_CREATE\",\"reason_codes\":[],\"next_action\":\"NONE\"}],\"operations\":[{\"operation_id\":\"qboop_7e82c602be5425a8d01de62641b40694\",\"event_id\":\"qboevt_eb63f50c6f988f73196a2f57d77a03d8\",\"action_id\":\"vendor.create_basic\",\"entity\":\"Vendor\",\"state\":\"READBACK_VERIFIED\",\"provider_entity_id\":\"10000\",\"authorization_receipt_recorded\":true,\"provider_receipt_recorded\":true,\"exact_readback_recorded\":true,\"authorization_receipt_ref\":\"ae6205fbf3975799141e3124d928bec1cd829825a5c517e79ff5310c23d80845\",\"authorization_receipt\":{\"receiptType\":\"LEDGER_AUTONOMOUS_AUTHORIZATION\",\"kernelVersion\":\"0.2.0\",\"actionId\":\"vendor.create_basic\",\"providerId\":\"quickbooks\",\"tenantId\":\"9341457658718743\",\"actorId\":\"local-synthetic-workspace:user:local-accountant\",\"workspaceId\":\"local-synthetic-workspace\",\"agentId\":\"local-accounting-agent\",\"installationId\":\"local-synthetic-installation-v1\",\"bindingId\":\"local-synthetic-binding-v1\",\"bindingRevision\":1,\"connectionId\":\"local-synthetic-connection-v1\",\"targetSessionId\":\"local-synthetic-target-session-v1\",\"delegationId\":\"local-synthetic-delegation-v1\",\"delegationRevision\":1,\"canonicalPayloadHash\":\"7e7995ebf58c9d83434a7e41cc1bbfc580b44d35bde916a43075e2aafdd0bdc1\",\"sourceRevisionHash\":\"ad1059fe5d08c474b12821c00a3ec5cf737b6ad463bf2a0424d711e98ef7b26f\",\"caseVersion\":1,\"deterministicValidationReceiptHash\":\"f7592c52f9f999468cc06ba95b8481f0f937f9f1ffd66fe2a1c96d2ea1bb85e0\",\"providerCapabilityReceiptHash\":\"e4566576a4d5f793e09523604b86380337d5fd3e751f44d67ce6ba4da2297aad\",\"issuedAt\":\"2026-08-19T02:54:11.106Z\",\"receiptHash\":\"dc8c6fa97bbbcd459e533591ed5a67fe18bccb6c2f593fd311b37cc855eb0958\"},\"original_authorization_identity_ref\":\"703d5231d3295427ecdb4675b5ab6c1e7d9305ae3b889d0169d11692de8f2068\",\"original_authorization_origin\":{\"case_id\":\"case-ap-lionheart-lh-2026-0812\",\"case_version\":1},\"provider_receipt_ref\":\"760e33ac4b74c7fa57f48a80554859f7cfe2024f6bca736d6542e1530ea49833\",\"provider_receipt\":{\"provider\":\"synthetic-quickbooks-online\",\"realmId\":\"9341457658718743\",\"entity\":\"Vendor\",\"operation\":\"CREATE\",\"providerEntityId\":\"10000\",\"requestId\":\"zc.bc021860972f06a873dbe783f43c2190be87d06c724fd07\",\"verified\":true,\"verification\":\"EXACT_ID_READBACK\"},\"exact_readback_ref\":\"32e6400e01ca0acd5b393b1be9d0502a4a9e682b2d2984bae3766ad21d950ef6\",\"exact_readback\":{\"DisplayName\":\"Lionheart Facilities Pte Ltd\",\"Id\":\"10000\",\"SyncToken\":\"0\",\"Active\":true},\"assurance\":{\"authorization_receipt_hash_verified\":true,\"authorization_causal_evidence_verified\":true,\"deterministic_reuse_evidence_verified\":true,\"provider_receipt_identity_verified\":true,\"exact_readback_identity_verified\":true,\"all_required_evidence_verified\":true},\"next_action\":\"NONE\"}],\"source_unit_terminal_coverage\":{\"expected_source_units\":1,\"dispositioned_source_units\":1,\"all_source_units_dispositioned\":true,\"terminal_source_units\":1,\"all_source_units_terminal\":true,\"units\":[{\"source_unit_id\":\"unit-887ccc2fa19175bfa0eff770e83630f0\",\"terminal\":true,\"event_ids\":[\"qboevt_eb63f50c6f988f73196a2f57d77a03d8\"],\"dispositions\":[\"POSTED_READBACK_VERIFIED\"]}]},\"residual_event_count\":0,\"completion_claim\":{\"supplied_set_coverage\":\"COMPLETE\",\"eligible_write_status\":\"ALL_READBACK_VERIFIED\",\"whole_business_completeness\":\"NOT_ASSERTED\",\"case_processing_completeness\":\"ALL_TYPED_EVENTS_TERMINAL\",\"ledger_write_claim\":\"ALL_ELIGIBLE_WRITES_READBACK_VERIFIED\"}}}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "case_id": "case-ap-lionheart-lh-2026-0812",
+          "case_version": 1,
+          "state": "TERMINAL",
+          "source_revision_hash": "ad1059fe5d08c474b12821c00a3ec5cf737b6ad463bf2a0424d711e98ef7b26f",
+          "compiled_plan_hash": "56346fdd2402ef0e1ad7e9474c92e3a9d294eba643155ab80ee1c4c987bc9215",
+          "compiler_version": "0.2.0",
+          "policy_version": "quickbooks-sg-core-v1",
+          "coverage": {
+            "supplied_set": "COMPLETE",
+            "expected_artifacts": 1,
+            "expected_source_units": 1,
+            "expected_fact_requirements": 1,
+            "satisfied_fact_requirements": 1,
+            "missing_fact_requirements": []
+          },
+          "events": [
+            {
+              "event_id": "qboevt_eb63f50c6f988f73196a2f57d77a03d8",
+              "event_key": "event-887ccc2fa19175bfa0eff770e83630f0",
+              "source_unit_ids": [
+                "unit-887ccc2fa19175bfa0eff770e83630f0"
+              ],
+              "compiled_disposition": "AUTO_EXECUTE",
+              "disposition": "POSTED_READBACK_VERIFIED",
+              "route": "CONTACT_CREATE",
+              "reason_codes": [],
+              "next_action": "NONE"
+            }
+          ],
+          "operations": [
+            {
+              "operation_id": "qboop_7e82c602be5425a8d01de62641b40694",
+              "event_id": "qboevt_eb63f50c6f988f73196a2f57d77a03d8",
+              "action_id": "vendor.create_basic",
+              "entity": "Vendor",
+              "state": "READBACK_VERIFIED",
+              "provider_entity_id": "10000",
+              "authorization_receipt_recorded": true,
+              "provider_receipt_recorded": true,
+              "exact_readback_recorded": true,
+              "authorization_receipt_ref": "ae6205fbf3975799141e3124d928bec1cd829825a5c517e79ff5310c23d80845",
+              "authorization_receipt": {
+                "receiptType": "LEDGER_AUTONOMOUS_AUTHORIZATION",
+                "kernelVersion": "0.2.0",
+                "actionId": "vendor.create_basic",
+                "providerId": "quickbooks",
+                "tenantId": "9341457658718743",
+                "actorId": "local-synthetic-workspace:user:local-accountant",
+                "workspaceId": "local-synthetic-workspace",
+                "agentId": "local-accounting-agent",
+                "installationId": "local-synthetic-installation-v1",
+                "bindingId": "local-synthetic-binding-v1",
+                "bindingRevision": 1,
+                "connectionId": "local-synthetic-connection-v1",
+                "targetSessionId": "local-synthetic-target-session-v1",
+                "delegationId": "local-synthetic-delegation-v1",
+                "delegationRevision": 1,
+                "canonicalPayloadHash": "7e7995ebf58c9d83434a7e41cc1bbfc580b44d35bde916a43075e2aafdd0bdc1",
+                "sourceRevisionHash": "ad1059fe5d08c474b12821c00a3ec5cf737b6ad463bf2a0424d711e98ef7b26f",
+                "caseVersion": 1,
+                "deterministicValidationReceiptHash": "f7592c52f9f999468cc06ba95b8481f0f937f9f1ffd66fe2a1c96d2ea1bb85e0",
+                "providerCapabilityReceiptHash": "e4566576a4d5f793e09523604b86380337d5fd3e751f44d67ce6ba4da2297aad",
+                "issuedAt": "2026-08-19T02:54:11.106Z",
+                "receiptHash": "dc8c6fa97bbbcd459e533591ed5a67fe18bccb6c2f593fd311b37cc855eb0958"
+              },
+              "original_authorization_identity_ref": "703d5231d3295427ecdb4675b5ab6c1e7d9305ae3b889d0169d11692de8f2068",
+              "original_authorization_origin": {
+                "case_id": "case-ap-lionheart-lh-2026-0812",
+                "case_version": 1
+              },
+              "provider_receipt_ref": "760e33ac4b74c7fa57f48a80554859f7cfe2024f6bca736d6542e1530ea49833",
+              "provider_receipt": {
+                "provider": "synthetic-quickbooks-online",
+                "realmId": "9341457658718743",
+                "entity": "Vendor",
+                "operation": "CREATE",
+                "providerEntityId": "10000",
+                "requestId": "zc.bc021860972f06a873dbe783f43c2190be87d06c724fd07",
+                "verified": true,
+                "verification": "EXACT_ID_READBACK"
+              },
+              "exact_readback_ref": "32e6400e01ca0acd5b393b1be9d0502a4a9e682b2d2984bae3766ad21d950ef6",
+              "exact_readback": {
+                "DisplayName": "Lionheart Facilities Pte Ltd",
+                "Id": "10000",
+                "SyncToken": "0",
+                "Active": true
+              },
+              "assurance": {
+                "authorization_receipt_hash_verified": true,
+                "authorization_causal_evidence_verified": true,
+                "deterministic_reuse_evidence_verified": true,
+                "provider_receipt_identity_verified": true,
+                "exact_readback_identity_verified": true,
+                "all_required_evidence_verified": true
+              },
+              "next_action": "NONE"
+            }
+          ],
+          "source_unit_terminal_coverage": {
+            "expected_source_units": 1,
+            "dispositioned_source_units": 1,
+            "all_source_units_dispositioned": true,
+            "terminal_source_units": 1,
+            "all_source_units_terminal": true,
+            "units": [
+              {
+                "source_unit_id": "unit-887ccc2fa19175bfa0eff770e83630f0",
+                "terminal": true,
+                "event_ids": [
+                  "qboevt_eb63f50c6f988f73196a2f57d77a03d8"
+                ],
+                "dispositions": [
+                  "POSTED_READBACK_VERIFIED"
+                ]
+              }
+            ]
+          },
+          "residual_event_count": 0,
+          "completion_claim": {
+            "supplied_set_coverage": "COMPLETE",
+            "eligible_write_status": "ALL_READBACK_VERIFIED",
+            "whole_business_completeness": "NOT_ASSERTED",
+            "case_processing_completeness": "ALL_TYPED_EVENTS_TERMINAL",
+            "ledger_write_claim": "ALL_ELIGIBLE_WRITES_READBACK_VERIFIED"
+          }
+        }
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 25
+  }
+}

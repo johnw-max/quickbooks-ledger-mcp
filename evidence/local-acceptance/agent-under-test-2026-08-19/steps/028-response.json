@@ -1,0 +1,92 @@
+{
+  "started": "2026-08-19T03:00:02.700Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_get_bill",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "bill_id": "146"
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"billId\":\"146\",\"syncToken\":\"0\",\"paymentStatus\":\"OPEN\",\"vendor\":{\"id\":\"56\",\"name\":\"Acme Cloud Services Pte Ltd\"},\"apAccount\":{\"id\":\"33\",\"name\":\"Accounts Payable (A/P)\"},\"txnDate\":\"2026-07-05\",\"dueDate\":\"2026-08-04\",\"docNumber\":\"ACME-2026-0705\",\"currencyCode\":\"SGD\",\"total\":\"800.00\",\"balance\":\"300.00\",\"lines\":[{\"amount\":\"800.00\",\"account\":{\"id\":\"7\",\"name\":\"Software subscriptions\"}}]},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.object.read_exact\",\"tool_call_or_audit_ref\":\"qbo-tool-call:0125b51a-84e2-48fc-8fa3-07c84245d62a\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T03:00:02.705Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{\"bill_id\":\"146\"}},\"completeness\":{\"status\":\"exact_object_identity\",\"scope\":\"exact_provider_object_id\",\"provider_field_completeness\":\"not_independently_verified\"},\"output_hash\":\"sha256:bce50502a1dc81324c1fd2430644bf2003c39908544c67d642d518e04b32bdb3\",\"fact_paths\":[\"/result/billId\",\"/result/syncToken\",\"/result/paymentStatus\",\"/result/vendor\",\"/result/apAccount\",\"/result/txnDate\",\"/result/dueDate\",\"/result/docNumber\",\"/result/currencyCode\",\"/result/total\",\"/result/balance\",\"/result/lines\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "billId": "146",
+          "syncToken": "0",
+          "paymentStatus": "OPEN",
+          "vendor": {
+            "id": "56",
+            "name": "Acme Cloud Services Pte Ltd"
+          },
+          "apAccount": {
+            "id": "33",
+            "name": "Accounts Payable (A/P)"
+          },
+          "txnDate": "2026-07-05",
+          "dueDate": "2026-08-04",
+          "docNumber": "ACME-2026-0705",
+          "currencyCode": "SGD",
+          "total": "800.00",
+          "balance": "300.00",
+          "lines": [
+            {
+              "amount": "800.00",
+              "account": {
+                "id": "7",
+                "name": "Software subscriptions"
+              }
+            }
+          ]
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.object.read_exact",
+        "tool_call_or_audit_ref": "qbo-tool-call:0125b51a-84e2-48fc-8fa3-07c84245d62a",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T03:00:02.705Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {
+            "bill_id": "146"
+          }
+        },
+        "completeness": {
+          "status": "exact_object_identity",
+          "scope": "exact_provider_object_id",
+          "provider_field_completeness": "not_independently_verified"
+        },
+        "output_hash": "sha256:bce50502a1dc81324c1fd2430644bf2003c39908544c67d642d518e04b32bdb3",
+        "fact_paths": [
+          "/result/billId",
+          "/result/syncToken",
+          "/result/paymentStatus",
+          "/result/vendor",
+          "/result/apAccount",
+          "/result/txnDate",
+          "/result/dueDate",
+          "/result/docNumber",
+          "/result/currencyCode",
+          "/result/total",
+          "/result/balance",
+          "/result/lines"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 31
+  }
+}

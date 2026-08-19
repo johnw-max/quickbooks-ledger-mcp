@@ -1,0 +1,1 @@
+{ "method": "tools/call", "params": { "name": "quickbooks_get_write_capabilities", "arguments": {} } }

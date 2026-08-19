@@ -1,0 +1,35 @@
+{
+  "init": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "logging": {},
+      "tools": {
+        "listChanged": true
+      }
+    },
+    "serverInfo": {
+      "name": "zcloak-quickbooks-accounting-mcp",
+      "version": "0.6.0"
+    }
+  },
+  "tool_names": [
+    "quickbooks_connection_status",
+    "quickbooks_resolve_target",
+    "quickbooks_get_company",
+    "quickbooks_list_accounts",
+    "quickbooks_list_tax_codes",
+    "quickbooks_search_vendors",
+    "quickbooks_search_customers",
+    "quickbooks_list_items",
+    "quickbooks_list_bills",
+    "quickbooks_get_bill",
+    "quickbooks_list_transactions",
+    "quickbooks_get_transaction",
+    "quickbooks_run_report",
+    "quickbooks_get_trial_balance",
+    "quickbooks_get_write_capabilities",
+    "quickbooks_prepare_accounting_case",
+    "quickbooks_execute_accounting_case",
+    "quickbooks_get_accounting_case_status"
+  ]
+}

@@ -1,0 +1,181 @@
+{
+  "started": "2026-08-19T02:56:34.974Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_list_bills",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"bills\":[{\"billId\":\"145\",\"syncToken\":\"0\",\"paymentStatus\":\"PAID\",\"vendor\":{\"id\":\"56\",\"name\":\"Acme Cloud Services Pte Ltd\"},\"apAccount\":{\"id\":\"33\",\"name\":\"Accounts Payable (A/P)\"},\"txnDate\":\"2026-06-05\",\"dueDate\":\"2026-07-05\",\"docNumber\":\"ACME-2026-0605\",\"currencyCode\":\"SGD\",\"total\":\"1200.00\",\"balance\":\"0.00\",\"lines\":[{\"amount\":\"1200.00\",\"account\":{\"id\":\"7\",\"name\":\"Software subscriptions\"}}]},{\"billId\":\"146\",\"syncToken\":\"0\",\"paymentStatus\":\"OPEN\",\"vendor\":{\"id\":\"56\",\"name\":\"Acme Cloud Services Pte Ltd\"},\"apAccount\":{\"id\":\"33\",\"name\":\"Accounts Payable (A/P)\"},\"txnDate\":\"2026-07-05\",\"dueDate\":\"2026-08-04\",\"docNumber\":\"ACME-2026-0705\",\"currencyCode\":\"SGD\",\"total\":\"800.00\",\"balance\":\"300.00\",\"lines\":[{\"amount\":\"800.00\",\"account\":{\"id\":\"7\",\"name\":\"Software subscriptions\"}}]},{\"billId\":\"201\",\"syncToken\":\"0\",\"paymentStatus\":\"OPEN\",\"vendor\":{\"id\":\"57\",\"name\":\"Northwind Advisory LLP\"},\"apAccount\":{\"id\":\"33\",\"name\":\"Accounts Payable (A/P)\"},\"txnDate\":\"2026-07-20\",\"dueDate\":\"2026-08-19\",\"docNumber\":\"NW-260720\",\"currencyCode\":\"SGD\",\"total\":\"2400.00\",\"balance\":\"2400.00\",\"lines\":[{\"amount\":\"2400.00\",\"account\":{\"id\":\"8\",\"name\":\"Professional fees\"}}]},{\"billId\":\"10001\",\"syncToken\":\"0\",\"paymentStatus\":\"OPEN\",\"vendor\":{\"id\":\"10000\"},\"txnDate\":\"2026-08-12\",\"dueDate\":\"2026-09-11\",\"docNumber\":\"LH-2026-0812\",\"currencyCode\":\"SGD\",\"total\":\"1635.00\",\"balance\":\"1635.00\",\"lines\":[{\"amount\":\"1500.00\",\"description\":\"Office cleaning services\",\"account\":{\"id\":\"9\"}}]}],\"pagination\":{\"page\":1,\"pageSize\":25,\"returned\":4,\"totalCount\":4,\"hasNextPage\":false}},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.transaction.search\",\"tool_call_or_audit_ref\":\"qbo-tool-call:fb189bfc-630f-4570-8bd3-2f1a2e4a7510\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T02:56:34.977Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{\"page\":1,\"page_size\":25}},\"completeness\":{\"status\":\"bounded_query_result\",\"scope\":\"declared_provider_page\",\"within_declared_query_bounds\":true,\"declared_result_complete\":true,\"whole_ledger_complete\":false,\"pagination\":{\"page\":1,\"pageSize\":25,\"returned\":4,\"totalCount\":4,\"hasNextPage\":false}},\"output_hash\":\"sha256:e75112d86e6c0ff69128e9b279dcea19dd32a5c8f6d2ed4352f66062a21d1740\",\"fact_paths\":[\"/result/bills\",\"/result/pagination\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "bills": [
+            {
+              "billId": "145",
+              "syncToken": "0",
+              "paymentStatus": "PAID",
+              "vendor": {
+                "id": "56",
+                "name": "Acme Cloud Services Pte Ltd"
+              },
+              "apAccount": {
+                "id": "33",
+                "name": "Accounts Payable (A/P)"
+              },
+              "txnDate": "2026-06-05",
+              "dueDate": "2026-07-05",
+              "docNumber": "ACME-2026-0605",
+              "currencyCode": "SGD",
+              "total": "1200.00",
+              "balance": "0.00",
+              "lines": [
+                {
+                  "amount": "1200.00",
+                  "account": {
+                    "id": "7",
+                    "name": "Software subscriptions"
+                  }
+                }
+              ]
+            },
+            {
+              "billId": "146",
+              "syncToken": "0",
+              "paymentStatus": "OPEN",
+              "vendor": {
+                "id": "56",
+                "name": "Acme Cloud Services Pte Ltd"
+              },
+              "apAccount": {
+                "id": "33",
+                "name": "Accounts Payable (A/P)"
+              },
+              "txnDate": "2026-07-05",
+              "dueDate": "2026-08-04",
+              "docNumber": "ACME-2026-0705",
+              "currencyCode": "SGD",
+              "total": "800.00",
+              "balance": "300.00",
+              "lines": [
+                {
+                  "amount": "800.00",
+                  "account": {
+                    "id": "7",
+                    "name": "Software subscriptions"
+                  }
+                }
+              ]
+            },
+            {
+              "billId": "201",
+              "syncToken": "0",
+              "paymentStatus": "OPEN",
+              "vendor": {
+                "id": "57",
+                "name": "Northwind Advisory LLP"
+              },
+              "apAccount": {
+                "id": "33",
+                "name": "Accounts Payable (A/P)"
+              },
+              "txnDate": "2026-07-20",
+              "dueDate": "2026-08-19",
+              "docNumber": "NW-260720",
+              "currencyCode": "SGD",
+              "total": "2400.00",
+              "balance": "2400.00",
+              "lines": [
+                {
+                  "amount": "2400.00",
+                  "account": {
+                    "id": "8",
+                    "name": "Professional fees"
+                  }
+                }
+              ]
+            },
+            {
+              "billId": "10001",
+              "syncToken": "0",
+              "paymentStatus": "OPEN",
+              "vendor": {
+                "id": "10000"
+              },
+              "txnDate": "2026-08-12",
+              "dueDate": "2026-09-11",
+              "docNumber": "LH-2026-0812",
+              "currencyCode": "SGD",
+              "total": "1635.00",
+              "balance": "1635.00",
+              "lines": [
+                {
+                  "amount": "1500.00",
+                  "description": "Office cleaning services",
+                  "account": {
+                    "id": "9"
+                  }
+                }
+              ]
+            }
+          ],
+          "pagination": {
+            "page": 1,
+            "pageSize": 25,
+            "returned": 4,
+            "totalCount": 4,
+            "hasNextPage": false
+          }
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.transaction.search",
+        "tool_call_or_audit_ref": "qbo-tool-call:fb189bfc-630f-4570-8bd3-2f1a2e4a7510",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T02:56:34.977Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {
+            "page": 1,
+            "page_size": 25
+          }
+        },
+        "completeness": {
+          "status": "bounded_query_result",
+          "scope": "declared_provider_page",
+          "within_declared_query_bounds": true,
+          "declared_result_complete": true,
+          "whole_ledger_complete": false,
+          "pagination": {
+            "page": 1,
+            "pageSize": 25,
+            "returned": 4,
+            "totalCount": 4,
+            "hasNextPage": false
+          }
+        },
+        "output_hash": "sha256:e75112d86e6c0ff69128e9b279dcea19dd32a5c8f6d2ed4352f66062a21d1740",
+        "fact_paths": [
+          "/result/bills",
+          "/result/pagination"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 29
+  }
+}

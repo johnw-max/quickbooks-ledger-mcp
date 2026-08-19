@@ -1,0 +1,64 @@
+{
+  "started": "2026-08-19T02:49:51.355Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_get_company",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"Id\":\"1\",\"CompanyName\":\"zCloak Accounting Sandbox Pte Ltd\",\"LegalName\":\"zCloak Accounting Sandbox Pte. Ltd.\",\"Country\":\"SG\",\"FiscalYearStartMonth\":\"January\",\"HomeCurrency\":{\"value\":\"SGD\",\"name\":\"Singapore Dollar\"},\"MultiCurrencyEnabled\":true},\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.target.resolve\",\"tool_call_or_audit_ref\":\"qbo-tool-call:5b26dca2-0235-4bb5-9cb0-61bae38d7722\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T02:49:51.358Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{}},\"completeness\":{\"status\":\"complete\",\"scope\":\"active_server_bound_quickbooks_company\",\"base_currency_returned\":true},\"output_hash\":\"sha256:263c35314084b38cb3e57cd70b6415135f9fbb52f6287cb5fbe880c6cab74544\",\"fact_paths\":[\"/result/CompanyName\",\"/result/HomeCurrency/value\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\",\"base_currency\":\"SGD\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "Id": "1",
+          "CompanyName": "zCloak Accounting Sandbox Pte Ltd",
+          "LegalName": "zCloak Accounting Sandbox Pte. Ltd.",
+          "Country": "SG",
+          "FiscalYearStartMonth": "January",
+          "HomeCurrency": {
+            "value": "SGD",
+            "name": "Singapore Dollar"
+          },
+          "MultiCurrencyEnabled": true
+        },
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.target.resolve",
+        "tool_call_or_audit_ref": "qbo-tool-call:5b26dca2-0235-4bb5-9cb0-61bae38d7722",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T02:49:51.358Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {}
+        },
+        "completeness": {
+          "status": "complete",
+          "scope": "active_server_bound_quickbooks_company",
+          "base_currency_returned": true
+        },
+        "output_hash": "sha256:263c35314084b38cb3e57cd70b6415135f9fbb52f6287cb5fbe880c6cab74544",
+        "fact_paths": [
+          "/result/CompanyName",
+          "/result/HomeCurrency/value"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1",
+        "base_currency": "SGD"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 6
+  }
+}

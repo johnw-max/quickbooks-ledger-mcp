@@ -1,0 +1,44 @@
+{
+  "started": "2026-08-19T02:52:14.546Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "case_id": "probe",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "probe-1",
+            "label": "probe",
+            "units": [
+              {
+                "unit_key": "u1",
+                "facts": [
+                  {
+                    "kind": "CONTACT"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "MCP error -32602: Input validation error: Invalid arguments for tool quickbooks_prepare_accounting_case: Invalid option: expected one of \"CUSTOMER\"|\"VENDOR\" at sources[0].units[0].facts[0].role\nInvalid input: expected string, received undefined at sources[0].units[0].facts[0].display_name"
+        }
+      ],
+      "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 17
+  }
+}

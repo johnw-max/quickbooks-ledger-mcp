@@ -1,0 +1,1 @@
+{ "method": "tools/call", "params": { "name": "quickbooks_execute_accounting_case", "arguments": { "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "case_id": "case-ap-lionheart-lh-2026-0812", "case_version": 1, "request_id": "req-lionheart-lh-2026-0812-v1-56346fdd2402" } } }

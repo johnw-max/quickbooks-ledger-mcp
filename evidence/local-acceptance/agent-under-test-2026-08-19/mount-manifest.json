@@ -1,0 +1,18 @@
+{
+  "workspace": "/var/folders/yg/bwcg98js52z1d3_k0czn7s940000gn/T/quickbooks-agent-under-test-ajq7cS",
+  "skills": "/var/folders/yg/bwcg98js52z1d3_k0czn7s940000gn/T/quickbooks-agent-under-test-ajq7cS/skills",
+  "agent_config": "/var/folders/yg/bwcg98js52z1d3_k0czn7s940000gn/T/quickbooks-agent-under-test-ajq7cS/agent-config",
+  "step_dir": "/var/folders/yg/bwcg98js52z1d3_k0czn7s940000gn/T/quickbooks-agent-under-test-ajq7cS/steps",
+  "server_audit": "/var/folders/yg/bwcg98js52z1d3_k0czn7s940000gn/T/quickbooks-agent-under-test-ajq7cS/server-audit.json",
+  "mounted_skills": [
+    "prepare-balanced-accounting-entry",
+    "execute-approved-accounting-entry",
+    "singapore-gst-ledger-mapping"
+  ],
+  "mounted_config": [
+    "accounting-agent-instructions.md",
+    "capability-contract.md",
+    "connector-profiles/quickbooks.md"
+  ],
+  "driver_pid": 62443
+}

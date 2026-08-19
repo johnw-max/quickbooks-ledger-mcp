@@ -1,0 +1,127 @@
+{
+  "started": "2026-08-19T02:53:50.745Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "case_id": "case-ap-lionheart-lh-2026-0812",
+        "expected_version": 0,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "lionheart-lh-2026-0812",
+            "label": "Lionheart Facilities Pte Ltd supplier invoice LH-2026-0812",
+            "units": [
+              {
+                "unit_key": "vendor-lionheart-facilities",
+                "facts": [
+                  {
+                    "kind": "CONTACT",
+                    "role": "VENDOR",
+                    "display_name": "Lionheart Facilities Pte Ltd"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"case_id\":\"case-ap-lionheart-lh-2026-0812\",\"case_version\":1,\"state\":\"PLANNED_NEEDS_PREFLIGHT\",\"source_revision_hash\":\"ad1059fe5d08c474b12821c00a3ec5cf737b6ad463bf2a0424d711e98ef7b26f\",\"compiled_plan_hash\":\"56346fdd2402ef0e1ad7e9474c92e3a9d294eba643155ab80ee1c4c987bc9215\",\"compiler_version\":\"0.2.0\",\"policy_version\":\"quickbooks-sg-core-v1\",\"coverage\":{\"supplied_set\":\"COMPLETE\",\"expected_artifacts\":1,\"expected_source_units\":1,\"expected_fact_requirements\":1,\"satisfied_fact_requirements\":1,\"missing_fact_requirements\":[]},\"events\":[{\"event_id\":\"qboevt_eb63f50c6f988f73196a2f57d77a03d8\",\"event_key\":\"event-887ccc2fa19175bfa0eff770e83630f0\",\"source_unit_ids\":[\"unit-887ccc2fa19175bfa0eff770e83630f0\"],\"compiled_disposition\":\"AUTO_EXECUTE\",\"disposition\":\"PENDING_EXECUTION\",\"route\":\"CONTACT_CREATE\",\"reason_codes\":[],\"next_action\":\"EXECUTE_ACCOUNTING_CASE\"}],\"operations\":[{\"operation_id\":\"qboop_7e82c602be5425a8d01de62641b40694\",\"event_id\":\"qboevt_eb63f50c6f988f73196a2f57d77a03d8\",\"action_id\":\"vendor.create_basic\",\"entity\":\"Vendor\",\"state\":\"PENDING\",\"authorization_receipt_recorded\":false,\"provider_receipt_recorded\":false,\"exact_readback_recorded\":false,\"assurance\":{\"authorization_receipt_hash_verified\":false,\"authorization_causal_evidence_verified\":false,\"deterministic_reuse_evidence_verified\":true,\"provider_receipt_identity_verified\":false,\"exact_readback_identity_verified\":false,\"all_required_evidence_verified\":false},\"next_action\":\"EXECUTE_ACCOUNTING_CASE\"}],\"source_unit_terminal_coverage\":{\"expected_source_units\":1,\"dispositioned_source_units\":1,\"all_source_units_dispositioned\":true,\"terminal_source_units\":0,\"all_source_units_terminal\":false,\"units\":[{\"source_unit_id\":\"unit-887ccc2fa19175bfa0eff770e83630f0\",\"terminal\":false,\"event_ids\":[\"qboevt_eb63f50c6f988f73196a2f57d77a03d8\"],\"dispositions\":[\"PENDING_EXECUTION\"]}]},\"residual_event_count\":0,\"completion_claim\":{\"supplied_set_coverage\":\"COMPLETE\",\"eligible_write_status\":\"NONE\",\"whole_business_completeness\":\"NOT_ASSERTED\",\"case_processing_completeness\":\"ELIGIBLE_WRITES_PENDING\",\"ledger_write_claim\":\"NOT_WRITTEN\"},\"persistence_mode\":\"CREATED\"}}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "case_id": "case-ap-lionheart-lh-2026-0812",
+          "case_version": 1,
+          "state": "PLANNED_NEEDS_PREFLIGHT",
+          "source_revision_hash": "ad1059fe5d08c474b12821c00a3ec5cf737b6ad463bf2a0424d711e98ef7b26f",
+          "compiled_plan_hash": "56346fdd2402ef0e1ad7e9474c92e3a9d294eba643155ab80ee1c4c987bc9215",
+          "compiler_version": "0.2.0",
+          "policy_version": "quickbooks-sg-core-v1",
+          "coverage": {
+            "supplied_set": "COMPLETE",
+            "expected_artifacts": 1,
+            "expected_source_units": 1,
+            "expected_fact_requirements": 1,
+            "satisfied_fact_requirements": 1,
+            "missing_fact_requirements": []
+          },
+          "events": [
+            {
+              "event_id": "qboevt_eb63f50c6f988f73196a2f57d77a03d8",
+              "event_key": "event-887ccc2fa19175bfa0eff770e83630f0",
+              "source_unit_ids": [
+                "unit-887ccc2fa19175bfa0eff770e83630f0"
+              ],
+              "compiled_disposition": "AUTO_EXECUTE",
+              "disposition": "PENDING_EXECUTION",
+              "route": "CONTACT_CREATE",
+              "reason_codes": [],
+              "next_action": "EXECUTE_ACCOUNTING_CASE"
+            }
+          ],
+          "operations": [
+            {
+              "operation_id": "qboop_7e82c602be5425a8d01de62641b40694",
+              "event_id": "qboevt_eb63f50c6f988f73196a2f57d77a03d8",
+              "action_id": "vendor.create_basic",
+              "entity": "Vendor",
+              "state": "PENDING",
+              "authorization_receipt_recorded": false,
+              "provider_receipt_recorded": false,
+              "exact_readback_recorded": false,
+              "assurance": {
+                "authorization_receipt_hash_verified": false,
+                "authorization_causal_evidence_verified": false,
+                "deterministic_reuse_evidence_verified": true,
+                "provider_receipt_identity_verified": false,
+                "exact_readback_identity_verified": false,
+                "all_required_evidence_verified": false
+              },
+              "next_action": "EXECUTE_ACCOUNTING_CASE"
+            }
+          ],
+          "source_unit_terminal_coverage": {
+            "expected_source_units": 1,
+            "dispositioned_source_units": 1,
+            "all_source_units_dispositioned": true,
+            "terminal_source_units": 0,
+            "all_source_units_terminal": false,
+            "units": [
+              {
+                "source_unit_id": "unit-887ccc2fa19175bfa0eff770e83630f0",
+                "terminal": false,
+                "event_ids": [
+                  "qboevt_eb63f50c6f988f73196a2f57d77a03d8"
+                ],
+                "dispositions": [
+                  "PENDING_EXECUTION"
+                ]
+              }
+            ]
+          },
+          "residual_event_count": 0,
+          "completion_claim": {
+            "supplied_set_coverage": "COMPLETE",
+            "eligible_write_status": "NONE",
+            "whole_business_completeness": "NOT_ASSERTED",
+            "case_processing_completeness": "ELIGIBLE_WRITES_PENDING",
+            "ledger_write_claim": "NOT_WRITTEN"
+          },
+          "persistence_mode": "CREATED"
+        }
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 23
+  }
+}

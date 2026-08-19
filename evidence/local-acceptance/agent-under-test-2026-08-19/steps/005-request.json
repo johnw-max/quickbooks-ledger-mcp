@@ -1,0 +1,1 @@
+{ "method": "tools/call", "params": { "name": "quickbooks_list_accounts", "arguments": { "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" } } }

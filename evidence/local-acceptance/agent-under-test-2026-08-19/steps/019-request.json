@@ -1,0 +1,31 @@
+{
+ "method": "tools/call",
+ "params": {
+  "name": "quickbooks_prepare_accounting_case",
+  "arguments": {
+   "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "case_id": "case-ap-lionheart-lh-2026-0812",
+   "expected_version": 0,
+   "source_set_complete": true,
+   "sources": [
+    {
+     "source_key": "lionheart-lh-2026-0812",
+     "label": "Lionheart Facilities Pte Ltd supplier invoice LH-2026-0812",
+     "units": [
+      {
+       "unit_key": "vendor-lionheart-facilities",
+       "facts": [
+        {
+         "kind": "CONTACT",
+         "role": "VENDOR",
+         "display_name": "Lionheart Facilities Pte Ltd",
+         "business_reason": "New supplier for office cleaning; no matching vendor found in the bound company (vendor search for 'Lionheart' and 'Facilities' returned no records). Vendor master record required before its supplier bill LH-2026-0812 can be recorded."
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

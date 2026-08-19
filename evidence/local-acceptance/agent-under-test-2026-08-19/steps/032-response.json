@@ -1,0 +1,84 @@
+{
+  "started": "2026-08-19T03:03:43.802Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_list_accounts",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":[{\"Id\":\"7\",\"Name\":\"Software subscriptions\",\"AccountType\":\"Expense\",\"Active\":true},{\"Id\":\"8\",\"Name\":\"Professional fees\",\"AccountType\":\"Expense\",\"Active\":true},{\"Id\":\"9\",\"Name\":\"Office Expenses\",\"AccountType\":\"Expense\",\"Active\":true},{\"Id\":\"10\",\"Name\":\"Cloud Subscriptions\",\"AccountType\":\"Expense\",\"Active\":true},{\"Id\":\"33\",\"Name\":\"Accounts Payable (A/P)\",\"AccountType\":\"Accounts Payable\",\"Active\":true}],\"result_class\":\"succeeded\",\"fact_origin\":\"MCP_READ\",\"source_system\":\"quickbooks\",\"destination_role\":\"ledger_sor\",\"capability_id\":\"ledger.reference.accounts.read\",\"tool_call_or_audit_ref\":\"qbo-tool-call:ff394586-f20e-4845-abc6-de737a5202da\",\"capability_revision\":\"quickbooks-mcp@0.6.0\",\"observed_at\":\"2026-08-19T03:03:43.803Z\",\"query_bounds\":{\"target_scope\":\"active_server_bound_quickbooks_company\",\"requested\":{}},\"completeness\":{\"status\":\"bounded_query_result\",\"scope\":\"single_provider_response\",\"within_declared_query_bounds\":true,\"declared_result_complete\":\"not_independently_verified\",\"whole_ledger_complete\":false},\"output_hash\":\"sha256:7fa97d959d4c58d2846bde25666e66c330a12d3f0db17c5ebfa08dd433b5026c\",\"fact_paths\":[\"/result\"],\"bound_target_ref_safe\":\"quickbooks-target:local-synthetic-v1\",\"organisation_display_name\":\"zCloak Accounting Sandbox Pte Ltd\",\"binding_revision\":\"quickbooks-binding-revision:local-synthetic-v1\"}"
+        }
+      ],
+      "structuredContent": {
+        "result": [
+          {
+            "Id": "7",
+            "Name": "Software subscriptions",
+            "AccountType": "Expense",
+            "Active": true
+          },
+          {
+            "Id": "8",
+            "Name": "Professional fees",
+            "AccountType": "Expense",
+            "Active": true
+          },
+          {
+            "Id": "9",
+            "Name": "Office Expenses",
+            "AccountType": "Expense",
+            "Active": true
+          },
+          {
+            "Id": "10",
+            "Name": "Cloud Subscriptions",
+            "AccountType": "Expense",
+            "Active": true
+          },
+          {
+            "Id": "33",
+            "Name": "Accounts Payable (A/P)",
+            "AccountType": "Accounts Payable",
+            "Active": true
+          }
+        ],
+        "result_class": "succeeded",
+        "fact_origin": "MCP_READ",
+        "source_system": "quickbooks",
+        "destination_role": "ledger_sor",
+        "capability_id": "ledger.reference.accounts.read",
+        "tool_call_or_audit_ref": "qbo-tool-call:ff394586-f20e-4845-abc6-de737a5202da",
+        "capability_revision": "quickbooks-mcp@0.6.0",
+        "observed_at": "2026-08-19T03:03:43.803Z",
+        "query_bounds": {
+          "target_scope": "active_server_bound_quickbooks_company",
+          "requested": {}
+        },
+        "completeness": {
+          "status": "bounded_query_result",
+          "scope": "single_provider_response",
+          "within_declared_query_bounds": true,
+          "declared_result_complete": "not_independently_verified",
+          "whole_ledger_complete": false
+        },
+        "output_hash": "sha256:7fa97d959d4c58d2846bde25666e66c330a12d3f0db17c5ebfa08dd433b5026c",
+        "fact_paths": [
+          "/result"
+        ],
+        "bound_target_ref_safe": "quickbooks-target:local-synthetic-v1",
+        "organisation_display_name": "zCloak Accounting Sandbox Pte Ltd",
+        "binding_revision": "quickbooks-binding-revision:local-synthetic-v1"
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 35
+  }
+}

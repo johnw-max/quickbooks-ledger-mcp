@@ -1,0 +1,181 @@
+{
+  "started": "2026-08-19T02:54:42.680Z",
+  "spec": {
+    "method": "tools/call",
+    "params": {
+      "name": "quickbooks_prepare_accounting_case",
+      "arguments": {
+        "target_session_ref": "qbts_v1.aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "case_id": "case-ap-lionheart-lh-2026-0812",
+        "expected_version": 1,
+        "source_set_complete": true,
+        "sources": [
+          {
+            "source_key": "lionheart-lh-2026-0812",
+            "label": "Lionheart Facilities Pte Ltd supplier invoice LH-2026-0812",
+            "units": [
+              {
+                "unit_key": "vendor-lionheart-facilities",
+                "facts": [
+                  {
+                    "kind": "CONTACT",
+                    "role": "VENDOR",
+                    "display_name": "Lionheart Facilities Pte Ltd"
+                  }
+                ]
+              },
+              {
+                "unit_key": "bill-lh-2026-0812",
+                "facts": [
+                  {
+                    "kind": "DOCUMENT",
+                    "document_type": "BILL",
+                    "counterparty_name": "Lionheart Facilities Pte Ltd",
+                    "document_date": "2026-08-12",
+                    "due_date": "2026-09-11",
+                    "document_number": "LH-2026-0812",
+                    "currency": "SGD",
+                    "tax_mode": "TAX_EXCLUDED",
+                    "lines": [
+                      {
+                        "description": "Office cleaning services",
+                        "quantity": "1",
+                        "unit_amount": "1500.00",
+                        "source_tax_amount": "135.00",
+                        "coding_type": "ACCOUNT",
+                        "coding_name": "Office Expenses",
+                        "tax_code_name": "GST 9% Purchases"
+                      }
+                    ],
+                    "declared_net": "1500.00",
+                    "declared_tax": "135.00",
+                    "declared_gross": "1635.00",
+                    "business_reason": "Supplier bill for office cleaning received from Lionheart Facilities Pte Ltd, invoice LH-2026-0812 dated 2026-08-12, 30-day terms (due 2026-09-11). Standard-rated input GST at 9% on a local purchase. No existing bill with this document number or vendor was found in the bound company."
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"result\":{\"case_id\":\"case-ap-lionheart-lh-2026-0812\",\"case_version\":2,\"state\":\"PLANNED_NEEDS_PREFLIGHT\",\"source_revision_hash\":\"e740a04f92844ac3a03464b5c7c93a9a6ee2cfb9aa84098bfeda07b3c204338f\",\"compiled_plan_hash\":\"096a428080afcaeffc406f6a4a0f43a8f7e8d58d9c0cd22ca638cc7749df3b9b\",\"compiler_version\":\"0.2.0\",\"policy_version\":\"quickbooks-sg-core-v1\",\"coverage\":{\"supplied_set\":\"COMPLETE\",\"expected_artifacts\":1,\"expected_source_units\":2,\"expected_fact_requirements\":2,\"satisfied_fact_requirements\":2,\"missing_fact_requirements\":[]},\"events\":[{\"event_id\":\"qboevt_b2986f94977b9304057f0177663a74ee\",\"event_key\":\"event-299034f4dc278802bb062fe82e4ab0f2\",\"source_unit_ids\":[\"unit-299034f4dc278802bb062fe82e4ab0f2\"],\"compiled_disposition\":\"AUTO_EXECUTE\",\"disposition\":\"PENDING_EXECUTION\",\"route\":\"BILL\",\"reason_codes\":[],\"next_action\":\"EXECUTE_ACCOUNTING_CASE\"},{\"event_id\":\"qboevt_2d0745833b636c9365a322875b843ace\",\"event_key\":\"event-887ccc2fa19175bfa0eff770e83630f0\",\"source_unit_ids\":[\"unit-887ccc2fa19175bfa0eff770e83630f0\"],\"compiled_disposition\":\"EVIDENCE_ONLY\",\"disposition\":\"EVIDENCE_ONLY\",\"route\":\"CONTACT_CREATE\",\"reason_codes\":[\"CONTACT_ALREADY_EXISTS\"],\"next_action\":\"NONE\"}],\"operations\":[{\"operation_id\":\"qboop_73a28d31dc3ba2cfde7a54238081f0d2\",\"event_id\":\"qboevt_b2986f94977b9304057f0177663a74ee\",\"action_id\":\"bill.create\",\"entity\":\"Bill\",\"state\":\"PENDING\",\"authorization_receipt_recorded\":false,\"provider_receipt_recorded\":false,\"exact_readback_recorded\":false,\"assurance\":{\"authorization_receipt_hash_verified\":false,\"authorization_causal_evidence_verified\":false,\"deterministic_reuse_evidence_verified\":true,\"provider_receipt_identity_verified\":false,\"exact_readback_identity_verified\":false,\"all_required_evidence_verified\":false},\"next_action\":\"EXECUTE_ACCOUNTING_CASE\"}],\"source_unit_terminal_coverage\":{\"expected_source_units\":2,\"dispositioned_source_units\":2,\"all_source_units_dispositioned\":true,\"terminal_source_units\":1,\"all_source_units_terminal\":false,\"units\":[{\"source_unit_id\":\"unit-299034f4dc278802bb062fe82e4ab0f2\",\"terminal\":false,\"event_ids\":[\"qboevt_b2986f94977b9304057f0177663a74ee\"],\"dispositions\":[\"PENDING_EXECUTION\"]},{\"source_unit_id\":\"unit-887ccc2fa19175bfa0eff770e83630f0\",\"terminal\":true,\"event_ids\":[\"qboevt_2d0745833b636c9365a322875b843ace\"],\"dispositions\":[\"EVIDENCE_ONLY\"]}]},\"residual_event_count\":0,\"completion_claim\":{\"supplied_set_coverage\":\"COMPLETE\",\"eligible_write_status\":\"NONE\",\"whole_business_completeness\":\"NOT_ASSERTED\",\"case_processing_completeness\":\"ELIGIBLE_WRITES_PENDING\",\"ledger_write_claim\":\"NOT_WRITTEN\"},\"persistence_mode\":\"ADVANCED\"}}"
+        }
+      ],
+      "structuredContent": {
+        "result": {
+          "case_id": "case-ap-lionheart-lh-2026-0812",
+          "case_version": 2,
+          "state": "PLANNED_NEEDS_PREFLIGHT",
+          "source_revision_hash": "e740a04f92844ac3a03464b5c7c93a9a6ee2cfb9aa84098bfeda07b3c204338f",
+          "compiled_plan_hash": "096a428080afcaeffc406f6a4a0f43a8f7e8d58d9c0cd22ca638cc7749df3b9b",
+          "compiler_version": "0.2.0",
+          "policy_version": "quickbooks-sg-core-v1",
+          "coverage": {
+            "supplied_set": "COMPLETE",
+            "expected_artifacts": 1,
+            "expected_source_units": 2,
+            "expected_fact_requirements": 2,
+            "satisfied_fact_requirements": 2,
+            "missing_fact_requirements": []
+          },
+          "events": [
+            {
+              "event_id": "qboevt_b2986f94977b9304057f0177663a74ee",
+              "event_key": "event-299034f4dc278802bb062fe82e4ab0f2",
+              "source_unit_ids": [
+                "unit-299034f4dc278802bb062fe82e4ab0f2"
+              ],
+              "compiled_disposition": "AUTO_EXECUTE",
+              "disposition": "PENDING_EXECUTION",
+              "route": "BILL",
+              "reason_codes": [],
+              "next_action": "EXECUTE_ACCOUNTING_CASE"
+            },
+            {
+              "event_id": "qboevt_2d0745833b636c9365a322875b843ace",
+              "event_key": "event-887ccc2fa19175bfa0eff770e83630f0",
+              "source_unit_ids": [
+                "unit-887ccc2fa19175bfa0eff770e83630f0"
+              ],
+              "compiled_disposition": "EVIDENCE_ONLY",
+              "disposition": "EVIDENCE_ONLY",
+              "route": "CONTACT_CREATE",
+              "reason_codes": [
+                "CONTACT_ALREADY_EXISTS"
+              ],
+              "next_action": "NONE"
+            }
+          ],
+          "operations": [
+            {
+              "operation_id": "qboop_73a28d31dc3ba2cfde7a54238081f0d2",
+              "event_id": "qboevt_b2986f94977b9304057f0177663a74ee",
+              "action_id": "bill.create",
+              "entity": "Bill",
+              "state": "PENDING",
+              "authorization_receipt_recorded": false,
+              "provider_receipt_recorded": false,
+              "exact_readback_recorded": false,
+              "assurance": {
+                "authorization_receipt_hash_verified": false,
+                "authorization_causal_evidence_verified": false,
+                "deterministic_reuse_evidence_verified": true,
+                "provider_receipt_identity_verified": false,
+                "exact_readback_identity_verified": false,
+                "all_required_evidence_verified": false
+              },
+              "next_action": "EXECUTE_ACCOUNTING_CASE"
+            }
+          ],
+          "source_unit_terminal_coverage": {
+            "expected_source_units": 2,
+            "dispositioned_source_units": 2,
+            "all_source_units_dispositioned": true,
+            "terminal_source_units": 1,
+            "all_source_units_terminal": false,
+            "units": [
+              {
+                "source_unit_id": "unit-299034f4dc278802bb062fe82e4ab0f2",
+                "terminal": false,
+                "event_ids": [
+                  "qboevt_b2986f94977b9304057f0177663a74ee"
+                ],
+                "dispositions": [
+                  "PENDING_EXECUTION"
+                ]
+              },
+              {
+                "source_unit_id": "unit-887ccc2fa19175bfa0eff770e83630f0",
+                "terminal": true,
+                "event_ids": [
+                  "qboevt_2d0745833b636c9365a322875b843ace"
+                ],
+                "dispositions": [
+                  "EVIDENCE_ONLY"
+                ]
+              }
+            ]
+          },
+          "residual_event_count": 0,
+          "completion_claim": {
+            "supplied_set_coverage": "COMPLETE",
+            "eligible_write_status": "NONE",
+            "whole_business_completeness": "NOT_ASSERTED",
+            "case_processing_completeness": "ELIGIBLE_WRITES_PENDING",
+            "ledger_write_claim": "NOT_WRITTEN"
+          },
+          "persistence_mode": "ADVANCED"
+        }
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 26
+  }
+}
