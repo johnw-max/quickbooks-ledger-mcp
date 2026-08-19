@@ -1,7 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 
-const candidateName = "quickbooks-accounting-mcp-0.6-candidate";
+// The promoted candidate keeps running and serving traffic under its own name,
+// so a redeploy must bring up a differently named candidate beside it. Passing
+// the name in is what makes a second promotion possible at all.
+const candidateName = process.argv[2] ?? "quickbooks-accounting-mcp-0.6-candidate";
 const enabledConfig = "/etc/nginx/sites-enabled/mcp.jiayuanwang.xyz";
 const upstreamName = "quickbooks_accounting_mcp_demo";
 
@@ -44,10 +47,17 @@ if (upstreamMatches.length !== 1) {
   throw new Error(`Expected exactly one ${upstreamName} upstream; found ${upstreamMatches.length}`);
 }
 
-const serverPattern = /server\s+127\.0\.0\.1:18003;/g;
+// The first promotion replaced the loopback port; every later one replaces the
+// previously promoted container address. Matching only the loopback form made
+// this script single-use — it threw "found 0" on the second deploy, exactly
+// when a fix most needs to reach production.
+const serverPattern = /server\s+[0-9.]+:\d+;/g;
 const serverMatches = upstreamMatches[0].match(serverPattern) ?? [];
 if (serverMatches.length !== 1) {
-  throw new Error(`Expected exactly one legacy QuickBooks upstream server; found ${serverMatches.length}`);
+  throw new Error(`Expected exactly one QuickBooks upstream server; found ${serverMatches.length}`);
+}
+if (serverMatches[0] === `server ${candidateAddress}:3000;`) {
+  throw new Error(`Upstream already points at ${candidateAddress}:3000; nothing to promote`);
 }
 
 const replacementBlock = upstreamMatches[0].replace(serverPattern, `server ${candidateAddress}:3000;`);
@@ -73,6 +83,8 @@ try {
 console.log(JSON.stringify({
   status: "QBO_CANDIDATE_PROMOTED",
   candidateId: candidate.Id,
+  candidateName,
   candidateAddress,
+  previousUpstream: serverMatches[0],
   backup,
 }));
