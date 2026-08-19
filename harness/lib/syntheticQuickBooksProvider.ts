@@ -147,6 +147,15 @@ const supportedMutationEntities = new Set<QuickBooksWritableEntity>([
   "Customer", "Vendor", "Invoice", "Bill", "CreditMemo", "VendorCredit",
 ]);
 
+/**
+ * Mirrors src/providers/quickbooksProvider.ts's TOTAL_BEARING_TRANSACTION_ENTITIES:
+ * the set of entities for which real QuickBooks Online returns a total on
+ * read-back, and therefore also appends a derived SubTotalLineDetail line.
+ */
+const TOTAL_BEARING_TRANSACTION_ENTITIES = new Set<QuickBooksWritableEntity>([
+  "Invoice", "Bill", "CreditMemo", "VendorCredit",
+]);
+
 interface MutationReplay {
   fingerprint: string;
   result: {
@@ -188,10 +197,18 @@ function optionalName(id: string, name: string | undefined): { id: string; name?
   return { id, ...(name ? { name } : {}) };
 }
 
+function isSubTotalLine(line: unknown): boolean {
+  return Boolean(line && typeof line === "object" && !Array.isArray(line) &&
+    (line as Record<string, unknown>).DetailType === "SubTotalLineDetail");
+}
+
 function totalFromLines(record: Record<string, unknown>): number {
   if (typeof record.TotalAmt === "number") return record.TotalAmt;
   if (!Array.isArray(record.Line)) return 0;
   const lineTotal = record.Line.reduce((sum, line) => {
+    // QBO's own derived subtotal line is presentational, not an economic
+    // contribution -- summing it in would double the real total.
+    if (isSubTotalLine(line)) return sum;
     if (!line || typeof line !== "object" || Array.isArray(line)) return sum;
     const amount = (line as Record<string, unknown>).Amount;
     return sum + (typeof amount === "number" ? amount : 0);
@@ -204,6 +221,34 @@ function totalFromLines(record: Record<string, unknown>): number {
     ? lineTotal + totalTax
     : lineTotal;
   return Math.round((total + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Reproduces two QuickBooks Online read-back presentation artifacts that
+ * src/providers/quickbooksProvider.ts's mutationReadbackMatches() was written
+ * to tolerate: a derived, non-economic SubTotalLineDetail line QBO appends to
+ * every total-bearing transaction, and the absence of DueDate on CreditMemo
+ * and VendorCredit (neither entity represents it). Without this, the
+ * synthetic double only ever hands back the shape it was submitted, so the
+ * tolerance branch -- written against real UAT defects -- is unreachable
+ * against anything running locally.
+ */
+function withQuickBooksReadbackPresentation(
+  entity: QuickBooksWritableEntity,
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const shaped = { ...record };
+  if (entity === "CreditMemo" || entity === "VendorCredit") {
+    delete shaped.DueDate;
+  }
+  if (TOTAL_BEARING_TRANSACTION_ENTITIES.has(entity) && Array.isArray(shaped.Line) &&
+      !shaped.Line.some(isSubTotalLine)) {
+    shaped.Line = [
+      ...shaped.Line,
+      { Amount: totalFromLines(shaped), DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+    ];
+  }
+  return shaped;
 }
 
 function billRecord(snapshot: QuickBooksBillSnapshot): Record<string, unknown> {
@@ -571,11 +616,12 @@ export class SyntheticQuickBooksProvider implements QuickBooksProviderCapabiliti
         SyncToken: "0",
       };
       if ((input.entity === "Customer" || input.entity === "Vendor") && readback.Active === undefined) readback.Active = true;
-      if (["Invoice", "Bill", "CreditMemo", "VendorCredit"].includes(input.entity)) {
+      if (TOTAL_BEARING_TRANSACTION_ENTITIES.has(input.entity)) {
         const total = totalFromLines(readback);
         if (readback.TotalAmt === undefined) readback.TotalAmt = total;
         if (readback.Balance === undefined) readback.Balance = total;
       }
+      readback = withQuickBooksReadbackPresentation(input.entity, readback);
       store.set(providerEntityId, structuredClone(readback));
     } else {
       if (!input.targetId || !input.syncToken) {
@@ -589,7 +635,8 @@ export class SyntheticQuickBooksProvider implements QuickBooksProviderCapabiliti
       providerEntityId = input.targetId;
       const nextSyncToken = String(Number(input.syncToken) + 1);
       if (input.operation === "UPDATE") {
-        readback = { ...structuredClone(current), ...structuredClone(input.payload), Id: providerEntityId, SyncToken: nextSyncToken };
+        readback = withQuickBooksReadbackPresentation(input.entity,
+          { ...structuredClone(current), ...structuredClone(input.payload), Id: providerEntityId, SyncToken: nextSyncToken });
         store.set(providerEntityId, structuredClone(readback));
       } else if (input.entity === "Customer" || input.entity === "Vendor") {
         readback = { ...structuredClone(current), Id: providerEntityId, SyncToken: nextSyncToken, Active: false };
@@ -629,7 +676,11 @@ export class SyntheticQuickBooksProvider implements QuickBooksProviderCapabiliti
     const apRef = record.APAccountRef as { value?: unknown; name?: unknown } | undefined;
     const total = totalFromLines(record);
     const balance = typeof record.Balance === "number" ? record.Balance : total;
-    const rawLines = Array.isArray(record.Line) ? record.Line : [];
+    // QBO's derived SubTotalLineDetail line is presentational, not an
+    // accounting line; QuickBooksBillSnapshot.lines represents economic
+    // lines only, so it is excluded here rather than shown as an unexplained
+    // extra line with no account.
+    const rawLines = (Array.isArray(record.Line) ? record.Line : []).filter((line) => !isSubTotalLine(line));
     return {
       billId: id,
       realmId: SYNTHETIC_QUICKBOOKS_REALM_ID,
