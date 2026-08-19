@@ -702,8 +702,15 @@ export class QuickBooksAccountingCaseService {
         }
         const currentPreDispatchTransient = safe.details?.failureLayer === "PRE_DISPATCH_TRANSIENT" &&
           safe.details.providerMutationPossible === false;
-        const currentMcpScopePreDispatchFailure = safe.details?.failureLayer === "MCP_SCOPE" &&
-          durablePreparation?.state === "PREPARED" && !durablePreparation.providerEntityId &&
+        // The durable row, not the error's shape, is what proves the Provider was
+        // never reached: a real Provider rejection always passes the dispatch
+        // marker first, so it leaves an execution attempt behind. Classifying on
+        // details.failureLayer alone missed every refusal that carries no details
+        // — a target session expiring mid-execute, a reconnect, a binding
+        // revision moving — and recorded PROVIDER_REJECTED for work Intuit never
+        // saw, terminalizing the Case and putting a falsehood in the audit trail.
+        const durablyNeverDispatched = durablePreparation?.state === "PREPARED" &&
+          !durablePreparation.providerEntityId &&
           !durablePreparation.providerOutcomeReceipt && !durablePreparation.executionAttempt;
         if (!currentPreDispatchTransient && durablePreparation?.state === "EXECUTING" &&
           durablePreparation.executionAttempt && !durablePreparation.executionAttempt.dispatchStartedAt) {
@@ -796,11 +803,14 @@ export class QuickBooksAccountingCaseService {
           )
         );
         const preDispatchTransient = currentPreDispatchTransient;
-        if (executionFenced || preDispatchTransient || currentMcpScopePreDispatchFailure) {
+        if (executionFenced || preDispatchTransient || durablyNeverDispatched) {
           // Another Case owns the same stable durable mutation right now. Keep
           // this Case resumable under its existing execution request. A
           // transient pre-dispatch failure is equally safe to retry because
           // the mutation lease was durably released before this error escaped.
+          // The same holds for anything the durable row shows never dispatched:
+          // the Case stays resumable and the operation keeps its true state
+          // rather than being recorded as rejected by a Provider that never saw it.
           throw safe;
         }
         const providerMutationPossible = safe.code === "WRITE_RESULT_UNKNOWN" ||
