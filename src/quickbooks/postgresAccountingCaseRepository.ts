@@ -203,7 +203,28 @@ export class QuickBooksPostgresAccountingCaseRepository implements QuickBooksAcc
       let mode: "CLAIMED" | "RESUME" | "ALREADY_TERMINAL" = "CLAIMED";
       if (current.state === "TERMINAL") mode = "ALREADY_TERMINAL";
       else if (current.state === "EXECUTING" || current.state === "RECOVERY_REQUIRED") {
-        if (current.execution_request_id !== input.requestId) throw new AppError("CONFLICT", "Accounting Case is owned by another request.", { httpStatus: 409 });
+        // Resuming requires the request id that started the execution. Saying only
+        // that someone else owns the Case leaves the caller guessing: a real agent
+        // read this as lock contention and retried with a fresh request id a dozen
+        // times, which can never succeed. Name the owner and the action — it is the
+        // caller's own earlier request id, and the binding above already proves the
+        // caller owns this Case.
+        if (current.execution_request_id !== input.requestId) {
+          throw new AppError(
+            "CONFLICT",
+            "This Accounting Case version is already executing under an earlier request; resume it with that same request id rather than a new one.",
+            {
+              httpStatus: 409,
+              details: {
+                failureLayer: "CONCURRENCY_OR_VERSION",
+                reasonCodes: ["CASE_OWNED_BY_EARLIER_REQUEST"],
+                caseState: current.state,
+                owningRequestId: current.execution_request_id,
+                recoveryAction: "RETRY_WITH_OWNING_REQUEST_ID",
+              },
+            },
+          );
+        }
         mode = "RESUME";
       } else {
         await client.query(`UPDATE quickbooks_accounting_cases SET state='EXECUTING',execution_request_id=$12,updated_at=$13

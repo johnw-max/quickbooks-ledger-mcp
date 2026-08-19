@@ -127,6 +127,27 @@ describeWithPostgres("Postgres QuickBooks Accounting Case integration", () => {
       terminalSummary: { completion: "RECOVERY_REQUIRED" }, now: new Date(),
     })).resolves.toMatchObject({ state: "RECOVERY_REQUIRED" });
 
+    // A Case stuck in recovery can only be resumed with the request id that
+    // started it. Refusing without naming that id is what stalled a real online
+    // agent: it read "owned by another request" as lock contention and retried
+    // with fresh ids until it gave up.
+    await expect(repository.claimExecution({
+      binding, caseId: compiled.caseId, version: 1, requestId: `different-${suffix}`,
+      expectedPlanHash: compiledPlanHash, now: new Date(),
+    })).rejects.toMatchObject({
+      code: "CONFLICT",
+      details: {
+        reasonCodes: ["CASE_OWNED_BY_EARLIER_REQUEST"],
+        caseState: "RECOVERY_REQUIRED",
+        owningRequestId: requestId,
+        recoveryAction: "RETRY_WITH_OWNING_REQUEST_ID",
+      },
+    });
+    await expect(repository.claimExecution({
+      binding, caseId: compiled.caseId, version: 1, requestId,
+      expectedPlanHash: compiledPlanHash, now: new Date(),
+    })).resolves.toMatchObject({ mode: "RESUME" });
+
     const providerCapabilityReceiptHash = hashObject({ capability: "CREATE:Customer", suffix });
     const decision = evaluateAutonomousLedgerWrite({
       actionId: operation.actionId,
