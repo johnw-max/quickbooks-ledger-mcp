@@ -153,6 +153,26 @@ export function quickBooksPreparationConfirmedNotWritten(
   return false;
 }
 
+/**
+ * Whether a stored preparation is the one this Case operation is entitled to
+ * execute.
+ *
+ * The check exists so an operation can never execute a preparation belonging to
+ * different work. A superseding generation is still the same operation — same
+ * content-hashed base id, one refused attempt later — so it has to be admitted
+ * here, or opening a generation would only move the deadlock from the mutation
+ * row to the Case. Only the exact base id, or that base id with a generation
+ * suffix, qualifies; nothing else is accepted.
+ */
+export function quickBooksPreparationBelongsToOperation(
+  clientRequestId: string,
+  operationRequestId: string,
+): boolean {
+  if (safeEqual(clientRequestId, operationRequestId)) return true;
+  const generation = /^(.+)\.g(?:[2-9]|[1-9][0-9]+)$/u.exec(clientRequestId);
+  return generation !== null && safeEqual(generation[1] as string, operationRequestId);
+}
+
 function preparationWarnings(
   input: QuickBooksPrepareMutationInput,
   providerEffect: string,
@@ -571,7 +591,7 @@ export class QuickBooksMutationService {
         });
         if (resealed) existing = resealed;
       }
-      if (!safeEqual(existing.clientRequestId, input.requestId)) {
+      if (!quickBooksPreparationBelongsToOperation(existing.clientRequestId, input.requestId)) {
         throw new AppError("CONFLICT", "Accounting Case operation request_id does not match its immutable preparation.", {
           httpStatus: 409, details: { failureLayer: "IDEMPOTENCY" },
         });

@@ -9,7 +9,10 @@ import {
 } from "./helpers/quickBooksCompletedProviderResponse.js";
 import { QUICKBOOKS_MUTATION_EXECUTION_LEASE_MS } from "../src/quickbooks/mutationExecutionAttempt.js";
 import type { CreateQuickBooksMutationPreparationInput } from "../src/quickbooks/mutationModels.js";
-import { QuickBooksMutationService } from "../src/quickbooks/mutationService.js";
+import {
+  quickBooksPreparationBelongsToOperation,
+  QuickBooksMutationService,
+} from "../src/quickbooks/mutationService.js";
 import type { QuickBooksProviderCapabilities, QuickBooksProviderResolver } from "../src/quickbooks/service.js";
 import {
   consumeQuickBooksProviderWritePermit,
@@ -803,5 +806,28 @@ describe("QuickBooks replayed terminal success verification", () => {
       .rejects.toMatchObject({ code: "PROVIDER_UNAVAILABLE" });
     // The stored outcome is untouched: nothing was superseded on a failed read.
     expect((await repository.get(first.preparation_id))?.state).toBe("POSTED_READBACK_VERIFIED");
+  });
+});
+
+describe("QuickBooks preparation ownership across generations", () => {
+  const base = "qbocase.3281698c384e7a795a4ae7ba93ca53be653a3570";
+
+  it("admits the base id and any generation of it", () => {
+    // Without this the generation would only move the deadlock from the
+    // mutation row to the Case operation, which is what production hit.
+    expect(quickBooksPreparationBelongsToOperation(base, base)).toBe(true);
+    expect(quickBooksPreparationBelongsToOperation(`${base}.g2`, base)).toBe(true);
+    expect(quickBooksPreparationBelongsToOperation(`${base}.g10`, base)).toBe(true);
+  });
+
+  it("refuses anything that is not this operation", () => {
+    const other = "qbocase.0000000000000000000000000000000000000000";
+    expect(quickBooksPreparationBelongsToOperation(other, base)).toBe(false);
+    expect(quickBooksPreparationBelongsToOperation(`${other}.g2`, base)).toBe(false);
+    // A generation suffix must not let a prefix stand in for the whole id.
+    expect(quickBooksPreparationBelongsToOperation(`${base}extra.g2`, base)).toBe(false);
+    expect(quickBooksPreparationBelongsToOperation(`${base}.g1`, base)).toBe(false);
+    expect(quickBooksPreparationBelongsToOperation(`${base}.gx`, base)).toBe(false);
+    expect(quickBooksPreparationBelongsToOperation(base, `${base}.g2`)).toBe(false);
   });
 });
