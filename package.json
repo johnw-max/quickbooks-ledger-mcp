@@ -20,6 +20,8 @@
     "test": "vitest run",
     "test:http:required": "TEST_HTTP_LOOPBACK=true vitest run tests/quickbooks-http-app.test.ts",
     "test:postgres:required": "node scripts/requireTestDatabase.mjs && vitest run tests/postgres-quickbooks-mutation.integration.test.ts tests/quickbooks-accounting-case-postgres.integration.test.ts tests/quickbooks-migration-upgrade-postgres.integration.test.ts tests/quickbooks-runtime-readiness-postgres.integration.test.ts --maxWorkers=1",
+    "test:crash:postgres": "node scripts/requireTestDatabase.mjs && vitest run tests/quickbooks-process-crash-restart-postgres.integration.test.ts",
+    "harness:crash": "tsx harness/lifecycle/run-process-crash-restart.ts",
     "verify:no-secrets": "node scripts/verifyNoSecrets.mjs",
     "verify:release": "node scripts/verifyReleaseGate.mjs"
   },

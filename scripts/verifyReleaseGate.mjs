@@ -23,6 +23,11 @@ const steps = [
   { name: "deployment-static", command: "sh", args: ["deploy/verify-static.sh"] },
 ];
 steps.push({ name: "required-postgres", command: "npm", args: ["run", "test:postgres:required"] });
+// Real SIGKILL/restart evidence for the four write-lifecycle boundaries. It is slow
+// (two boundaries wait out a real 120s execution lease and the harness never rewrites
+// that clock) but it is the only check that falsifies the at-most-one-provider-POST
+// claim. Left outside the gate it stops being run, and the claim quietly becomes prose.
+steps.push({ name: "required-process-crash-restart", command: "npm", args: ["run", "test:crash:postgres"] });
 
 for (const step of steps) {
   const result = spawnSync(step.command, step.args, {
@@ -44,5 +49,6 @@ console.log(JSON.stringify({
   gate: "quickbooks-ledger-mcp-0.6.0",
   checks: steps.map((step) => step.name),
   postgresIntegration: "passed",
+  processCrashRestart: "passed",
   agent2Uat: "not_run_by_local_gate",
 }));

@@ -37,7 +37,7 @@ Other official Intuit write capabilities remain catalogued but are not executabl
 5. provider receipt and exact read-back;
 6. terminal audit evidence.
 
-Every write has one durable execution attempt, a fenced lease, and a dispatch marker written immediately before the first Provider POST. A stale lease may move only before that marker. After dispatch, a missing exact ID becomes `WRITE_RESULT_UNKNOWN_NO_ID`: automatic re-arm is forbidden and an operator resolution is required. If the original fenced callback later supplies the exact ID, the state may move only forward to exact-ID readback recovery; it never permits another POST. Current OAuth/delegation errors cannot overwrite that durable write truth in the Accounting Case.
+Every write has one durable execution attempt, a fenced lease, and a dispatch marker written immediately before the first Provider POST. A stale lease may move only before that marker. After dispatch, a missing exact ID becomes `WRITE_RESULT_UNKNOWN_NO_ID` once the original attempt's lease goes stale: automatic re-arm is forbidden and an operator resolution is required. Until that lease expires the attempt stays `EXECUTING`/`DISPATCH_STARTED` and every further attempt is refused with `WRITE_RESULT_UNKNOWN`, no second dispatch permitted; the Accounting Case terminalizes to `RECOVERY_REQUIRED` on that first refusal. If the original fenced callback later supplies the exact ID, the state may move only forward to exact-ID readback recovery; it never permits another POST. Current OAuth/delegation errors cannot overwrite that durable write truth in the Accounting Case.
 
 ## Local setup
 
