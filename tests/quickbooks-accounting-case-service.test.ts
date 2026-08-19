@@ -1023,4 +1023,51 @@ describe("QuickBooks Accounting Case service", () => {
     });
     expect(prepared.operations.some((operation) => (operation as { entity?: string }).entity === "Vendor")).toBe(false);
   });
+  it("catches a frozen counterparty currency before dispatch when the Case stages no contact", async () => {
+    // The same immutability from the other direction: the contact already
+    // exists, so nothing is staged for it and the contact-side check never
+    // runs. Before this was checked here, the mismatch only surfaced as a
+    // Provider refusal after dispatch.
+    const { service, provider } = fixture({ delegationActions: ["bill.create"] });
+    vi.mocked(provider.getCompanyContext).mockResolvedValue({
+      CompanyName: "Sandbox", HomeCurrency: { value: "USD" }, MultiCurrencyEnabled: true,
+    } as never);
+    vi.mocked(provider.searchVendors).mockResolvedValue({
+      records: [{ Id: "63", DisplayName: "Marina Bay Consulting Pte Ltd", Active: true, CurrencyRef: { value: "USD" } }],
+      searchWindow: {} as never,
+    });
+    vi.mocked(provider.listAccounts).mockResolvedValue([{ Id: "9", Name: "Office Expenses", Active: true }]);
+    const staged = quickBooksPrepareAccountingCaseSchema.parse({
+      target_session_ref: targetSessionRef,
+      case_id: `case-existing-counterparty-currency-${Math.random().toString(36).slice(2)}`,
+      expected_version: 0,
+      sources: [{
+        artifactId: "bill.pdf",
+        label: "Marina Bay Consulting bill",
+        units: [{ unitId: "page-1", expectedFactKinds: ["NATIVE_DOCUMENT"] }],
+      }],
+      facts: [{
+        factId: "bill-v1", lineageKey: "bill", eventKey: "bill", sourceUnitIds: ["page-1"],
+        origin: "MODEL_EXTRACTED", revision: 1, kind: "NATIVE_DOCUMENT", documentType: "BILL",
+        counterpartyName: "Marina Bay Consulting Pte Ltd", documentDate: "2026-08-19",
+        documentNumber: "MBC-2026-0820", currency: "SGD", exchangeRate: "0.783503", taxMode: "NO_TAX",
+        lines: [{
+          lineId: "line-1", description: "Corporate secretarial - Q3 2026", quantity: "1", unitAmount: "1635.00",
+          sourceTax: "0.00", codingType: "ACCOUNT", codingName: "Office Expenses",
+        }],
+        declaredNet: "1635.00", declaredTax: "0.00", declaredGross: "1635.00",
+        businessReason: "Record the Marina Bay Consulting secretarial bill.",
+      }],
+    });
+
+    const prepared = await service.prepare(context, staged);
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        route: "BILL",
+        disposition: "REVIEW_REQUIRED",
+        reason_codes: ["COUNTERPARTY_CURRENCY_MISMATCH"],
+      }),
+    ]));
+    expect(prepared.operations).toHaveLength(0);
+  });
 });

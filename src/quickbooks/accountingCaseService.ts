@@ -1124,6 +1124,30 @@ export class QuickBooksAccountingCaseService {
       (entry) => "DisplayName" in entry ? entry.DisplayName : undefined, salesSide ? "Customer" : "Vendor");
     const counterpartyId = counterparty.Id;
     if (!counterpartyId) throw new AppError("VALIDATION_FAILED", "QuickBooks counterparty has no provider Id.", { httpStatus: 422 });
+    // The same immutability from the other direction. Staging a contact checks
+    // this before creating one; a document that resolves to a contact already
+    // in the Company was not checked at all, so a mismatch only surfaced as a
+    // Provider refusal after dispatch. Catching it here keeps the failure
+    // pre-dispatch, where it is cleanly correctable, and lets the message name
+    // the only remedy that exists -- the contact cannot be edited.
+    const counterpartyCurrency = counterparty.CurrencyRef?.value;
+    if (company.MultiCurrencyEnabled === true && counterpartyCurrency &&
+      counterpartyCurrency !== fact.currency) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        `The QuickBooks ${salesSide ? "customer" : "vendor"} "${fact.counterpartyName}" keeps its account in ${counterpartyCurrency}, but this document is in ${fact.currency}. QuickBooks requires a transaction to match the currency of the contact it is against, and a contact's currency is frozen at creation, so this is not fixable by editing the contact -- a different contact record, created in ${fact.currency}, is required.`,
+        {
+          httpStatus: 422,
+          details: {
+            failureLayer: "PROVIDER_REFERENCE",
+            reasonCodes: ["COUNTERPARTY_CURRENCY_MISMATCH"],
+            existingCurrency: counterpartyCurrency,
+            documentCurrency: fact.currency,
+            recoveryAction: "USE_A_DIFFERENTLY_NAMED_CONTACT_RECORD_IN_THE_REQUIRED_CURRENCY",
+          },
+        },
+      );
+    }
     if (fact.documentNumber) {
       const existing = await resolved.provider.findExistingAccountingDocuments({
         entity: {
