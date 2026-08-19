@@ -15,13 +15,26 @@ if (candidate?.State?.Running !== true || health !== "healthy") {
   throw new Error(`QuickBooks candidate is not promotable: running=${candidate?.State?.Running === true}, health=${health ?? "missing"}`);
 }
 
-const addresses = Object.values(candidate.NetworkSettings?.Networks ?? {})
-  .map((network) => network?.IPAddress)
-  .filter((address) => typeof address === "string" && address.length > 0);
-if (addresses.length !== 1) {
-  throw new Error(`QuickBooks candidate must have exactly one Docker IPv4 address; found ${addresses.length}`);
+const networks = candidate.NetworkSettings?.Networks ?? {};
+const networkNames = Object.keys(networks);
+if (networkNames.length < 2) {
+  throw new Error(`QuickBooks candidate must have separate data and egress networks; found ${networkNames.length}`);
 }
-const candidateAddress = addresses[0];
+
+const primaryNetwork = candidate.HostConfig?.NetworkMode;
+const primaryAttachment = typeof primaryNetwork === "string" ? networks[primaryNetwork] : undefined;
+const candidateAddress = primaryAttachment?.IPAddress;
+if (typeof candidateAddress !== "string" || candidateAddress.length === 0) {
+  throw new Error(`QuickBooks candidate primary network ${primaryNetwork ?? "missing"} has no Docker IPv4 address`);
+}
+
+const oauthProbe = [
+  "const endpoint='https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';",
+  "fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'grant_type=authorization_code&code=promotion-egress-probe'})",
+  ".then(r=>{if(r.status<400||r.status>=500)process.exit(1)})",
+  ".catch(()=>process.exit(1))",
+].join("");
+execFileSync("docker", ["exec", candidateName, "node", "-e", oauthProbe], { stdio: "inherit" });
 
 const targetConfig = realpathSync(enabledConfig);
 const original = readFileSync(targetConfig, "utf8");
