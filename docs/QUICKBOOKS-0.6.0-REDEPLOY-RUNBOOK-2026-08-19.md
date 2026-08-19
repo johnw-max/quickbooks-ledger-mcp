@@ -7,7 +7,7 @@
 路由的 Bill 创建必然撞 `FORBIDDEN / MCP_SCOPE` —— 那是 16 轮线上 UAT 的 T13。
 UAT 停在 T01 不是没人跑，是跑不动。
 
-本次要上的是分支 `codex/qbo-real-accountant-uat`，提交 `64f6752` 之后，
+本次要上的是分支 `codex/qbo-real-accountant-uat`，提交 `8d0300b`（含可重复运行的 promote 脚本），
 迁移头 `035_quickbooks_mcp_scope_predispatch_rearm.sql`。
 
 ## 前置事实（已在本地验证）
@@ -40,7 +40,7 @@ migrate 步骤见 `deploy/` 与 `src/quickbooks/migrate.ts`）。若候选容器
 ### 1. 取到本次要部署的代码
 
 ```bash
-cd <REPO> && git fetch origin && git checkout codex/qbo-real-accountant-uat && git reset --hard 64f6752
+cd <REPO> && git fetch origin && git checkout codex/qbo-real-accountant-uat && git reset --hard 8d0300b
 ```
 
 确认拿到的是对的东西：
@@ -49,12 +49,12 @@ cd <REPO> && git fetch origin && git checkout codex/qbo-real-accountant-uat && g
 git log --oneline -1 && ls migrations/ | tail -1
 ```
 
-应当看到 `64f6752` 与 `035_quickbooks_mcp_scope_predispatch_rearm.sql`。
+应当看到 `8d0300b` 与 `035_quickbooks_mcp_scope_predispatch_rearm.sql`。
 
 ### 2. 构建候选镜像
 
 ```bash
-docker build -f deploy/Dockerfile -t quickbooks-ledger-mcp:0.6.0-64f6752 .
+docker build -f deploy/Dockerfile -t quickbooks-ledger-mcp:0.6.0-8d0300b .
 ```
 
 ### 3. 起候选容器（**不要**用现役容器的名字）
@@ -64,7 +64,7 @@ egress 与 data 两张网 —— promote 脚本会检查这一点，并且会在
 Intuit token 端点，拿不到 4xx 就拒绝提升。
 
 ```bash
-COMPOSE_PROJECT_NAME=qbo-0-6-64f6752 QUICKBOOKS_APP_IMAGE=quickbooks-ledger-mcp:0.6.0-64f6752 QUICKBOOKS_LOOPBACK_PORT=18004 docker compose -f deploy/compose.yaml --env-file deploy/.env.deploy up -d
+COMPOSE_PROJECT_NAME=qbo-0-6-8d0300b QUICKBOOKS_APP_IMAGE=quickbooks-ledger-mcp:0.6.0-8d0300b QUICKBOOKS_LOOPBACK_PORT=18004 docker compose -f deploy/compose.yaml --env-file deploy/.env.deploy up -d
 ```
 
 `deploy/.env.deploy` 需提供 `QUICKBOOKS_EGRESS_NETWORK` 与
@@ -73,7 +73,7 @@ COMPOSE_PROJECT_NAME=qbo-0-6-64f6752 QUICKBOOKS_APP_IMAGE=quickbooks-ledger-mcp:
 ### 4. 等健康并自查
 
 ```bash
-docker ps --filter name=qbo-0-6-64f6752 --format '{{.Names}}\t{{.Status}}'
+docker ps --filter name=qbo-0-6-8d0300b --format '{{.Names}}\t{{.Status}}'
 ```
 
 等到 `healthy`。然后直接问候选自己的 readiness，确认迁移头已经是 035：
