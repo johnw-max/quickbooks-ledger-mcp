@@ -101,13 +101,16 @@ function planHash(caseBinding: QuickBooksCaseBinding, compiled: CompiledQuickBoo
   return hashObject({ schemaVersion: "quickbooks-accounting-case-plan:v1", binding: durableBinding, compiled });
 }
 
-function isResumableMcpScopePreDispatchRejection(record: QuickBooksCaseOperationRecord): boolean {
-  const details = record.errorReceipt?.details && typeof record.errorReceipt.details === "object"
-    ? record.errorReceipt.details as Record<string, unknown>
-    : undefined;
-  return record.state === "PROVIDER_REJECTED" && record.errorReceipt?.code === "FORBIDDEN" &&
-    details?.failureLayer === "MCP_SCOPE" && Array.isArray(details.denyReasons) &&
-    details.denyReasons.includes("TRANSPORT_SCOPE_MISSING") && Boolean(record.preparationId) &&
+/**
+ * A rejected operation may be re-armed only when nothing reached the Provider.
+ * That is decided by the operation's own durable evidence, never by what its
+ * last error receipt happened to say: the receipt is overwritten by any later
+ * failure, so keying on it let one unrelated refusal permanently strand work
+ * the ledger could still prove was never dispatched. The linked preparation is
+ * checked separately by the caller, and the database enforces both halves.
+ */
+function isResumablePreDispatchRejection(record: QuickBooksCaseOperationRecord): boolean {
+  return record.state === "PROVIDER_REJECTED" && Boolean(record.preparationId) &&
     !record.providerEntityId && !record.authorizationReceipt && !record.writeReceipt && !record.readback;
 }
 
@@ -157,7 +160,7 @@ function operationStatus(
   const nextAction = record.state === "PENDING" ? "EXECUTE_ACCOUNTING_CASE" :
     record.state === "PREPARED" ? "RESUME_IDEMPOTENT_EXECUTION" :
       record.state === "READBACK_VERIFIED" ? "NONE" :
-        isResumableMcpScopePreDispatchRejection(record)
+        isResumablePreDispatchRejection(record)
           ? "RESUME_AFTER_MCP_EXECUTE_SCOPE_RESTORED" :
         record.state === "WRITE_UNCERTAIN" || record.state === "READBACK_MISMATCH"
           ? record.providerEntityId
@@ -609,7 +612,7 @@ export class QuickBooksAccountingCaseService {
       let preparationId = current.preparationId;
       try {
         if (current.state === "PROVIDER_REJECTED") {
-          if (!isResumableMcpScopePreDispatchRejection(current) || !preparationId) {
+          if (!isResumablePreDispatchRejection(current) || !preparationId) {
             throw new AppError("CONFLICT", "A definitive QuickBooks operation rejection cannot be retried in place.", {
               httpStatus: 409,
               details: { failureLayer: "PROVIDER_OUTCOME", reasonCodes: ["TERMINAL_REJECTION_NOT_RETRYABLE"] },

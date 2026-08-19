@@ -459,7 +459,7 @@ describeWithPostgres("Postgres QuickBooks Accounting Case integration", () => {
     expect(Number(evidence.rows[0]?.reuse_count)).toBeGreaterThanOrEqual(1);
   });
 
-  it("re-arms a pre-dispatch MCP-scope rejection through the real trigger and refuses every other shape", async () => {
+  it("re-arms a rejection on durable no-dispatch evidence through the real trigger, whatever the error receipt says", async () => {
     if (!repository || !pool) throw new Error("TEST_DATABASE_URL is required");
     const suffix = randomUUID();
     const binding = {
@@ -554,8 +554,10 @@ describeWithPostgres("Postgres QuickBooks Accounting Case integration", () => {
     });
 
     await reject(scopeRejection);
-    // The service performs exactly this transition once the installation regains
-    // quickbooks.mutation.execute; the deployed trigger must permit it.
+    // The deployed trigger must permit this. Note the service does not currently
+    // reach it for a live scope denial — that path throws before writing
+    // PROVIDER_REJECTED — so the transition serves rows written by earlier
+    // builds and by any future refusal that does record a rejection.
     const rearmed = await rearm();
     expect(rearmed.operations[0]).toMatchObject({ state: "PREPARED", preparationId });
 
@@ -574,14 +576,19 @@ describeWithPostgres("Postgres QuickBooks Accounting Case integration", () => {
       },
     };
 
-    // A rejection from any other layer stays terminal even with a clean preparation.
+    // The error receipt no longer decides eligibility. It is mutable and is
+    // overwritten by any later failure, so keying on it let one unrelated
+    // refusal permanently strand work whose durable evidence still proved no
+    // dispatch. Whatever the last receipt says, a clean preparation re-arms.
     await reject({ code: "PROVIDER_ERROR", details: { failureLayer: "PROVIDER", denyReasons: ["PROVIDER_REFUSED"] } });
-    await expect(rearm()).rejects.toMatchObject(refusedByTrigger);
-    await reject({ code: "FORBIDDEN", details: { failureLayer: "AUTHORIZATION", denyReasons: ["TRANSPORT_SCOPE_MISSING"] } });
-    await expect(rearm()).rejects.toMatchObject(refusedByTrigger);
+    await expect(rearm()).resolves.toMatchObject({ operations: [{ state: "PREPARED" }] });
+    await reject({ code: "APPROVAL_INVALID" });
+    await expect(rearm()).resolves.toMatchObject({ operations: [{ state: "PREPARED" }] });
 
-    // Correct rejection shape, but the durable mutation no longer proves that no
-    // Provider attempt exists. Re-arming must stay closed.
+    // What does decide it: the durable mutation must still prove that no Provider
+    // attempt exists. Each of the following would be permitted by a text-only or
+    // in-memory double, and the refusal must reach the caller as a deterministic
+    // guard result rather than a retryable upstream-QuickBooks failure.
     await reject(scopeRejection);
     await pool.query(`UPDATE quickbooks_mutation_preparations
       SET state='REJECTED',rejected_by=$2,rejected_at=$3 WHERE preparation_id=$1`,

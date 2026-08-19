@@ -96,4 +96,36 @@ describe("QuickBooks Accounting Case migration", () => {
     expect(sql).toContain("can only be claimed by its original standing delegation");
   });
 
+  it("re-arms on durable no-dispatch evidence rather than on a mutable error receipt", async () => {
+    const sql = await readFile(new URL(
+      "../migrations/037_quickbooks_rearm_on_durable_evidence.sql",
+      import.meta.url,
+    ), "utf8");
+    // The mutable proxy is gone.
+    expect(sql).not.toContain("OLD.error_receipt->>'code'='FORBIDDEN'");
+    expect(sql).not.toContain("'TRANSPORT_SCOPE_MISSING'");
+    // The proof is not.
+    expect(sql).toContain("OLD.state='PROVIDER_REJECTED' AND NEW.state='PREPARED'");
+    for (const clause of [
+      "OLD.provider_entity_id IS NULL", "OLD.authorization_receipt IS NULL",
+      "OLD.write_receipt IS NULL", "OLD.readback IS NULL", "OLD.preparation_id IS NOT NULL",
+      "preparation.state='PREPARED'", "preparation.provider_entity_id IS NULL",
+      "preparation.provider_outcome_receipt IS NULL", "preparation.execution_attempt_id IS NULL",
+      "preparation.dispatch_started_at IS NULL",
+    ]) {
+      expect(sql).toContain(clause);
+    }
+    // Every other immutability guard survives.
+    for (const guard of [
+      "QuickBooks Accounting Case operation is immutable",
+      "QuickBooks preparation identity is immutable",
+      "QuickBooks provider identity is immutable",
+      "QuickBooks authorization receipt is immutable",
+      "QuickBooks write receipt is immutable",
+      "QuickBooks readback is immutable",
+    ]) {
+      expect(sql).toContain(guard);
+    }
+  });
+
 });
