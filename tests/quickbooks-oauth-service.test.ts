@@ -1,9 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryQuickBooksControlRepository } from "../src/quickbooks/inMemoryControlRepository.js";
 import type { QuickBooksClientManager } from "../src/quickbooks/clientManager.js";
 import { QuickBooksOAuthService } from "../src/quickbooks/oauthService.js";
+import { resetQuickBooksOAuthDiscovery } from "../src/providers/quickbooksOAuth.js";
+import { intuitCalls, intuitOAuthTransport, intuitTokenResponse } from "./helpers/intuitOAuthTransport.js";
 
 describe("QuickBooks OAuth service", () => {
+  beforeEach(() => {
+    resetQuickBooksOAuthDiscovery();
+  });
+
   it("binds a one-time browser state to the actor and saves the verified realm connection", async () => {
     const states = new InMemoryQuickBooksControlRepository();
     const connect = vi.fn().mockResolvedValue({
@@ -12,13 +18,7 @@ describe("QuickBooks OAuth service", () => {
       companyName: "Sandbox Company",
       grantedScopes: ["com.intuit.quickbooks.accounting"],
     });
-    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      access_token: "access-a",
-      refresh_token: "refresh-a",
-      expires_in: 3_600,
-      x_refresh_token_expires_in: 8_640_000,
-      token_type: "bearer",
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const request = intuitOAuthTransport({ token: () => intuitTokenResponse() });
     const service = new QuickBooksOAuthService({
       states,
       manager: { connect } as unknown as QuickBooksClientManager,
@@ -65,7 +65,7 @@ describe("QuickBooks OAuth service", () => {
 
   it("rejects a callback from a different browser session before token exchange", async () => {
     const states = new InMemoryQuickBooksControlRepository();
-    const request = vi.fn();
+    const request = intuitOAuthTransport();
     const service = new QuickBooksOAuthService({
       states,
       manager: { connect: vi.fn() } as unknown as QuickBooksClientManager,
@@ -85,6 +85,7 @@ describe("QuickBooks OAuth service", () => {
       code: "authorization-code-a",
       realmId: "934145",
     })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(request).not.toHaveBeenCalled();
+    // Discovery may run while building the consent URL; no token exchange may.
+    expect(intuitCalls(request, "/oauth2/v1/tokens/bearer")).toHaveLength(0);
   });
 });

@@ -997,6 +997,10 @@ export class QuickBooksAccountingProvider {
         };
     let invoiceVoidFallback = false;
     let response: Record<string, unknown>;
+    // Intuit's trace id for the dispatch itself. A failed write carries it on
+    // the error details; this is the only place a succeeded write can keep it,
+    // and it is what Intuit support needs to reconcile a posting after the fact.
+    let dispatchIntuitTid: string | undefined;
     // This is the last awaited boundary before the first raw Provider POST.
     // The durable marker fences stale workers and makes every later no-Id
     // failure non-retryable without explicit operator resolution.
@@ -1006,6 +1010,7 @@ export class QuickBooksAccountingProvider {
         method: "POST",
         requestId: input.requestId,
         isWrite: true,
+        onIntuitTrace: (intuitTid) => { dispatchIntuitTid = intuitTid; },
         ...(attachment ? { multipart: attachment.form } : {}),
         ...(input.operation === "DELETE" && !softDeactivation ? { query: { operation: "delete" } } : {}),
         ...(attachment ? {} : { body: mutationBody }),
@@ -1132,6 +1137,7 @@ export class QuickBooksAccountingProvider {
         providerEntityId,
         requestId: input.requestId,
         providerTime: typeof response.time === "string" ? response.time : undefined,
+        ...(dispatchIntuitTid ? { intuitTid: dispatchIntuitTid } : {}),
         outcome: "PROVIDER_RESPONSE_ACCEPTED",
       },
     });

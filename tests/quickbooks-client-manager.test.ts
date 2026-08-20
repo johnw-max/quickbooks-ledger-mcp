@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../src/logging.js";
+import { resetQuickBooksOAuthDiscovery } from "../src/providers/quickbooksOAuth.js";
+import { INTUIT_DISCOVERY_DOCUMENT, jsonResponse } from "./helpers/intuitOAuthTransport.js";
 import { Aes256GcmTokenCipher } from "../src/security/tokenCipher.js";
 import { QuickBooksClientManager } from "../src/quickbooks/clientManager.js";
 import { InMemoryQuickBooksConnectionRepository } from "../src/quickbooks/connections.js";
@@ -284,5 +286,141 @@ describe("QuickBooks connection manager", () => {
     expect(replacement.bindingRevision).not.toBe(beforeRefresh.bindingRevision);
     expect(JSON.stringify(beforeRefresh)).not.toContain("934145");
     expect(JSON.stringify(beforeRefresh)).not.toContain("qbc-a");
+  });
+});
+
+describe("QuickBooks disconnect", () => {
+  beforeEach(() => {
+    resetQuickBooksOAuthDiscovery();
+  });
+
+  const oauthConfig = {
+    clientId: "client-a",
+    clientSecret: "secret-a",
+    redirectUri: "https://agent2.zcloak.ai/oauth/quickbooks/callback",
+    environment: "sandbox" as const,
+  };
+
+  /** Answers the three Intuit surfaces a disconnect touches, and nothing else. */
+  function transport(revoke: () => Response): {
+    request: typeof fetch;
+    revokeCalls: { body: unknown; authorization?: string }[];
+  } {
+    const revokeCalls: { body: unknown; authorization?: string }[] = [];
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/.well-known/openid")) return jsonResponse(INTUIT_DISCOVERY_DOCUMENT);
+      if (url.includes("/companyinfo/")) {
+        return jsonResponse({ CompanyInfo: { Id: "1", CompanyName: "Sandbox Company" } });
+      }
+      if (url.includes("/oauth2/tokens/revoke")) {
+        const headers = init?.headers as Record<string, string> | undefined;
+        revokeCalls.push({
+          body: JSON.parse(String(init?.body)),
+          ...(headers?.Authorization ? { authorization: headers.Authorization } : {}),
+        });
+        return revoke();
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    }) as unknown as typeof fetch;
+    return { request, revokeCalls };
+  }
+
+  async function connectedManager(revoke: () => Response) {
+    const { request, revokeCalls } = transport(revoke);
+    const repository = new InMemoryQuickBooksConnectionRepository();
+    const manager = new QuickBooksClientManager({
+      repository,
+      cipher: new Aes256GcmTokenCipher(Buffer.alloc(32, 7)),
+      config: { ...oauthConfig, request },
+      logger: logger(),
+    });
+    await manager.connect({
+      actorId: "actor-a",
+      realmId: "934145",
+      token: {
+        accessToken: "access-a",
+        refreshToken: "refresh-a",
+        accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
+        refreshTokenExpiresAt: new Date(Date.now() + 8_640_000_000),
+        tokenType: "bearer",
+      },
+    });
+    return { manager, repository, revokeCalls };
+  }
+
+  it("revokes the refresh token at Intuit with client authentication before closing the local row", async () => {
+    const { manager, repository, revokeCalls } = await connectedManager(
+      () => new Response("", { status: 200, headers: { intuit_tid: "1-64a1-d0d0" } }),
+    );
+
+    await expect(manager.disconnectActiveConnection("actor-a")).resolves.toMatchObject({
+      realmId: "934145",
+      companyName: "Sandbox Company",
+      providerRevocation: "REVOKED",
+      intuitTid: "1-64a1-d0d0",
+    });
+
+    // The refresh token, not the access token: revoking the refresh token drops
+    // the whole Intuit grant, which is what a customer disconnecting means.
+    expect(revokeCalls).toEqual([{
+      body: { token: "refresh-a" },
+      authorization: `Basic ${Buffer.from("client-a:secret-a").toString("base64")}`,
+    }]);
+    await expect(repository.get("actor-a", "934145")).resolves.toMatchObject({ status: "REVOKED" });
+    await expect(repository.listActive("actor-a")).resolves.toEqual([]);
+  });
+
+  it.each([
+    ["Intuit is unavailable", () => jsonResponse({}, { status: 503 }), "PROVIDER_UNAVAILABLE"],
+    ["Intuit rate-limits the revoke", () => jsonResponse({}, { status: 429 }), "RATE_LIMITED"],
+    ["our client credentials are refused", () => jsonResponse({}, { status: 401 }), "CONFIGURATION_ERROR"],
+    ["the revoke never reaches Intuit", () => { throw new Error("connection reset"); }, "PROVIDER_UNAVAILABLE"],
+  ] as const)("leaves the connection ACTIVE when %s", async (_label, revoke, code) => {
+    const { manager, repository } = await connectedManager(revoke);
+
+    await expect(manager.disconnectActiveConnection("actor-a")).rejects.toMatchObject({ code });
+
+    // Still connected is the truth: Intuit still holds a live refresh token, so
+    // recording a local disconnect would be the exact lie this change removes.
+    await expect(repository.get("actor-a", "934145")).resolves.toMatchObject({ status: "ACTIVE" });
+    await expect(repository.listActive("actor-a")).resolves.toHaveLength(1);
+  });
+
+  it("closes the local row when Intuit says it never held the token", async () => {
+    const { manager, repository } = await connectedManager(() => jsonResponse({}, { status: 400 }));
+
+    await expect(manager.disconnectActiveConnection("actor-a")).resolves.toMatchObject({
+      providerRevocation: "ALREADY_INVALID",
+    });
+
+    // Reported as a different fact, recorded in the same existing state: there
+    // is no live grant either way, and a fourth status would need a migration.
+    await expect(repository.get("actor-a", "934145")).resolves.toMatchObject({ status: "REVOKED" });
+  });
+
+  it("refuses to disconnect an actor with no connected company, and never calls Intuit", async () => {
+    const { manager, revokeCalls } = await connectedManager(() => new Response("", { status: 200 }));
+
+    await expect(manager.disconnectActiveConnection("actor-unknown"))
+      .rejects.toMatchObject({ code: "NOT_CONNECTED" });
+    expect(revokeCalls).toEqual([]);
+  });
+
+  it("cannot be disconnected twice", async () => {
+    const { manager } = await connectedManager(() => new Response("", { status: 200 }));
+
+    await manager.disconnectActiveConnection("actor-a");
+    await expect(manager.disconnectActiveConnection("actor-a"))
+      .rejects.toMatchObject({ code: "NOT_CONNECTED" });
+  });
+
+  it("stops the provider from serving a disconnected connection", async () => {
+    const { manager } = await connectedManager(() => new Response("", { status: 200 }));
+
+    await manager.disconnectActiveConnection("actor-a");
+
+    await expect(manager.withProvider("actor-a", (provider) => provider.getCompany()))
+      .rejects.toMatchObject({ code: "NOT_CONNECTED" });
   });
 });

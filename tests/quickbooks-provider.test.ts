@@ -261,6 +261,48 @@ describe("QuickBooks accounting provider", () => {
     ]);
   });
 
+  it("keeps Intuit's trace id for the dispatch on the durable provider-outcome receipt", async () => {
+    const receipts: Record<string, unknown>[] = [];
+    const write = vi.fn(async (path: string, options: QuickBooksRequestOptions = {}) => {
+      if (path === "/customer" && options.method === "POST") {
+        options.onIntuitTrace?.("1-64a1-77bb");
+        return { Customer: { Id: "902", DisplayName: "Traced Pte Ltd" } };
+      }
+      if (path === "/customer/902") return { Customer: { Id: "902", SyncToken: "0", DisplayName: "Traced Pte Ltd" } };
+      throw new Error(`Unexpected request ${path}`);
+    });
+    const untraced = vi.fn(async (path: string, options: QuickBooksRequestOptions = {}) => {
+      if (path === "/customer" && options.method === "POST") {
+        return { Customer: { Id: "903", DisplayName: "Untraced Pte Ltd" } };
+      }
+      if (path === "/customer/903") return { Customer: { Id: "903", SyncToken: "0", DisplayName: "Untraced Pte Ltd" } };
+      throw new Error(`Unexpected request ${path}`);
+    });
+    const record = async ({ receipt }: { providerEntityId: string; receipt: Record<string, unknown> }) => {
+      receipts.push(receipt);
+    };
+    const command = {
+      entity: "Customer" as const,
+      operation: "CREATE" as const,
+      payload: { DisplayName: "Traced Pte Ltd" },
+      requestId: "zc.customer.traced",
+    };
+
+    await executeProviderMutation(
+      new QuickBooksAccountingProvider({ realmId: "934145", request: write, query: vi.fn() } as unknown as QuickBooksApiClient),
+      command,
+      record,
+    );
+    await executeProviderMutation(
+      new QuickBooksAccountingProvider({ realmId: "934145", request: untraced, query: vi.fn() } as unknown as QuickBooksApiClient),
+      { ...command, payload: { DisplayName: "Untraced Pte Ltd" } },
+      record,
+    );
+
+    expect(receipts[0]).toMatchObject({ outcome: "PROVIDER_RESPONSE_ACCEPTED", intuitTid: "1-64a1-77bb" });
+    expect(receipts[1]).not.toHaveProperty("intuitTid");
+  });
+
   it("recovers a mutation with one exact-Id GET and never issues another Provider write", async () => {
     const request = vi.fn(async (path: string, options?: QuickBooksRequestOptions) => {
       expect(options?.method).not.toBe("POST");

@@ -228,6 +228,10 @@ export class QuickBooksMutationService {
   }): void {
     const faultCodes = providerFaultCodes(input.error);
     const providerHttpStatus = input.error.details?.providerHttpStatus;
+    // Intuit's trace id for the dispatch response. Absent whenever no response
+    // completed, which is itself the honest answer: there is no Intuit-side
+    // request to trace.
+    const intuitTid = input.error.details?.intuitTid;
     this.logger?.warn("QuickBooks provider dispatch failed after the durable dispatch marker.", {
       preparationId: input.preparationId,
       attemptId: input.attemptId,
@@ -235,6 +239,7 @@ export class QuickBooksMutationService {
       providerWriteOutcome: input.providerWriteOutcome,
       errorCode: input.error.code,
       ...(typeof providerHttpStatus === "number" ? { providerHttpStatus } : {}),
+      ...(typeof intuitTid === "string" ? { intuitTid } : {}),
       ...(faultCodes.length > 0 ? { providerFaultCodes: faultCodes } : {}),
     });
   }

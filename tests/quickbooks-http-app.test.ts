@@ -2,6 +2,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AppError } from "../src/errors.js";
 import type { Logger } from "../src/logging.js";
 import type { QuickBooksConnectionTicketService } from "../src/quickbooks/connectionTicketService.js";
 import type { QuickBooksRuntimeConfig } from "../src/quickbooks/config.js";
@@ -118,6 +119,7 @@ describe("QuickBooks HTTP and MCP edge", () => {
       workflow: { connectionStatus } as unknown as QuickBooksWorkflowService,
       accountingCases: {} as QuickBooksAccountingCaseService,
       oauth: {} as QuickBooksOAuthService,
+      connections: { disconnectActiveConnection: vi.fn() },
       mcpOAuth,
       reviews: {} as QuickBooksReviewService,
       tickets: {} as QuickBooksConnectionTicketService,
@@ -292,5 +294,111 @@ describe("QuickBooks HTTP and MCP edge", () => {
       result: { content: [{ type: "text" }] },
     });
     expect(connectionStatus).toHaveBeenCalledWith("qbo-client-test:user:agent2-client");
+  });
+
+  it("gives the customer a QuickBooks disconnect surface, distinct from MCP token revocation", async () => {
+    const appConfig = config();
+    const disconnectActiveConnection = vi.fn().mockResolvedValue({
+      realmId: "934145",
+      companyName: "Sandbox Company",
+      providerRevocation: "REVOKED",
+    });
+    const revokeActorSessions = vi.fn().mockResolvedValue(1);
+    const app = createQuickBooksHttpApp({
+      config: appConfig,
+      workflow: {
+        connectionStatus: vi.fn().mockResolvedValue({
+          connected: true,
+          company: { realmId: "934145", name: "Sandbox Company" },
+        }),
+      } as unknown as QuickBooksWorkflowService,
+      accountingCases: {} as QuickBooksAccountingCaseService,
+      oauth: {} as QuickBooksOAuthService,
+      connections: { disconnectActiveConnection },
+      reviews: {
+        authenticate: vi.fn(async (session: string) => {
+          if (session !== "operator-session-a") throw new AppError("AUTH_REQUIRED", "no", { httpStatus: 401 });
+          return { actorId: "actor-a", sessionHash: "hash-a" };
+        }),
+        revokeActorSessions,
+      } as unknown as QuickBooksReviewService,
+      tickets: {} as QuickBooksConnectionTicketService,
+      readiness: vi.fn().mockResolvedValue(true),
+      logger: logger(),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    servers.push(server);
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const session = { Cookie: "zc_quickbooks_review_session=operator-session-a" };
+
+    // Without the operator session the browser holding it, there is nothing to act on.
+    const anonymous = await fetch(`${base}/quickbooks/disconnect`, { method: "POST" });
+    expect(anonymous.status).toBe(401);
+    expect(disconnectActiveConnection).not.toHaveBeenCalled();
+
+    // A cross-site submission is refused even if a cookie somehow rode along.
+    const crossSite = await fetch(`${base}/quickbooks/disconnect`, {
+      method: "POST",
+      headers: { ...session, Origin: "https://attacker.example" },
+    });
+    expect(crossSite.status).toBe(403);
+    expect(disconnectActiveConnection).not.toHaveBeenCalled();
+
+    const confirmation = await fetch(`${base}/quickbooks/disconnect`, { headers: { ...session, Accept: "text/html" } });
+    expect(confirmation.status).toBe(200);
+    const page = await confirmation.text();
+    expect(page).toContain("Sandbox Company");
+    expect(page).toContain('method="post" action="/quickbooks/disconnect"');
+
+    const disconnected = await fetch(`${base}/quickbooks/disconnect`, {
+      method: "POST",
+      headers: { ...session, Accept: "application/json", Origin: appConfig.publicBaseUrl },
+    });
+    expect(disconnected.status).toBe(200);
+    await expect(disconnected.json()).resolves.toEqual({
+      status: "disconnected",
+      company: { realmId: "934145", name: "Sandbox Company" },
+      provider_revocation: "REVOKED",
+    });
+    expect(disconnectActiveConnection).toHaveBeenCalledWith("actor-a");
+    // The session existed to manage a connection that is now gone.
+    expect(revokeActorSessions).toHaveBeenCalledWith("actor-a");
+    expect(disconnected.headers.get("set-cookie")).toContain("zc_quickbooks_review_session=;");
+  });
+
+  it("surfaces a refused Intuit revocation instead of reporting a disconnect that did not happen", async () => {
+    const disconnectActiveConnection = vi.fn().mockRejectedValue(
+      new AppError("PROVIDER_UNAVAILABLE", "Intuit could not process the revocation request.", {
+        httpStatus: 503,
+        retryable: true,
+      }),
+    );
+    const app = createQuickBooksHttpApp({
+      config: config(),
+      workflow: {} as QuickBooksWorkflowService,
+      accountingCases: {} as QuickBooksAccountingCaseService,
+      oauth: {} as QuickBooksOAuthService,
+      connections: { disconnectActiveConnection },
+      reviews: {
+        authenticate: vi.fn().mockResolvedValue({ actorId: "actor-a", sessionHash: "hash-a" }),
+        revokeActorSessions: vi.fn(),
+      } as unknown as QuickBooksReviewService,
+      tickets: {} as QuickBooksConnectionTicketService,
+      readiness: vi.fn().mockResolvedValue(true),
+      logger: logger(),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    servers.push(server);
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const refused = await fetch(`${base}/quickbooks/disconnect`, {
+      method: "POST",
+      headers: { Cookie: "zc_quickbooks_review_session=operator-session-a" },
+    });
+
+    expect(refused.status).toBe(503);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "PROVIDER_UNAVAILABLE" } });
   });
 });

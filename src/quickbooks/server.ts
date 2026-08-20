@@ -144,6 +144,7 @@ async function main(): Promise<void> {
     accountingCases,
     oauth,
     ...(mcpOAuth ? { mcpOAuth } : {}),
+    connections: manager,
     reviews,
     tickets,
     readiness: runtimeReadiness,

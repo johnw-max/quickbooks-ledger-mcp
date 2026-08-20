@@ -34,7 +34,7 @@ export class QuickBooksOAuthService {
       actorId,
       new Date(Date.now() + 10 * 60_000),
     );
-    return buildQuickBooksAuthorizationUrl(this.#config, state);
+    return await buildQuickBooksAuthorizationUrl(this.#config, state);
   }
 
   async callback(options: {

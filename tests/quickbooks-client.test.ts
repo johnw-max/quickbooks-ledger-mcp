@@ -272,4 +272,85 @@ describe("QuickBooks API client", () => {
     const error = await failure(client.request("/companyinfo/123"));
     expect(error.details?.providerWriteOutcome).toBeUndefined();
   });
+  it("carries Intuit's trace id on a completed failure, and omits it when Intuit sent none", async () => {
+    const traced = new QuickBooksApiClient({
+      realmId: "123",
+      environment: "sandbox",
+      tokenSource: tokenSource(),
+      request: vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+        Fault: { Error: [{ code: "6000" }] },
+      }), { status: 400, headers: { "Content-Type": "application/json", intuit_tid: "1-64a1-abcdef" } })),
+    });
+    const untraced = new QuickBooksApiClient({
+      realmId: "123",
+      environment: "sandbox",
+      tokenSource: tokenSource(),
+      request: vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+        Fault: { Error: [{ code: "6000" }] },
+      }), { status: 400, headers: { "Content-Type": "application/json" } })),
+    });
+
+    expect((await failure(traced.request("/companyinfo/123"))).details?.intuitTid).toBe("1-64a1-abcdef");
+    // Absent, not an empty string or a placeholder: "Intuit told us nothing"
+    // and "Intuit told us this" must never read the same in a receipt.
+    expect((await failure(untraced.request("/companyinfo/123"))).details).not.toHaveProperty("intuitTid");
+  });
+
+  it("keeps Intuit's trace id on an unknown write outcome, where it is worth the most", async () => {
+    const client = new QuickBooksApiClient({
+      realmId: "123",
+      environment: "sandbox",
+      tokenSource: tokenSource(),
+      request: vi.fn().mockImplementation(async () => new Response("{}", {
+        status: 500,
+        headers: { "Content-Type": "application/json", intuit_tid: "1-64a1-fedcba" },
+      })),
+    });
+
+    const error = await failure(client.request("/bill", {
+      method: "POST", body: { VendorRef: { value: "9" } }, requestId: "zc:bill:123", isWrite: true,
+    }));
+    expect(error.code).toBe("WRITE_RESULT_UNKNOWN");
+    expect(error.details).toMatchObject({ providerWriteOutcome: "UNKNOWN", intuitTid: "1-64a1-fedcba" });
+  });
+
+  it("reports Intuit's trace id for a successful response, and refuses an unusable header", async () => {
+    const traces: string[] = [];
+    const client = (intuitTid: string) => new QuickBooksApiClient({
+      realmId: "123",
+      environment: "sandbox",
+      tokenSource: tokenSource(),
+      request: vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+        CompanyInfo: { Id: "123" },
+      }), { status: 200, headers: { "Content-Type": "application/json", intuit_tid: intuitTid } })),
+    });
+
+    await client("1-64a1-abcdef").request("/companyinfo/123", {
+      onIntuitTrace: (intuitTid) => traces.push(intuitTid),
+    });
+    // Upstream-controlled and headed for logs and durable receipts, so it is
+    // bounded and printable-ASCII or it is not reported at all.
+    await client("x".repeat(129)).request("/companyinfo/123", {
+      onIntuitTrace: (intuitTid) => traces.push(intuitTid),
+    });
+
+    expect(traces).toEqual(["1-64a1-abcdef"]);
+  });
+
+  it("does not fail a request because Intuit sent no trace id", async () => {
+    const client = new QuickBooksApiClient({
+      realmId: "123",
+      environment: "sandbox",
+      tokenSource: tokenSource(),
+      request: vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+        CompanyInfo: { Id: "123", CompanyName: "Sandbox" },
+      }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    });
+    const traces: string[] = [];
+
+    await expect(client.request<{ CompanyInfo: { CompanyName: string } }>("/companyinfo/123", {
+      onIntuitTrace: (intuitTid) => traces.push(intuitTid),
+    })).resolves.toMatchObject({ CompanyInfo: { CompanyName: "Sandbox" } });
+    expect(traces).toEqual([]);
+  });
 });

@@ -1,5 +1,6 @@
 import { AppError } from "../errors.js";
 import { classifyQuickBooksProviderWriteFailure } from "./quickbooksWriteOutcome.js";
+import { intuitTraceId } from "./quickbooksTypes.js";
 import type {
   QuickBooksEnvironment,
   QuickBooksQueryResponse,
@@ -34,6 +35,13 @@ export interface QuickBooksRequestOptions {
   requestId?: string;
   isWrite?: boolean;
   multipart?: FormData;
+  /**
+   * Invoked with Intuit's trace id whenever a response completes, including the
+   * successful ones. Failures carry it on the AppError details already; this is
+   * how a caller keeps it for a write that succeeded, where it is the handle
+   * Intuit support needs to reconcile what their ledger actually holds.
+   */
+  onIntuitTrace?: (intuitTid: string) => void;
 }
 
 function baseUrl(environment: QuickBooksEnvironment, realmId: string): string {
@@ -66,11 +74,16 @@ function safeFaultDetails(body: QuickBooksFaultBody): Record<string, unknown> | 
  * FAILED, NOT_FOUND and FORBIDDEN are all raised locally as well, so a caller
  * that keyed on the code would eventually call a local failure a Provider
  * refusal.
+ *
+ * Intuit's trace id belongs with that evidence for the same reason: it is only
+ * knowable from a response that completed, and it is what Intuit support asks
+ * for first when the question is what their ledger really did.
  */
 function errorForResponse(
   status: number,
   body: QuickBooksFaultBody,
   options: QuickBooksRequestOptions,
+  intuitTid: string | undefined,
 ): AppError {
   const faultRecognised = Array.isArray(body.Fault?.Error) && body.Fault.Error.length > 0;
   const details = {
@@ -78,6 +91,7 @@ function errorForResponse(
     providerResponseCompleted: true,
     providerHttpStatus: status,
     providerFaultRecognised: faultRecognised,
+    ...(intuitTid ? { intuitTid } : {}),
     ...(options.isWrite ? {
       providerWriteOutcome: classifyQuickBooksProviderWriteFailure({
         responseCompleted: true,
@@ -168,12 +182,12 @@ export class QuickBooksApiClient {
     const accessToken = await this.#tokenSource.accessToken();
     const first = await this.#send<T>(path, options, accessToken);
     if (first.kind === "success") return first.value;
-    if (first.status !== 401) throw errorForResponse(first.status, first.body, options);
+    if (first.status !== 401) throw errorForResponse(first.status, first.body, options, first.intuitTid);
 
     const refreshedAccessToken = await this.#tokenSource.refreshAccessToken();
     const second = await this.#send<T>(path, options, refreshedAccessToken);
     if (second.kind === "success") return second.value;
-    throw errorForResponse(second.status, second.body, options);
+    throw errorForResponse(second.status, second.body, options, second.intuitTid);
   }
 
   async #send<T>(
@@ -181,8 +195,8 @@ export class QuickBooksApiClient {
     options: QuickBooksRequestOptions,
     accessToken: string,
   ): Promise<
-    | { kind: "success"; value: T }
-    | { kind: "error"; status: number; body: QuickBooksFaultBody }
+    | { kind: "success"; value: T; intuitTid: string | undefined }
+    | { kind: "error"; status: number; body: QuickBooksFaultBody; intuitTid: string | undefined }
   > {
     const url = new URL(`${this.#root}${path}`);
     if (this.#minorVersion !== undefined) url.searchParams.set("minorversion", String(this.#minorVersion));
@@ -231,13 +245,19 @@ export class QuickBooksApiClient {
       });
     }
 
+    // Read before the body: a response that completed always carries Intuit's
+    // trace id, even when its body is unparseable, and an unknown write outcome
+    // is exactly the case where it is worth the most.
+    const intuitTid = intuitTraceId(response.headers);
+    if (intuitTid) options.onIntuitTrace?.(intuitTid);
+
     let body: unknown = {};
     try {
       body = await response.json() as unknown;
     } catch {
       // Do not expose upstream HTML or proxy bodies.
     }
-    if (response.ok) return { kind: "success", value: body as T };
+    if (response.ok) return { kind: "success", value: body as T, intuitTid };
     if (options.isWrite && response.status >= 500) {
       throw new AppError("WRITE_RESULT_UNKNOWN", "QuickBooks write result is unknown; automatic retry is forbidden until the durable execution attempt is resolved.", {
         httpStatus: 502,
@@ -249,9 +269,10 @@ export class QuickBooksApiClient {
           providerWriteOutcome: "UNKNOWN",
           providerMutationPossible: true,
           automaticRearmAllowed: false,
+          ...(intuitTid ? { intuitTid } : {}),
         },
       });
     }
-    return { kind: "error", status: response.status, body: body as QuickBooksFaultBody };
+    return { kind: "error", status: response.status, body: body as QuickBooksFaultBody, intuitTid };
   }
 }

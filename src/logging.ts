@@ -16,6 +16,10 @@ const safeContextKeys = new Set([
   // of them is user content: opaque internal identifiers, an HTTP status, the
   // outcome vocabulary, and Intuit's own fault codes.
   "attemptId",
+  // Intuit's own trace id for the response. It is the first thing their support
+  // asks for, so a log line that redacts it is useless in the one conversation
+  // it exists for. It is Intuit's opaque identifier, not user content.
+  "intuitTid",
   "preparationId",
   "providerFaultCodes",
   "providerHttpStatus",
@@ -57,6 +61,13 @@ const safeContextKeys = new Set([
   "resultStatus",
   "state",
   "tenantId",
+  // The crash-recovery sweep's own result: how many stale pre-dispatch attempts
+  // were reclaimed, how many became unknown-no-id, and how old the oldest was.
+  // Counts and a timestamp, no user content — and redacting them blinds the one
+  // line that reports what recovery actually did after a restart.
+  "stalePreDispatchReclaimable",
+  "transitionedToUnknownNoId",
+  "oldestStaleAt",
   "toolName",
 ]);
 

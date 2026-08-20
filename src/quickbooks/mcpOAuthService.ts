@@ -234,7 +234,7 @@ export class QuickBooksMcpOAuthService {
     };
     await this.#repository.createFlow(flow);
     return {
-      consentUrl: buildQuickBooksAuthorizationUrl(this.#qbo, qboState),
+      consentUrl: await buildQuickBooksAuthorizationUrl(this.#qbo, qboState),
       browserCookie: `${flowId}.${browserSecret}`,
       expiresAt,
     };

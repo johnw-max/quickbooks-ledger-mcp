@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { AppError } from "../errors.js";
 import type { Logger } from "../logging.js";
 import { QuickBooksApiClient } from "../providers/quickbooksClient.js";
-import { refreshQuickBooksToken } from "../providers/quickbooksOAuth.js";
+import {
+  refreshQuickBooksToken,
+  revokeQuickBooksToken,
+  type QuickBooksProviderRevocation,
+} from "../providers/quickbooksOAuth.js";
 import { QuickBooksAccountingProvider } from "../providers/quickbooksProvider.js";
 import {
   QUICKBOOKS_ACCOUNTING_SCOPE,
@@ -36,6 +40,13 @@ export function quickBooksProviderAccessDenyReasons(
 export interface QuickBooksClientManagerConfig extends QuickBooksOAuthConfig {
   minorVersion?: number;
   request?: typeof fetch;
+}
+
+export interface QuickBooksDisconnectResult {
+  realmId: string;
+  companyName: string;
+  providerRevocation: QuickBooksProviderRevocation;
+  intuitTid?: string;
 }
 
 class KeyedMutex {
@@ -191,6 +202,91 @@ export class QuickBooksClientManager {
     });
   }
 
+  /**
+   * Disconnects the customer's single active company: revokes the grant at
+   * Intuit, then records it locally.
+   *
+   * That order is the whole point. A local row marked REVOKED while Intuit
+   * still holds a live refresh token is precisely the state the platform
+   * requirement exists to prevent — the customer is told they are disconnected
+   * and they are not — so nothing is recorded until Intuit has said the grant
+   * is gone. If revocation fails, the connection stays ACTIVE and the failure
+   * is raised: still connected is the truth, and the customer can retry.
+   *
+   * The inverse gap is accepted deliberately. If Intuit revokes but the local
+   * write then fails, the row says ACTIVE over a dead grant, and the next
+   * provider call answers 401 -> NOT_CONNECTED -> reconnect. That is a worse
+   * user experience and a correct one; the other direction is neither.
+   *
+   * It runs under the same per-connection mutex as token refresh so a refresh
+   * cannot rotate the refresh token out from under the revocation.
+   */
+  async disconnectActiveConnection(actorId: string): Promise<QuickBooksDisconnectResult> {
+    const connection = await this.resolveSingleConnection(actorId);
+    return this.#mutex.run(connection.connectionId, async () => {
+      const current = await this.resolveBoundConnection(actorId, connection.connectionId, connection.realmId);
+      const token = this.#decrypt(current);
+      const revocation = await revokeQuickBooksToken({
+        config: this.#config,
+        refreshToken: token.refreshToken,
+        ...(this.#config.request ? { request: this.#config.request } : {}),
+      });
+
+      const now = new Date();
+      let marked = await this.#repository.markStatusIfVersion({
+        connectionId: current.connectionId,
+        expectedRefreshVersion: current.refreshVersion,
+        status: "REVOKED",
+        now,
+      });
+      if (!marked) {
+        // Another process rotated the token between the read and the revoke.
+        // Intuit drops the whole grant, so the rotated token is dead too and
+        // the row must still be closed; retry the guarded write against the
+        // version that actually exists rather than leaving it ACTIVE.
+        const latest = await this.#repository.get(actorId, current.realmId);
+        if (latest) {
+          marked = await this.#repository.markStatusIfVersion({
+            connectionId: latest.connectionId,
+            expectedRefreshVersion: latest.refreshVersion,
+            status: "REVOKED",
+            now,
+          });
+        }
+      }
+      if (!marked) {
+        // tenantId, not realmId: the realm id is only readable in a production
+        // log under a key on logging.ts's allowlist, and tenantId is the name
+        // this codebase already gives it there.
+        this.#logger.error("QuickBooks grant was revoked at Intuit but the local connection could not be closed.", {
+          actorId,
+          tenantId: current.realmId,
+          ...(revocation.intuitTid ? { intuitTid: revocation.intuitTid } : {}),
+        });
+        throw new AppError("CONFLICT", "QuickBooks access was revoked at Intuit, but the local connection record could not be closed; it will fail as disconnected on its next use.", {
+          httpStatus: 409,
+          retryable: true,
+          details: {
+            failureLayer: "LOCAL_CONNECTION_STATE",
+            providerRevocation: revocation.outcome,
+          },
+        });
+      }
+      this.#logger.info("QuickBooks company disconnected.", {
+        actorId,
+        tenantId: current.realmId,
+        resultStatus: revocation.outcome,
+        ...(revocation.intuitTid ? { intuitTid: revocation.intuitTid } : {}),
+      });
+      return {
+        realmId: current.realmId,
+        companyName: current.companyName,
+        providerRevocation: revocation.outcome,
+        ...(revocation.intuitTid ? { intuitTid: revocation.intuitTid } : {}),
+      };
+    });
+  }
+
   async withProvider<T>(
     actorId: string,
     action: (provider: QuickBooksAccountingProvider, connection: QuickBooksConnection) => Promise<T>,
@@ -308,7 +404,10 @@ export class QuickBooksClientManager {
       if (latest?.status === "ACTIVE" && latest.refreshVersion !== connection.refreshVersion) {
         this.#logger.info("QuickBooks token refresh race resolved with a newer active token.", {
           actorId,
-          realmId: connection.realmId,
+          // tenantId, not realmId: only the allowlisted key survives redaction,
+          // so the company id printed as [REDACTED] in production while every
+          // test passed on an injected mock. Third time this trap has bitten.
+          tenantId: connection.realmId,
         });
         return { connection: latest, token: this.#decrypt(latest) };
       }
@@ -329,7 +428,7 @@ export class QuickBooksClientManager {
       }
       this.#logger.warn("QuickBooks token refresh failed.", {
         actorId,
-        realmId: connection.realmId,
+        tenantId: connection.realmId,
         errorClass: error instanceof Error ? error.name : "UnknownError",
       });
       throw new AppError("NOT_CONNECTED", "QuickBooks connection must be re-authorized.", {

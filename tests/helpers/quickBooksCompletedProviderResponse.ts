@@ -40,9 +40,13 @@ export function quickBooksFaultResponse(
   status: number,
   code = "6000",
   element = "CurrencyRef",
+  intuitTid?: string,
 ): Response {
   return new Response(JSON.stringify({ Fault: { Error: [{ code, element }], type: "ValidationFault" } }), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(intuitTid ? { intuit_tid: intuitTid } : {}),
+    },
   });
 }

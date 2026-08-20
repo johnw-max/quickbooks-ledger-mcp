@@ -16,6 +16,7 @@ import type { QuickBooksReviewService } from "../src/quickbooks/reviewService.js
 import type { QuickBooksWorkflowService } from "../src/quickbooks/service.js";
 import type { QuickBooksAccountingCaseService } from "../src/quickbooks/accountingCaseService.js";
 import { Aes256GcmTokenCipher } from "../src/security/tokenCipher.js";
+import { intuitOAuthTransport, intuitTokenResponse } from "./helpers/intuitOAuthTransport.js";
 
 const PUBLIC_BASE_URL = "https://quickbooks-mcp.example.test";
 const HOST_CLIENT_ID = "agent2-quickbooks";
@@ -90,13 +91,12 @@ async function issueAccessToken(manager: QuickBooksClientManager): Promise<{
       clientSecret: "intuit-secret",
       redirectUri: `${PUBLIC_BASE_URL}/oauth/quickbooks/callback`,
       environment: "sandbox",
-      request: vi.fn().mockResolvedValue(new Response(JSON.stringify({
-        access_token: "intuit-access-a",
-        refresh_token: "intuit-refresh-a",
-        expires_in: 3_600,
-        x_refresh_token_expires_in: 8_640_000,
-        token_type: "bearer",
-      }), { status: 200, headers: { "Content-Type": "application/json" } })),
+      request: intuitOAuthTransport({
+        token: () => intuitTokenResponse({
+          access_token: "intuit-access-a",
+          refresh_token: "intuit-refresh-a",
+        }),
+      }),
     },
     config: {
       resourceUri: `${PUBLIC_BASE_URL}/quickbooks/mcp`,
@@ -168,6 +168,7 @@ describe("QuickBooks MCP unauthorized-and-unconnected recovery", () => {
       workflow: {} as QuickBooksWorkflowService,
       accountingCases: {} as QuickBooksAccountingCaseService,
       oauth: {} as QuickBooksOAuthService,
+      connections: { disconnectActiveConnection: vi.fn() },
       mcpOAuth: broker,
       reviews: {} as QuickBooksReviewService,
       tickets: {} as QuickBooksConnectionTicketService,
@@ -216,6 +217,7 @@ describe("QuickBooks MCP unauthorized-and-unconnected recovery", () => {
       workflow: {} as QuickBooksWorkflowService,
       accountingCases: {} as QuickBooksAccountingCaseService,
       oauth: {} as QuickBooksOAuthService,
+      connections: { disconnectActiveConnection: vi.fn() },
       mcpOAuth: broker,
       reviews: {} as QuickBooksReviewService,
       tickets: {} as QuickBooksConnectionTicketService,
@@ -268,6 +270,7 @@ describe("QuickBooks MCP unauthorized-and-unconnected recovery", () => {
       } as unknown as QuickBooksWorkflowService,
       accountingCases: {} as QuickBooksAccountingCaseService,
       oauth: {} as QuickBooksOAuthService,
+      connections: { disconnectActiveConnection: vi.fn() },
       mcpOAuth: broker,
       reviews: {} as QuickBooksReviewService,
       tickets: {} as QuickBooksConnectionTicketService,

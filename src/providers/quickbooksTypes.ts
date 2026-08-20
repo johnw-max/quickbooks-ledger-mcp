@@ -1,5 +1,26 @@
 export const QUICKBOOKS_ACCOUNTING_SCOPE = "com.intuit.quickbooks.accounting" as const;
 
+/**
+ * Intuit stamps this trace id on every response — API, OAuth token and revoke
+ * alike — and it is the first thing their support asks for. It is the only
+ * handle we have on one specific Intuit-side request when a write's outcome is
+ * in doubt, so it is read here once and shared by both Intuit HTTP surfaces.
+ */
+export const INTUIT_TRACE_HEADER = "intuit_tid";
+
+/**
+ * Bounded and restricted to printable ASCII before it is allowed anywhere near
+ * a log line or a durable receipt. The value is upstream-controlled; nothing
+ * downstream should have to defend against it. An absent or unusable header
+ * yields undefined rather than a placeholder, so "we have no trace id" and
+ * "Intuit gave us this trace id" never read the same.
+ */
+export function intuitTraceId(headers: Headers): string | undefined {
+  const value = headers.get(INTUIT_TRACE_HEADER)?.trim();
+  if (!value || value.length > 128 || !/^[\x20-\x7e]+$/u.test(value)) return undefined;
+  return value;
+}
+
 export type QuickBooksEnvironment = "sandbox" | "production";
 
 export interface QuickBooksOAuthConfig {

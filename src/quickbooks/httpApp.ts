@@ -12,6 +12,7 @@ import {
   createOAuthRequestContext,
   type RequestContext,
 } from "../security/requestContext.js";
+import type { QuickBooksClientManager } from "./clientManager.js";
 import type { QuickBooksConnectionTicketService } from "./connectionTicketService.js";
 import type { QuickBooksRuntimeConfig } from "./config.js";
 import {
@@ -155,6 +156,14 @@ function renderConnected(companyName: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuickBooks connected</title></head><body><main><h1>QuickBooks connected</h1><p>Connected to <strong>${escapeHtml(companyName)}</strong>. Return to the Agent and continue.</p></main></body></html>`;
 }
 
+function renderDisconnectConfirmation(companyName: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Disconnect QuickBooks</title></head><body><main><h1>Disconnect QuickBooks</h1><p>This disconnects <strong>${escapeHtml(companyName)}</strong> and revokes this application's access at Intuit.</p><form method="post" action="/quickbooks/disconnect"><button type="submit">Disconnect QuickBooks</button></form></main></body></html>`;
+}
+
+function renderDisconnected(companyName: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuickBooks disconnected</title></head><body><main><h1>QuickBooks disconnected</h1><p><strong>${escapeHtml(companyName)}</strong> is disconnected and this application's access has been revoked at Intuit.</p></main></body></html>`;
+}
+
 export function createQuickBooksHttpApp(options: {
   config: QuickBooksRuntimeConfig;
   workflow: QuickBooksWorkflowService;
@@ -162,12 +171,21 @@ export function createQuickBooksHttpApp(options: {
   accountingCases: QuickBooksAccountingCaseService;
   oauth: QuickBooksOAuthService;
   mcpOAuth?: QuickBooksMcpOAuthService;
+  /**
+   * Deliberately not optional. Disconnecting is a platform requirement, not a
+   * deployment choice, and an optional surface is one that can quietly go
+   * missing in exactly the deployment that has to honour it.
+   */
+  connections: Pick<QuickBooksClientManager, "disconnectActiveConnection">;
   reviews: QuickBooksReviewService;
   tickets: QuickBooksConnectionTicketService;
   readiness: () => Promise<boolean | QuickBooksRuntimeReadiness>;
   logger: Logger;
 }) {
-  const { config, workflow, mutations, accountingCases, oauth, mcpOAuth, reviews, tickets, readiness, logger } = options;
+  const {
+    config, workflow, mutations, accountingCases, oauth, mcpOAuth, connections,
+    reviews, tickets, readiness, logger,
+  } = options;
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -518,6 +536,74 @@ export function createQuickBooksHttpApp(options: {
     });
     response.setHeader("Cache-Control", "no-store");
     response.redirect(302, consentUrl);
+  });
+
+  /**
+   * The customer-facing counterpart to /connect/quickbooks. Both connect paths
+   * end by issuing this operator session cookie to the human who authorised the
+   * company, so it is exactly the right credential for that same human to undo
+   * it, and it is the only credential the browser holding it has.
+   *
+   * This is not /quickbooks/oauth/revoke. That endpoint drops a Host client's
+   * MCP token and touches nothing at Intuit; this one revokes the customer's
+   * QuickBooks grant. Conflating them would leave one of the two undone.
+   */
+  const disconnectActor = async (request: Request): Promise<string> => {
+    const session = parseCookie(request, REVIEW_COOKIE);
+    if (!session) {
+      throw new AppError("AUTH_REQUIRED", "Sign in through the QuickBooks connection flow to manage this connection.", {
+        httpStatus: 401,
+      });
+    }
+    const { actorId } = await reviews.authenticate(session);
+    return actorId;
+  };
+
+  app.get("/quickbooks/disconnect", async (request, response) => {
+    const actorId = await disconnectActor(request);
+    const status = await workflow.connectionStatus(actorId);
+    setPrivateHeaders(response);
+    if (!status.connected || !status.company) {
+      response.status(409).json({ error: { code: "NOT_CONNECTED", message: "No active QuickBooks company is connected." } });
+      return;
+    }
+    if (request.accepts(["html", "json"]) === "json") {
+      response.json({
+        status: "connected",
+        company: { realmId: status.company.realmId, name: status.company.name },
+        disconnect: { method: "POST", path: "/quickbooks/disconnect" },
+      });
+      return;
+    }
+    response.type("html").send(renderDisconnectConfirmation(status.company.name));
+  });
+
+  app.post("/quickbooks/disconnect", async (request, response) => {
+    // A SameSite=Lax session cookie is not sent on a cross-site POST, and the
+    // only page that posts here is served from this origin. Anything claiming a
+    // different origin is not that page.
+    const origin = request.headers.origin;
+    if (origin && origin !== config.publicBaseUrl) {
+      throw new AppError("FORBIDDEN", "QuickBooks disconnect must be submitted from this application.", {
+        httpStatus: 403,
+      });
+    }
+    const actorId = await disconnectActor(request);
+    const disconnected = await connections.disconnectActiveConnection(actorId);
+    // The session's only purpose was managing a connection that no longer
+    // exists; it should not outlive it.
+    await reviews.revokeActorSessions(actorId);
+    response.clearCookie(REVIEW_COOKIE, { path: "/" });
+    setPrivateHeaders(response);
+    if (request.accepts(["html", "json"]) === "json") {
+      response.json({
+        status: "disconnected",
+        company: { realmId: disconnected.realmId, name: disconnected.companyName },
+        provider_revocation: disconnected.providerRevocation,
+      });
+      return;
+    }
+    response.type("html").send(renderDisconnected(disconnected.companyName));
   });
 
   app.get("/oauth/quickbooks/callback", async (request, response) => {

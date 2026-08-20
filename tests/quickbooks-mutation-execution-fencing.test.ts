@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { AppError } from "../src/errors.js";
-import type { Logger } from "../src/logging.js";
+import { createLogger, type Logger } from "../src/logging.js";
 import { InMemoryQuickBooksMutationRepository } from "../src/quickbooks/inMemoryMutationRepository.js";
 import {
   quickBooksFaultResponse,
@@ -503,6 +503,63 @@ describe("QuickBooks durable mutation execution fencing", () => {
     });
     await expect(execution.execute()).rejects.toMatchObject({ code: "WRITE_RESULT_UNKNOWN_NO_ID" });
     expect(executeMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts Intuit's trace id on the post-dispatch log line, and the real logger keeps it", async () => {
+    const repository = new InMemoryQuickBooksMutationRepository();
+    const logger = recordingLogger();
+    const executeMutation = vi.fn(async (
+      input: QuickBooksProviderMutationCommand,
+      permit: QuickBooksProviderWritePermit,
+      _recordProviderOutcome: (outcome: { providerEntityId: string; receipt: Record<string, unknown> }) => Promise<void>,
+      markProviderDispatch: () => Promise<void>,
+    ) => {
+      consumeQuickBooksProviderWritePermit(permit, { realmId, command: input });
+      await markProviderDispatch();
+      throw await providerWriteFailure(async () => faultResponse(500, "6000", "CurrencyRef", "1-64a1-9f2c"));
+    });
+    const { service } = mutationRuntime(repository, executeMutation, vi.fn(), logger);
+    const execution = await preparedExecution(service);
+
+    await expect(execution.execute()).rejects.toMatchObject({ code: "WRITE_RESULT_UNKNOWN_NO_ID" });
+
+    const context = logger.warnings[0]?.context as Record<string, unknown>;
+    expect(context).toMatchObject({ providerWriteOutcome: "UNKNOWN", intuitTid: "1-64a1-9f2c" });
+
+    // The mock logger above never redacts, which is exactly how an unlisted key
+    // has twice reached production as "[REDACTED]" with every test green. Drive
+    // the same context through the real logger and read the emitted line.
+    const emitted: string[] = [];
+    const write = vi.spyOn(console, "warn").mockImplementation((line: string) => { emitted.push(line); });
+    try {
+      createLogger({ logLevel: "warn" }).warn("QuickBooks provider dispatch failed after the durable dispatch marker.", context);
+    } finally {
+      write.mockRestore();
+    }
+    const record = JSON.parse(emitted[0] as string) as { context: Record<string, unknown> };
+    expect(record.context.intuitTid).toBe("1-64a1-9f2c");
+    expect(record.context.providerWriteOutcome).toBe("UNKNOWN");
+  });
+
+  it("omits the trace id from the post-dispatch log line when Intuit sent none", async () => {
+    const repository = new InMemoryQuickBooksMutationRepository();
+    const logger = recordingLogger();
+    const executeMutation = vi.fn(async (
+      input: QuickBooksProviderMutationCommand,
+      permit: QuickBooksProviderWritePermit,
+      _recordProviderOutcome: (outcome: { providerEntityId: string; receipt: Record<string, unknown> }) => Promise<void>,
+      markProviderDispatch: () => Promise<void>,
+    ) => {
+      consumeQuickBooksProviderWritePermit(permit, { realmId, command: input });
+      await markProviderDispatch();
+      throw await providerWriteFailure(async () => { throw new Error("connection reset"); });
+    });
+    const { service } = mutationRuntime(repository, executeMutation, vi.fn(), logger);
+    const execution = await preparedExecution(service);
+
+    await expect(execution.execute()).rejects.toMatchObject({ code: "WRITE_RESULT_UNKNOWN_NO_ID" });
+    // No response cycle completed, so there is no Intuit-side request to trace.
+    expect(logger.warnings[0]?.context).not.toHaveProperty("intuitTid");
   });
 
   it("still reports unknown-no-Id when the write died in transport after dispatch", async () => {
