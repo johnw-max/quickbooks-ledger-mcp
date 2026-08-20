@@ -17,18 +17,18 @@ const residualIntake = {
     source_key: "bank-statement-2026-07",
     label: "July bank statement",
     units: [{
-      unit_key: "bank-fee-2026-07-25",
+      unit_key: "customer-receipt-2026-07-25",
       facts: [{
         kind: "UNSUPPORTED_EVENT" as const,
-        event_type: "BANK_FEE" as const,
+        event_type: "PAYMENT" as const,
         date: "2026-07-25",
         currency: "SGD",
         amount: "25.00",
-        note: "Bank fee remains explicit because this release does not write it.",
+        note: "Customer settlement remains explicit because cash movement is out of scope in this release.",
       }, {
         kind: "EVIDENCE" as const,
         evidence_role: "SOURCE_DOCUMENT" as const,
-        note: "The supplied bank statement supports the blocked bank fee event.",
+        note: "The supplied bank statement supports the blocked settlement event.",
       }],
     }],
   }],
@@ -55,7 +55,7 @@ describe("QuickBooks Accounting Case business intake", () => {
     expect(compiled).toMatchObject({
       status: "PLANNED_WITH_EXCEPTIONS",
       coverage: { missingFactRequirements: [] },
-      events: [{ disposition: "BLOCKED_UNSUPPORTED", unsupportedEventType: "BANK_FEE" }],
+      events: [{ disposition: "BLOCKED_UNSUPPORTED", unsupportedEventType: "PAYMENT" }],
       operationCandidates: [],
     });
   });

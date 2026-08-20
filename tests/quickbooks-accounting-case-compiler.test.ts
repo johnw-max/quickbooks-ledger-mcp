@@ -54,25 +54,25 @@ describe("QuickBooks Accounting Case compiler", () => {
       sources: [{
         artifactId: "bank-statement.png",
         label: "Bank statement residual evidence",
-        units: [{ unitId: "bank-fee-row", expectedFactKinds: ["UNSUPPORTED_EVENT", "EVIDENCE"] }],
+        units: [{ unitId: "settlement-row", expectedFactKinds: ["UNSUPPORTED_EVENT", "EVIDENCE"] }],
       }],
       facts: [{
-        factId: "bank-fee-v1", lineageKey: "bank-fee", eventKey: "bank-fee",
-        sourceUnitIds: ["bank-fee-row"], origin: "MODEL_EXTRACTED", revision: 1,
-        kind: "UNSUPPORTED_EVENT", eventType: "BANK_FEE", date: "2026-07-25",
-        currency: "SGD", amount: "25.00", note: "Bank fee is not released in this Case version.",
+        factId: "settlement-v1", lineageKey: "settlement", eventKey: "settlement",
+        sourceUnitIds: ["settlement-row"], origin: "MODEL_EXTRACTED", revision: 1,
+        kind: "UNSUPPORTED_EVENT", eventType: "PAYMENT", date: "2026-07-25",
+        currency: "SGD", amount: "25.00", note: "Cash movement is out of scope in this Case version.",
       }, {
-        factId: "bank-fee-evidence-v1", lineageKey: "bank-fee-evidence", eventKey: "bank-fee",
-        sourceUnitIds: ["bank-fee-row"], origin: "MODEL_EXTRACTED", revision: 1,
-        kind: "EVIDENCE", evidenceRole: "SOURCE_DOCUMENT", relatedEventKey: "bank-fee",
-        note: "The supplied statement supports the blocked bank fee event.",
+        factId: "settlement-evidence-v1", lineageKey: "settlement-evidence", eventKey: "settlement",
+        sourceUnitIds: ["settlement-row"], origin: "MODEL_EXTRACTED", revision: 1,
+        kind: "EVIDENCE", evidenceRole: "SOURCE_DOCUMENT", relatedEventKey: "settlement",
+        note: "The supplied statement supports the blocked settlement event.",
       }],
     });
     const compiled = compileParsed(parsed);
     expect(compiled).toMatchObject({
       status: "PLANNED_WITH_EXCEPTIONS",
       coverage: { missingFactRequirements: [] },
-      events: [{ disposition: "BLOCKED_UNSUPPORTED", unsupportedEventType: "BANK_FEE" }],
+      events: [{ disposition: "BLOCKED_UNSUPPORTED", unsupportedEventType: "PAYMENT" }],
       operationCandidates: [],
     });
   });
@@ -195,5 +195,128 @@ describe("QuickBooks Accounting Case compiler", () => {
     const contact = compiled.activeFacts.find((fact) => fact.kind === "CONTACT_CANDIDATE");
     expect((contact as { currency?: string } | undefined)?.currency).toBeUndefined();
     expect(compiled.operationCandidates.some((candidate) => candidate.entity === "Vendor")).toBe(false);
+  });
+
+  // Whether the debit belongs in Depreciation or Repairs is the Agent's
+  // judgment and is never second-guessed here. Whether the debits add up to
+  // the credits is arithmetic, and is.
+  const journalCase = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "accrual-v1", lineageKey: "accrual", eventKey: "accrual", sourceUnitIds: ["page-1"],
+      origin: "AGENT_ASSERTED", revision: 1, kind: "JOURNAL_ENTRY",
+      entryDate: "2026-07-31", currency: "SGD",
+      lines: [
+        { lineId: "expense", description: "July audit fee accrual", postingType: "DEBIT", accountName: "Professional Fees", amount: "1200.00" },
+        { lineId: "accrual", description: "Accrued audit fee", postingType: "CREDIT", accountName: "Accrued Liabilities", amount: "1200.00" },
+      ],
+      declaredTotal: "1200.00",
+      businessReason: "Accrue the July audit fee before the month is closed.",
+    };
+    mutate(fact);
+    return {
+      target_session_ref,
+      case_id: "case-accrual-001",
+      expected_version: 0,
+      sources: [{ artifactId: "accrual.md", label: "Month-end accrual schedule", units: [{ unitId: "page-1", expectedFactKinds: ["JOURNAL_ENTRY" as const] }] }],
+      facts: [fact],
+    };
+  };
+
+  it("plans a balanced journal entry and bridges its total", () => {
+    const compiled = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(journalCase()));
+    expect(compiled).toMatchObject({
+      status: "PLANNED_NEEDS_PREFLIGHT",
+      events: [{ disposition: "AUTO_EXECUTE", route: "JOURNAL_ENTRY", reasonCodes: [] }],
+      operationCandidates: [{
+        actionId: "journal_entry.create",
+        entity: "JournalEntry",
+        amountBridge: { currency: "SGD", sourceNet: "1200.0000", sourceTax: "0.0000", sourceGross: "1200.0000" },
+      }],
+    });
+  });
+
+  it("blocks a journal entry whose debits do not equal its credits", () => {
+    const compiled = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(journalCase((fact) => {
+      (fact.lines as Array<Record<string, unknown>>)[1]!.amount = "1100.00";
+    })));
+    expect(compiled.status).toBe("BLOCKED_VALIDATION");
+    expect(compiled.events[0]?.reasonCodes).toEqual([
+      "JOURNAL_ENTRY_DEBITS_DO_NOT_EQUAL_CREDITS",
+      "JOURNAL_TOTAL_DOES_NOT_MATCH_DECLARED_TOTAL",
+    ]);
+    expect(compiled.operationCandidates).toEqual([]);
+  });
+
+  it("blocks a balanced journal entry that disagrees with its own declared total", () => {
+    const compiled = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(journalCase((fact) => {
+      fact.declaredTotal = "120.00";
+    })));
+    expect(compiled.status).toBe("BLOCKED_VALIDATION");
+    expect(compiled.events[0]?.reasonCodes).toEqual(["JOURNAL_TOTAL_DOES_NOT_MATCH_DECLARED_TOTAL"]);
+  });
+
+  it("refuses a one-sided, single-line or zero-amount journal entry at the public boundary", () => {
+    const oneSided = journalCase((fact) => {
+      (fact.lines as Array<Record<string, unknown>>)[1]!.postingType = "DEBIT";
+    });
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(oneSided).success).toBe(false);
+
+    const singleLine = journalCase((fact) => {
+      fact.lines = [(fact.lines as unknown[])[0]];
+    });
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(singleLine).success).toBe(false);
+
+    const zeroLine = journalCase((fact) => {
+      const lines = fact.lines as Array<Record<string, unknown>>;
+      lines[0]!.amount = "0.00";
+      lines[1]!.amount = "0.00";
+      fact.declaredTotal = "0.00";
+    });
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(zeroLine).success).toBe(false);
+  });
+
+  const purchaseCase = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "card-expense-v1", lineageKey: "card-expense", eventKey: "card-expense", sourceUnitIds: ["page-1"],
+      origin: "MODEL_EXTRACTED", revision: 1, kind: "NATIVE_DOCUMENT",
+      documentType: "PURCHASE", counterpartyName: "Kopi Roasters", documentDate: "2026-07-14",
+      currency: "SGD", taxMode: "NO_TAX",
+      lines: [
+        { lineId: "beans", description: "Office coffee", quantity: "2", unitAmount: "22.50", sourceTax: "0.00", codingType: "ACCOUNT", codingName: "Staff Welfare" },
+      ],
+      declaredNet: "45.00", declaredTax: "0.00", declaredGross: "45.00",
+      businessReason: "Record the company card purchase already charged to the card.",
+      paymentAccountName: "OCBC Business Card",
+      paymentType: "CREDIT_CARD",
+    };
+    mutate(fact);
+    return {
+      target_session_ref,
+      case_id: "case-card-expense-001",
+      expected_version: 0,
+      sources: [{ artifactId: "card-receipt.jpg", label: "Card receipt", units: [{ unitId: "page-1", expectedFactKinds: ["NATIVE_DOCUMENT" as const] }] }],
+      facts: [fact],
+    };
+  };
+
+  it("plans a card purchase as its own document route", () => {
+    const compiled = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(purchaseCase()));
+    expect(compiled).toMatchObject({
+      status: "PLANNED_NEEDS_PREFLIGHT",
+      events: [{ disposition: "AUTO_EXECUTE", route: "PURCHASE" }],
+      operationCandidates: [{ actionId: "purchase.create", entity: "Purchase" }],
+    });
+  });
+
+  it("requires the money source on a purchase and forbids it on every other document", () => {
+    for (const missing of ["paymentAccountName", "paymentType"] as const) {
+      const parsed = quickBooksPrepareAccountingCaseSchema.safeParse(purchaseCase((fact) => { delete fact[missing]; }));
+      expect(parsed.success, missing).toBe(false);
+    }
+    const onABill = purchaseCase((fact) => {
+      fact.documentType = "BILL";
+      fact.documentNumber = "KR-9001";
+    });
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(onABill).success).toBe(false);
   });
 });

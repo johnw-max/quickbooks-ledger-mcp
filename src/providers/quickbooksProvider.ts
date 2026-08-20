@@ -150,8 +150,16 @@ function mutationReadbackMatches(
   return expectedSubset(normalizedActual, normalizedExpected);
 }
 
+/**
+ * Transactions whose provider-computed TotalAmt is asserted on read-back and
+ * whose presentation serialization QBO may embellish with a derived subtotal
+ * line. A Purchase is line-and-tax shaped exactly as a Bill is, so it verifies
+ * on the same terms. JournalEntry is deliberately absent: its TotalAmt is the
+ * debit side alone, not the sum of its lines, so the strict field-for-field
+ * subset comparison of what we actually sent is the stronger check there.
+ */
 const TOTAL_BEARING_TRANSACTION_ENTITIES = new Set<QuickBooksWritableEntity>([
-  "Invoice", "Bill", "CreditMemo", "VendorCredit",
+  "Invoice", "Bill", "CreditMemo", "VendorCredit", "Purchase",
 ]);
 
 function expectedTransactionTotal(payload: Record<string, unknown>): number | undefined {
@@ -328,7 +336,7 @@ export interface QuickBooksReportInput {
 }
 
 export interface QuickBooksExistingDocumentMatch {
-  entity: "Invoice" | "Bill" | "CreditMemo" | "VendorCredit";
+  entity: "Invoice" | "Bill" | "CreditMemo" | "VendorCredit" | "Purchase";
   providerEntityId: string;
   counterpartyId: string;
   docNumber: string;
@@ -706,7 +714,7 @@ export class QuickBooksAccountingProvider {
     counterpartyId: string;
     docNumber: string;
   }): Promise<QuickBooksExistingDocumentMatch[]> {
-    if (!(["Invoice", "Bill", "CreditMemo", "VendorCredit"] as const).includes(input.entity) ||
+    if (!(["Invoice", "Bill", "CreditMemo", "VendorCredit", "Purchase"] as const).includes(input.entity) ||
         !/^[A-Za-z0-9-]{1,64}$/u.test(input.counterpartyId) || !input.docNumber.trim() ||
         input.docNumber.length > 21) {
       throw new AppError("VALIDATION_FAILED", "Document identity is invalid for duplicate checking.", {
@@ -717,7 +725,12 @@ export class QuickBooksAccountingProvider {
       `SELECT * FROM ${input.entity} WHERE DocNumber = '${queryLiteral(input.docNumber.trim())}' MAXRESULTS 100`,
     );
     const normalizedDocNumber = input.docNumber.trim().toLocaleLowerCase("en-US");
-    const referenceField = input.entity === "Invoice" || input.entity === "CreditMemo" ? "CustomerRef" : "VendorRef";
+    // Purchase records its payee in EntityRef; the other four use a typed
+    // Customer/Vendor ref. Reading the wrong field would silently match nothing
+    // and report a duplicate document as absent.
+    const referenceField = input.entity === "Purchase"
+      ? "EntityRef"
+      : input.entity === "Invoice" || input.entity === "CreditMemo" ? "CustomerRef" : "VendorRef";
     return queryArray<Record<string, unknown>>(response, input.entity)
       .flatMap((document) => {
         const id = typeof document.Id === "string" ? document.Id : undefined;

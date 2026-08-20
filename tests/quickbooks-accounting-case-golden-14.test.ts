@@ -48,12 +48,39 @@ describe("QuickBooks Accounting Case golden-14", () => {
       },
     });
     expect(compiled.events).toHaveLength(15);
-    expect(compiled.operationCandidates).toHaveLength(6);
-    expect(compiled.events.filter((event) => event.disposition === "BLOCKED_UNSUPPORTED")).toHaveLength(8);
+    // Three of the eight residuals were residual only because the route did
+    // not exist: the DBS bank fee is a Purchase, Alice's expense claim is a
+    // journal entry against her reimbursement payable, and the CloudHost USD
+    // bill carries the supplied invoice-date rate that the exchange_rate field
+    // now binds into the payload. All three plan.
+    expect(compiled.operationCandidates).toHaveLength(9);
+    expect(compiled.events.filter((event) => event.disposition === "BLOCKED_UNSUPPORTED")).toHaveLength(5);
+    expect(compiled.events.find((event) => event.eventKey === "bank-fee")).toMatchObject({
+      disposition: "AUTO_EXECUTE",
+      route: "PURCHASE",
+    });
+    // A WARNING control finding rides along with the journal entry without
+    // blocking it; only BLOCK_WRITE stops a route.
+    expect(compiled.events.find((event) => event.eventKey === "alice-expense")).toMatchObject({
+      disposition: "AUTO_EXECUTE",
+      route: "JOURNAL_ENTRY",
+      reasonCodes: ["CONTROL_WARNING_MISSING_GRAB_RECEIPT"],
+    });
+    // FOREIGN_CURRENCY_BILL was retired on the 2026-08-20 evidence, not on the
+    // code path existing, so this must now name the route it actually takes.
+    // The rate itself is a service-level check against the Company's home
+    // currency; the compiler's job is to plan it as an ordinary Bill.
     expect(compiled.events.find((event) => event.eventKey === "cloudhost-bill")).toMatchObject({
-      disposition: "BLOCKED_UNSUPPORTED",
-      unsupportedEventType: "FOREIGN_CURRENCY_BILL",
-      reasonCodes: ["UNSUPPORTED_EVENT_FOREIGN_CURRENCY_BILL"],
+      disposition: "AUTO_EXECUTE",
+      route: "BILL",
+      reasonCodes: [],
+    });
+    const cloudhost = compiled.operationCandidates.find((operation) =>
+      compiled.events.some((event) => event.eventId === operation.eventId && event.eventKey === "cloudhost-bill"));
+    expect(cloudhost).toMatchObject({
+      actionId: "bill.create",
+      entity: "Bill",
+      amountBridge: { currency: "USD", sourceNet: "1000.0000", sourceTax: "0.0000", sourceGross: "1000.0000" },
     });
     expect(compiled.operationCandidates.every((operation) =>
       !compiled.events.some((event) => event.eventId === operation.eventId && event.disposition === "BLOCKED_UNSUPPORTED")))

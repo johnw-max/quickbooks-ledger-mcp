@@ -8,6 +8,7 @@ import {
   type QuickBooksCaseEvent,
   type QuickBooksCaseOperation,
   type QuickBooksCaseOperationCandidate,
+  type QuickBooksJournalEntryFact,
   type QuickBooksNativeDocumentFact,
   type QuickBooksSourceArtifact,
 } from "./accountingCase.js";
@@ -31,10 +32,17 @@ function decimal4(value: bigint): string {
   return `${whole}.${fraction}`;
 }
 
-function amountBridge(fact: QuickBooksNativeDocumentFact): QuickBooksCaseAmountBridge {
-  const net = scaled(fact.declaredNet);
-  const tax = scaled(fact.declaredTax);
-  const gross = scaled(fact.declaredGross);
+/** Every fact kind that carries amounts into a Provider payload, and is therefore bridged. */
+type QuickBooksAmountBearingFact = QuickBooksNativeDocumentFact | QuickBooksJournalEntryFact;
+
+function isAmountBearing(fact: QuickBooksAccountingFact): fact is QuickBooksAmountBearingFact {
+  return fact.kind === "NATIVE_DOCUMENT" || fact.kind === "JOURNAL_ENTRY";
+}
+
+function amountBridge(fact: QuickBooksAmountBearingFact): QuickBooksCaseAmountBridge {
+  const [net, tax, gross] = fact.kind === "JOURNAL_ENTRY"
+    ? [scaled(fact.declaredTotal), 0n, scaled(fact.declaredTotal)] as const
+    : [scaled(fact.declaredNet), scaled(fact.declaredTax), scaled(fact.declaredGross)] as const;
   return {
     sourceFactIds: [fact.factId],
     sourceLineHash: hashObject(fact.lines),
@@ -48,23 +56,56 @@ function amountBridge(fact: QuickBooksNativeDocumentFact): QuickBooksCaseAmountB
   };
 }
 
-function canonicalPayloadAmounts(payload: Record<string, unknown>): {
-  net: string;
-  tax: string;
-  gross: string;
-} | undefined {
+function lineAmounts(payload: Record<string, unknown>): bigint[] | undefined {
   if (!Array.isArray(payload.Line)) return undefined;
-  let net = 0n;
+  const amounts: bigint[] = [];
   for (const rawLine of payload.Line) {
     if (!rawLine || typeof rawLine !== "object") return undefined;
     const amount = (rawLine as Record<string, unknown>).Amount;
     if (typeof amount !== "number" && typeof amount !== "string") return undefined;
     try {
-      net += scaled(String(amount));
+      amounts.push(scaled(String(amount)));
     } catch {
       return undefined;
     }
   }
+  return amounts;
+}
+
+/**
+ * A journal entry's canonical amount is its balanced total, which only exists
+ * if the payload's own debit and credit sides agree. Reading it therefore
+ * re-derives balance from the provider-ready payload rather than trusting the
+ * source-side check: an unbalanced payload reports as unreadable and blocks.
+ */
+function canonicalJournalTotal(payload: Record<string, unknown>): bigint | undefined {
+  const amounts = lineAmounts(payload);
+  if (!amounts || !Array.isArray(payload.Line) || amounts.length !== payload.Line.length) return undefined;
+  let debit = 0n;
+  let credit = 0n;
+  for (const [index, rawLine] of payload.Line.entries()) {
+    const detail = (rawLine as Record<string, unknown>).JournalEntryLineDetail;
+    if (!detail || typeof detail !== "object") return undefined;
+    const postingType = (detail as Record<string, unknown>).PostingType;
+    const amount = amounts[index] as bigint;
+    if (postingType === "Debit") debit += amount;
+    else if (postingType === "Credit") credit += amount;
+    else return undefined;
+  }
+  return debit === credit ? debit : undefined;
+}
+
+function canonicalPayloadAmounts(
+  kind: QuickBooksAmountBearingFact["kind"],
+  payload: Record<string, unknown>,
+): { net: string; tax: string; gross: string } | undefined {
+  if (kind === "JOURNAL_ENTRY") {
+    const total = canonicalJournalTotal(payload);
+    return total === undefined ? undefined : { net: decimal4(total), tax: decimal4(0n), gross: decimal4(total) };
+  }
+  const amounts = lineAmounts(payload);
+  if (!amounts) return undefined;
+  const net = amounts.reduce((sum, amount) => sum + amount, 0n);
   const rawTax = payload.TxnTaxDetail && typeof payload.TxnTaxDetail === "object"
     ? (payload.TxnTaxDetail as Record<string, unknown>).TotalTax
     : 0;
@@ -163,7 +204,77 @@ function documentValidation(fact: QuickBooksNativeDocumentFact): string[] {
   if (fact.taxMode !== "NO_TAX" && fact.lines.some((line) => !line.taxCodeName)) {
     reasons.push("TAX_CODE_REQUIRED");
   }
+  if (fact.documentType === "PURCHASE") {
+    if (!fact.paymentAccountName) reasons.push("PURCHASE_REQUIRES_PAYMENT_ACCOUNT");
+    if (!fact.paymentType) reasons.push("PURCHASE_REQUIRES_PAYMENT_TYPE");
+  } else if (fact.paymentAccountName !== undefined || fact.paymentType !== undefined) {
+    reasons.push("PAYMENT_SOURCE_NOT_APPLICABLE_TO_DOCUMENT_TYPE");
+  }
   return uniqueSorted(reasons);
+}
+
+/**
+ * Debits equal credits is not accounting judgment, it is addition, and it is
+ * checked with the same exactness as the tax recomputation: integer units at
+ * four decimal places, no tolerance. Which account is debited stays entirely
+ * the Agent's call.
+ */
+function journalEntryValidation(fact: QuickBooksJournalEntryFact): string[] {
+  const reasons: string[] = [];
+  let debit = 0n;
+  let credit = 0n;
+  for (const line of fact.lines) {
+    const amount = scaled(line.amount);
+    if (amount <= 0n) reasons.push("JOURNAL_LINE_AMOUNT_MUST_BE_POSITIVE");
+    if (line.postingType === "DEBIT") debit += amount;
+    else credit += amount;
+  }
+  if (fact.lines.length < 2) reasons.push("JOURNAL_ENTRY_REQUIRES_AT_LEAST_TWO_LINES");
+  if (!fact.lines.some((line) => line.postingType === "DEBIT") ||
+      !fact.lines.some((line) => line.postingType === "CREDIT")) {
+    reasons.push("JOURNAL_ENTRY_REQUIRES_A_DEBIT_AND_A_CREDIT");
+  }
+  if (debit !== credit) reasons.push("JOURNAL_ENTRY_DEBITS_DO_NOT_EQUAL_CREDITS");
+  const declaredTotal = scaled(fact.declaredTotal);
+  if (debit !== declaredTotal || credit !== declaredTotal) {
+    reasons.push("JOURNAL_TOTAL_DOES_NOT_MATCH_DECLARED_TOTAL");
+  }
+  return uniqueSorted(reasons);
+}
+
+/**
+ * Adding a fact kind touches three dispatch points in this file — whether it is
+ * a primary fact, what it routes to, and what makes two of them the same
+ * logical write. Each one used to end in a fallthrough, so missing one produced
+ * a fact that compiled to nothing at all rather than an error. Routing every
+ * one of them through this makes a new kind a compile error instead.
+ */
+function unhandledFactKind(fact: never): never {
+  throw new Error(
+    `unhandled QuickBooks Accounting Case fact kind ${String((fact as { kind?: unknown }).kind)}`,
+  );
+}
+
+/**
+ * Whether this fact is the subject of an event, as opposed to something that
+ * rides along with one. Evidence and control findings attach to another fact's
+ * event; everything else is the thing the event is about.
+ */
+function isPrimaryFact(kind: QuickBooksAccountingFact["kind"]): boolean {
+  switch (kind) {
+    case "CONTACT_CANDIDATE":
+    case "NATIVE_DOCUMENT":
+    case "JOURNAL_ENTRY":
+    case "UNSUPPORTED_EVENT":
+      return true;
+    case "EVIDENCE":
+    case "CONTROL_FINDING":
+      return false;
+    // No cast here. `kind` must already be `never` for this to compile, which
+    // is the entire point — a cast would silently restore the fallthrough this
+    // exists to remove.
+    default: return unhandledFactKind(kind);
+  }
 }
 
 function stableOperationKey(fact: QuickBooksAccountingFact): string {
@@ -194,17 +305,54 @@ function stableOperationKey(fact: QuickBooksAccountingFact): string {
       },
     });
   }
-  return hashObject({
-    schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
-    kind: fact.kind,
-    eventKey: fact.eventKey,
-  });
+  if (fact.kind === "JOURNAL_ENTRY") {
+    // A journal entry has no counterparty and usually no document number, so
+    // unlike a numbered document its identity has to be its content. Two
+    // entries that agree on date, currency, total and every line are the same
+    // adjustment; changing any of those is a different adjustment and opens a
+    // different logical operation, which is the correct answer for a
+    // correction.
+    return hashObject({
+      schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
+      kind: fact.kind,
+      entryDate: fact.entryDate,
+      currency: fact.currency,
+      declaredTotal: fact.declaredTotal,
+      documentNumber: fact.documentNumber?.trim().toLocaleLowerCase("en") ?? null,
+      lines: fact.lines.map((line) => ({
+        postingType: line.postingType,
+        accountName: line.accountName.trim().toLocaleLowerCase("en"),
+        amount: line.amount,
+        description: line.description.trim().toLocaleLowerCase("en"),
+      })),
+    });
+  }
+  // A residual, evidence and a control finding are all identified by the event
+  // they belong to rather than by content: none of them becomes a Provider
+  // write, so there is nothing to make idempotent beyond the event itself.
+  if (fact.kind === "UNSUPPORTED_EVENT" || fact.kind === "EVIDENCE" || fact.kind === "CONTROL_FINDING") {
+    return hashObject({
+      schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
+      kind: fact.kind,
+      eventKey: fact.eventKey,
+    });
+  }
+  return unhandledFactKind(fact);
 }
 
 function eventRoute(fact: QuickBooksAccountingFact): QuickBooksCaseEvent["route"] {
-  if (fact.kind === "CONTACT_CANDIDATE") return "CONTACT_CREATE";
-  if (fact.kind === "NATIVE_DOCUMENT") return fact.documentType;
-  return undefined;
+  switch (fact.kind) {
+    case "CONTACT_CANDIDATE": return "CONTACT_CREATE";
+    case "NATIVE_DOCUMENT": return fact.documentType;
+    case "JOURNAL_ENTRY": return "JOURNAL_ENTRY";
+    // Carries no route by design: a residual is recorded, not planned, and
+    // evidence and control findings ride along with someone else's event.
+    case "UNSUPPORTED_EVENT":
+    case "EVIDENCE":
+    case "CONTROL_FINDING":
+      return undefined;
+    default: return unhandledFactKind(fact);
+  }
 }
 
 function operationCandidate(
@@ -239,13 +387,16 @@ function operationCandidate(
       stableOperationKey: stableOperationKey(primary),
     };
   }
-  if (primary.kind !== "NATIVE_DOCUMENT") return undefined;
-  const mapping = {
-    INVOICE: { actionId: "invoice.create", entity: "Invoice" as const },
-    BILL: { actionId: "bill.create", entity: "Bill" as const },
-    CREDIT_MEMO: { actionId: "credit_memo.create", entity: "CreditMemo" as const },
-    VENDOR_CREDIT: { actionId: "vendor_credit.create", entity: "VendorCredit" as const },
-  }[primary.documentType];
+  if (!isAmountBearing(primary)) return undefined;
+  const mapping = primary.kind === "JOURNAL_ENTRY"
+    ? { actionId: "journal_entry.create", entity: "JournalEntry" as const }
+    : {
+      INVOICE: { actionId: "invoice.create", entity: "Invoice" as const },
+      BILL: { actionId: "bill.create", entity: "Bill" as const },
+      CREDIT_MEMO: { actionId: "credit_memo.create", entity: "CreditMemo" as const },
+      VENDOR_CREDIT: { actionId: "vendor_credit.create", entity: "VendorCredit" as const },
+      PURCHASE: { actionId: "purchase.create", entity: "Purchase" as const },
+    }[primary.documentType];
   return {
     operationId,
     eventId: event.eventId,
@@ -286,11 +437,11 @@ export function validateQuickBooksCompiledOperationAgainstSource(
   if (operation.canonicalPayloadHash !== hashObject(operation.canonicalPayload)) {
     reasons.push("CANONICAL_PAYLOAD_HASH_MISMATCH");
   }
-  if (fact.kind === "NATIVE_DOCUMENT") {
+  if (isAmountBearing(fact)) {
     const expectedBridge = amountBridge(fact);
     if (hashObject(operation.amountBridge) !== hashObject(expectedBridge)) reasons.push("AMOUNT_BRIDGE_MISMATCH");
     if (operation.amountBridge?.sourceLineHash !== hashObject(fact.lines)) reasons.push("SOURCE_LINE_HASH_MISMATCH");
-    const payloadAmounts = canonicalPayloadAmounts(operation.canonicalPayload);
+    const payloadAmounts = canonicalPayloadAmounts(fact.kind, operation.canonicalPayload);
     if (!payloadAmounts) {
       reasons.push("CANONICAL_PAYLOAD_AMOUNTS_UNREADABLE");
     } else {
@@ -346,8 +497,7 @@ export function compileQuickBooksAccountingCase(input: {
   const events: QuickBooksCaseEvent[] = [];
   for (const eventKey of [...byEvent.keys()].sort((left, right) => left.localeCompare(right, "en"))) {
     const facts = (byEvent.get(eventKey) ?? []).sort((left, right) => left.factId.localeCompare(right.factId, "en"));
-    const primaryFacts = facts.filter((fact) => fact.kind === "CONTACT_CANDIDATE" || fact.kind === "NATIVE_DOCUMENT" ||
-      fact.kind === "UNSUPPORTED_EVENT");
+    const primaryFacts = facts.filter((fact) => isPrimaryFact(fact.kind));
     const blockingControls = facts.filter((fact): fact is Extract<QuickBooksAccountingFact, { kind: "CONTROL_FINDING" }> =>
       fact.kind === "CONTROL_FINDING" && fact.severity === "BLOCK_WRITE");
     const warningControls = facts.filter((fact): fact is Extract<QuickBooksAccountingFact, { kind: "CONTROL_FINDING" }> =>
@@ -367,6 +517,7 @@ export function compileQuickBooksAccountingCase(input: {
         reasons.push(`UNSUPPORTED_EVENT_${primary.eventType}`);
       } else {
         if (primary.kind === "NATIVE_DOCUMENT") reasons.push(...documentValidation(primary));
+        if (primary.kind === "JOURNAL_ENTRY") reasons.push(...journalEntryValidation(primary));
         if (primary.kind === "CONTACT_CANDIDATE" && conflictedContactFactIds.has(primary.factId)) {
           reasons.push(CONTACT_DOCUMENT_CURRENCY_MISMATCH);
         }

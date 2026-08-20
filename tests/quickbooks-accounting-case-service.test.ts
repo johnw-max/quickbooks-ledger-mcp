@@ -144,6 +144,11 @@ function fixture(options: {
       writeTargetMode: "exact_allowlist",
       allowedRealmId: "9341457701636490",
       publicBaseUrl: "https://mcp.test",
+      // Production pins the runtime allowlist from QUICKBOOKS_ALLOWED_WRITE_CAPABILITIES,
+      // and must: CREATE:JournalEntry is deliberately not enabledByDefault in
+      // writePolicy, so releasing it through the Case compiler is not by itself
+      // enough to let an unconfigured deployment post to the general ledger.
+      allowedCapabilities: [...QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES],
       accountingCaseReleasedCapabilities: QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES,
       executeScopeAuthorizer: async (_actorId, requiredScope) =>
         executeScopeAllowed && requiredScope === "quickbooks.mutation.execute",
@@ -1069,5 +1074,297 @@ describe("QuickBooks Accounting Case service", () => {
       }),
     ]));
     expect(prepared.operations).toHaveLength(0);
+  });
+
+  // ---- LEDGER_ADJUSTMENT: JournalEntry ----------------------------------
+
+  const journalCase = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "accrual-v1", lineageKey: "accrual", eventKey: "accrual", sourceUnitIds: ["page-1"],
+      origin: "AGENT_ASSERTED", revision: 1, kind: "JOURNAL_ENTRY",
+      entryDate: "2026-07-31", currency: "SGD",
+      lines: [
+        { lineId: "expense", description: "July audit fee accrual", postingType: "DEBIT", accountName: "Professional Fees", amount: "1200.00" },
+        { lineId: "accrual", description: "Accrued audit fee", postingType: "CREDIT", accountName: "Accrued Liabilities", amount: "1200.00" },
+      ],
+      declaredTotal: "1200.00",
+      businessReason: "Accrue the July audit fee before the month is closed.",
+    };
+    mutate(fact);
+    return quickBooksPrepareAccountingCaseSchema.parse({
+      target_session_ref: targetSessionRef,
+      case_id: "case-accrual-001",
+      expected_version: 0,
+      sources: [{ artifactId: "accrual.md", label: "Month-end accrual schedule", units: [{ unitId: "page-1", expectedFactKinds: ["JOURNAL_ENTRY"] }] }],
+      facts: [fact],
+    });
+  };
+
+  const ledgerAccounts = [
+    { Id: "70", Name: "Professional Fees", FullyQualifiedName: "Professional Fees", AccountType: "Expense", Active: true },
+    { Id: "71", Name: "Accrued Liabilities", FullyQualifiedName: "Accrued Liabilities", AccountType: "Other Current Liability", Active: true },
+  ];
+
+  function journalFixture(options: Parameters<typeof fixture>[0] = {}) {
+    const built = fixture({ delegationActions: ["journal_entry.create"], ...options });
+    vi.mocked(built.provider.listAccounts).mockResolvedValue(ledgerAccounts);
+    return built;
+  }
+
+  it("compiles, prepares and posts a balanced journal entry against exactly-named accounts", async () => {
+    const { service, executeMutation } = journalFixture();
+    const staged = journalCase();
+    const prepared = await service.prepare(context, staged);
+    expect(prepared).toMatchObject({
+      state: "PLANNED_NEEDS_PREFLIGHT",
+      completion_claim: { ledger_write_claim: "NOT_WRITTEN" },
+      events: [{ route: "JOURNAL_ENTRY", compiled_disposition: "AUTO_EXECUTE" }],
+      operations: [{ action_id: "journal_entry.create", entity: "JournalEntry", state: "PENDING" }],
+    });
+    expect(executeMutation).not.toHaveBeenCalled();
+
+    const executed = await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-accrual-1",
+    });
+    expect(executed).toMatchObject({
+      state: "TERMINAL",
+      operations: [{ state: "READBACK_VERIFIED", provider_entity_id: "9001", assurance: { all_required_evidence_verified: true } }],
+      completion_claim: { ledger_write_claim: "ALL_ELIGIBLE_WRITES_READBACK_VERIFIED" },
+    });
+    expect(executeMutation).toHaveBeenCalledTimes(1);
+    expect(executeMutation.mock.calls.at(-1)?.[0]).toMatchObject({
+      entity: "JournalEntry",
+      payload: {
+        TxnDate: "2026-07-31",
+        CurrencyRef: { value: "SGD" },
+        PrivateNote: "Accrue the July audit fee before the month is closed.",
+        Line: [
+          { Amount: 1200, Description: "July audit fee accrual", DetailType: "JournalEntryLineDetail", JournalEntryLineDetail: { PostingType: "Debit", AccountRef: { value: "70" } } },
+          { Amount: 1200, Description: "Accrued audit fee", DetailType: "JournalEntryLineDetail", JournalEntryLineDetail: { PostingType: "Credit", AccountRef: { value: "71" } } },
+        ],
+      },
+    });
+    expect(executeMutation.mock.calls.at(-1)?.[0].payload).not.toHaveProperty("ExchangeRate");
+  });
+
+  it("refuses a journal line whose account name is absent from the chart of accounts", async () => {
+    const { service, executeMutation } = journalFixture();
+    const prepared = await service.prepare(context, journalCase((fact) => {
+      (fact.lines as Array<Record<string, unknown>>)[0]!.accountName = "Profesional Fees";
+    }));
+    expect(prepared).toMatchObject({ state: "PLANNED_WITH_EXCEPTIONS", operations: [] });
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "REVIEW_REQUIRED", reason_codes: ["REFERENCE_NOT_FOUND"] }),
+    ]));
+    expect(executeMutation).not.toHaveBeenCalled();
+  });
+
+  it("refuses a journal line whose account name matches two active accounts", async () => {
+    const { service, provider } = journalFixture();
+    vi.mocked(provider.listAccounts).mockResolvedValue([
+      ...ledgerAccounts,
+      { Id: "72", Name: "Professional Fees", FullyQualifiedName: "Professional Fees", AccountType: "Expense", Active: true },
+    ]);
+    const prepared = await service.prepare(context, journalCase());
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "REVIEW_REQUIRED", reason_codes: ["REFERENCE_AMBIGUOUS"] }),
+    ]));
+    expect(prepared.operations).toEqual([]);
+  });
+
+  it("refuses an AR or AP journal line this release cannot attribute to a counterparty", async () => {
+    const { service, provider } = journalFixture();
+    vi.mocked(provider.listAccounts).mockResolvedValue([
+      ledgerAccounts[0]!,
+      { Id: "80", Name: "Accounts Payable", FullyQualifiedName: "Accounts Payable", AccountType: "Accounts Payable", Active: true },
+    ]);
+    const prepared = await service.prepare(context, journalCase((fact) => {
+      (fact.lines as Array<Record<string, unknown>>)[1]!.accountName = "Accounts Payable";
+    }));
+    expect(prepared).toMatchObject({ state: "BLOCKED_VALIDATION", operations: [] });
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        disposition: "BLOCKED_VALIDATION",
+        reason_codes: ["JOURNAL_LINE_ACCOUNT_REQUIRES_COUNTERPARTY"],
+      }),
+    ]));
+  });
+
+  it("holds a journal entry to the same foreign-currency rules as a document", async () => {
+    const missingRate = journalFixture();
+    const preparedWithoutRate = await missingRate.service.prepare(context, journalCase((fact) => { fact.currency = "USD"; }));
+    expect(preparedWithoutRate).toMatchObject({ state: "BLOCKED_VALIDATION", operations: [] });
+    expect(preparedWithoutRate.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason_codes: ["EXCHANGE_RATE_REQUIRED_FOR_FOREIGN_CURRENCY"] }),
+    ]));
+
+    const disabled = journalFixture();
+    vi.mocked(disabled.provider.getCompanyContext).mockResolvedValue({
+      CompanyName: "Sandbox", HomeCurrency: { value: "SGD" }, MultiCurrencyEnabled: false,
+    } as never);
+    const preparedWithoutMultiCurrency = await disabled.service.prepare(context, journalCase((fact) => {
+      fact.currency = "USD";
+      fact.exchangeRate = "1.34";
+    }));
+    expect(preparedWithoutMultiCurrency.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "REVIEW_REQUIRED", reason_codes: ["COMPANY_MULTICURRENCY_DISABLED"] }),
+    ]));
+
+    const homeCurrencyRate = journalFixture();
+    const preparedWithSpuriousRate = await homeCurrencyRate.service.prepare(context, journalCase((fact) => { fact.exchangeRate = "1.34"; }));
+    expect(preparedWithSpuriousRate.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason_codes: ["EXCHANGE_RATE_NOT_APPLICABLE_TO_HOME_CURRENCY"] }),
+    ]));
+
+    const accepted = journalFixture();
+    const staged = journalCase((fact) => {
+      fact.currency = "USD";
+      fact.exchangeRate = "1.34";
+    });
+    await accepted.service.prepare(context, staged);
+    await accepted.service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-accrual-usd",
+    });
+    expect(accepted.executeMutation.mock.calls.at(-1)?.[0].payload).toMatchObject({
+      CurrencyRef: { value: "USD" }, ExchangeRate: 1.34,
+    });
+  });
+
+  // ---- POSTING_TRANSACTION: Purchase ------------------------------------
+
+  const purchaseCase = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "card-expense-v1", lineageKey: "card-expense", eventKey: "card-expense", sourceUnitIds: ["page-1"],
+      origin: "MODEL_EXTRACTED", revision: 1, kind: "NATIVE_DOCUMENT",
+      documentType: "PURCHASE", counterpartyName: "Kopi Roasters", documentDate: "2026-07-14",
+      currency: "SGD", taxMode: "NO_TAX",
+      lines: [{
+        lineId: "beans", description: "Office coffee", quantity: "2", unitAmount: "22.50",
+        sourceTax: "0.00", codingType: "ACCOUNT", codingName: "Staff Welfare",
+      }],
+      declaredNet: "45.00", declaredTax: "0.00", declaredGross: "45.00",
+      businessReason: "Record the company card purchase already charged to the card.",
+      paymentAccountName: "OCBC Business Card",
+      paymentType: "CREDIT_CARD",
+    };
+    mutate(fact);
+    return quickBooksPrepareAccountingCaseSchema.parse({
+      target_session_ref: targetSessionRef,
+      case_id: "case-card-expense-001",
+      expected_version: 0,
+      sources: [{ artifactId: "card-receipt.jpg", label: "Card receipt", units: [{ unitId: "page-1", expectedFactKinds: ["NATIVE_DOCUMENT"] }] }],
+      facts: [fact],
+    });
+  };
+
+  const purchaseAccounts = [
+    { Id: "60", Name: "Staff Welfare", FullyQualifiedName: "Staff Welfare", AccountType: "Expense", Active: true },
+    { Id: "61", Name: "OCBC Business Card", FullyQualifiedName: "OCBC Business Card", AccountType: "Credit Card", Active: true },
+  ];
+
+  function purchaseFixture(options: Parameters<typeof fixture>[0] = {}) {
+    const built = fixture({ delegationActions: ["purchase.create"], ...options });
+    vi.mocked(built.provider.listAccounts).mockResolvedValue(purchaseAccounts);
+    vi.mocked(built.provider.searchVendors).mockResolvedValue({
+      records: [{ Id: "44", DisplayName: "Kopi Roasters", Active: true }], searchWindow: {} as never,
+    });
+    return built;
+  }
+
+  it("posts a card purchase with its payee, its money source and how the money left", async () => {
+    const { service, executeMutation } = purchaseFixture();
+    const staged = purchaseCase();
+    const prepared = await service.prepare(context, staged);
+    expect(prepared).toMatchObject({
+      state: "PLANNED_NEEDS_PREFLIGHT",
+      events: [{ route: "PURCHASE", compiled_disposition: "AUTO_EXECUTE" }],
+      operations: [{ action_id: "purchase.create", entity: "Purchase", state: "PENDING" }],
+    });
+
+    const executed = await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-card-1",
+    });
+    expect(executed).toMatchObject({
+      state: "TERMINAL",
+      operations: [{ state: "READBACK_VERIFIED", assurance: { all_required_evidence_verified: true } }],
+    });
+    const payload = executeMutation.mock.calls.at(-1)?.[0].payload;
+    expect(payload).toMatchObject({
+      EntityRef: { value: "44", type: "Vendor" },
+      AccountRef: { value: "61" },
+      PaymentType: "CreditCard",
+      TxnDate: "2026-07-14",
+      CurrencyRef: { value: "SGD" },
+      GlobalTaxCalculation: "NotApplicable",
+      Line: [{ Amount: 45, DetailType: "AccountBasedExpenseLineDetail", AccountBasedExpenseLineDetail: { AccountRef: { value: "60" } } }],
+    });
+    // Purchase carries its payee on EntityRef, never on VendorRef, and never
+    // acquires a DueDate.
+    expect(payload).not.toHaveProperty("VendorRef");
+    expect(payload).not.toHaveProperty("DueDate");
+  });
+
+  it("refuses a purchase whose stated money source is not a bank or card account", async () => {
+    const { service } = purchaseFixture();
+    const prepared = await service.prepare(context, purchaseCase((fact) => {
+      fact.paymentAccountName = "Staff Welfare";
+    }));
+    expect(prepared).toMatchObject({ state: "BLOCKED_VALIDATION", operations: [] });
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        disposition: "BLOCKED_VALIDATION",
+        reason_codes: ["PAYMENT_ACCOUNT_IS_NOT_A_MONEY_ACCOUNT"],
+      }),
+    ]));
+  });
+
+  it("refuses a purchase whose money source is absent from the chart of accounts", async () => {
+    const { service } = purchaseFixture();
+    const prepared = await service.prepare(context, purchaseCase((fact) => {
+      fact.paymentAccountName = "OCBC Buisness Card";
+    }));
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "REVIEW_REQUIRED", reason_codes: ["REFERENCE_NOT_FOUND"] }),
+    ]));
+    expect(prepared.operations).toEqual([]);
+  });
+
+  it("holds a purchase to the one shared foreign-currency policy", async () => {
+    const missingRate = purchaseFixture();
+    const prepared = await missingRate.service.prepare(context, purchaseCase((fact) => { fact.currency = "USD"; }));
+    expect(prepared).toMatchObject({ state: "BLOCKED_VALIDATION", operations: [] });
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason_codes: ["EXCHANGE_RATE_REQUIRED_FOR_FOREIGN_CURRENCY"] }),
+    ]));
+
+    const accepted = purchaseFixture();
+    vi.mocked(accepted.provider.searchVendors).mockResolvedValue({
+      records: [{ Id: "44", DisplayName: "Kopi Roasters", Active: true, CurrencyRef: { value: "USD" } }],
+      searchWindow: {} as never,
+    });
+    const staged = purchaseCase((fact) => {
+      fact.currency = "USD";
+      fact.exchangeRate = "1.34";
+    });
+    await accepted.service.prepare(context, staged);
+    await accepted.service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-card-usd",
+    });
+    expect(accepted.executeMutation.mock.calls.at(-1)?.[0].payload).toMatchObject({
+      CurrencyRef: { value: "USD" }, ExchangeRate: 1.34, PaymentType: "CreditCard",
+    });
+  });
+
+  it("treats an exact purchase number and payee already in QuickBooks as already satisfied", async () => {
+    const { service, documents, executeMutation } = purchaseFixture();
+    documents.set("Purchase:44:kr-7714", {
+      entity: "Purchase", counterpartyId: "44", docNumber: "KR-7714", providerEntityId: "5150",
+    });
+    const prepared = await service.prepare(context, purchaseCase((fact) => { fact.documentNumber = "KR-7714"; }));
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "EVIDENCE_ONLY", reason_codes: ["DOCUMENT_ALREADY_EXISTS"] }),
+    ]));
+    expect(prepared.operations).toEqual([]);
+    expect(executeMutation).not.toHaveBeenCalled();
   });
 });

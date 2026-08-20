@@ -107,7 +107,7 @@ const documentLine = z.object({
 const document = z.object({
   ...factBase,
   kind: z.literal("NATIVE_DOCUMENT"),
-  documentType: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT"]),
+  documentType: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT", "PURCHASE"]),
   counterpartyName: z.string().trim().min(1).max(255),
   documentDate: date,
   dueDate: date.optional(),
@@ -121,9 +121,29 @@ const document = z.object({
   declaredTax: money,
   declaredGross: money,
   businessReason: z.string().trim().min(3).max(1_000),
+  paymentAccountName: z.string().trim().min(1).max(255).optional(),
+  paymentType: z.enum(["CASH", "CHECK", "CREDIT_CARD"]).optional(),
 }).strict().superRefine((value, context) => {
   if (value.dueDate && value.dueDate < value.documentDate) {
     context.addIssue({ code: "custom", path: ["dueDate"], message: "must not be before documentDate" });
+  }
+  // A Purchase is the only released document that already moved money, so it
+  // is the only one that names where the money came from. QuickBooks requires
+  // both fields on the object and accepts neither on the other four.
+  if (value.documentType === "PURCHASE") {
+    if (!value.paymentAccountName) {
+      context.addIssue({ code: "custom", path: ["paymentAccountName"], message: "a purchase requires the exact bank or credit card account the money came from" });
+    }
+    if (!value.paymentType) {
+      context.addIssue({ code: "custom", path: ["paymentType"], message: "a purchase requires paymentType CASH, CHECK or CREDIT_CARD" });
+    }
+  } else {
+    if (value.paymentAccountName !== undefined) {
+      context.addIssue({ code: "custom", path: ["paymentAccountName"], message: "only a PURCHASE names a payment account" });
+    }
+    if (value.paymentType !== undefined) {
+      context.addIssue({ code: "custom", path: ["paymentType"], message: "only a PURCHASE names a payment type" });
+    }
   }
   const salesSide = value.documentType === "INVOICE" || value.documentType === "CREDIT_MEMO";
   for (const [index, line] of value.lines.entries()) {
@@ -136,6 +156,38 @@ const document = z.object({
     if (value.taxMode !== "NO_TAX" && line.taxCodeName === undefined) {
       context.addIssue({ code: "custom", path: ["lines", index, "taxCodeName"], message: "taxable lines require an exact tax code name" });
     }
+  }
+});
+
+const journalEntryLine = z.object({
+  lineId: id,
+  description: z.string().trim().min(1).max(1_000),
+  postingType: z.enum(["DEBIT", "CREDIT"]),
+  accountName: z.string().trim().min(1).max(255)
+    .describe("Exact chart-of-accounts name, as QuickBooks holds it. The server resolves it and never guesses."),
+  amount: money.refine((value) => Number(value) > 0, "must be greater than zero"),
+}).strict();
+
+const journalEntry = z.object({
+  ...factBase,
+  kind: z.literal("JOURNAL_ENTRY"),
+  entryDate: date,
+  documentNumber: z.string().trim().min(1).max(21).optional(),
+  currency,
+  exchangeRate: z.string().regex(/^(?:0\.\d*[1-9]\d*|[1-9]\d*(?:\.\d{1,10})?)$/u).optional(),
+  lines: z.array(journalEntryLine).min(2).max(100)
+    .refine((lines) => new Set(lines.map((line) => line.lineId)).size === lines.length, "line IDs must be unique"),
+  declaredTotal: money.refine((value) => Number(value) > 0, "must be greater than zero"),
+  businessReason: z.string().trim().min(3).max(1_000),
+}).strict().superRefine((value, context) => {
+  // Balance is arithmetic, so it is checked here and again in the compiler
+  // against the immutable fact. Which accounts carry the debit and which the
+  // credit is the Agent's judgment and is never second-guessed.
+  if (!value.lines.some((line) => line.postingType === "DEBIT")) {
+    context.addIssue({ code: "custom", path: ["lines"], message: "a journal entry requires at least one debit line" });
+  }
+  if (!value.lines.some((line) => line.postingType === "CREDIT")) {
+    context.addIssue({ code: "custom", path: ["lines"], message: "a journal entry requires at least one credit line" });
   }
 });
 
@@ -170,6 +222,7 @@ const control = z.object({
 export const quickBooksAccountingFactSchema = z.discriminatedUnion("kind", [
   contact,
   document,
+  journalEntry,
   unsupportedEvent,
   evidence,
   control,

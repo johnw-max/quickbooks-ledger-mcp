@@ -5,13 +5,18 @@ import type {
   QuickBooksMutationReuseEvidence,
 } from "./autonomousAuthorizationEvidence.js";
 
-export const QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION = "0.2.0";
+export const QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION = "0.3.0";
 export const QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION = "quickbooks-sg-core-v1";
 
 /**
  * Public Accounting Case release boundary. The official Intuit write catalog is
  * deliberately broader; only these compiler-owned actions can be executed from
  * the Agent-facing Case tools in this release.
+ *
+ * The boundary is drawn on writePolicy's `providerEffect`: MASTER_DATA,
+ * POSTING_TRANSACTION and LEDGER_ADJUSTMENT record the books and are released
+ * here; CASH_MOVEMENT (Payment, BillPayment, Deposit, Transfer, RefundReceipt)
+ * initiates or settles money and stays out of this release deliberately.
  */
 export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES = [
   "CREATE:Customer",
@@ -20,6 +25,8 @@ export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES = [
   "CREATE:Bill",
   "CREATE:CreditMemo",
   "CREATE:VendorCredit",
+  "CREATE:JournalEntry",
+  "CREATE:Purchase",
 ] as const;
 
 export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS = [
@@ -29,24 +36,52 @@ export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS = [
   "bill.create",
   "credit_memo.create",
   "vendor_credit.create",
+  "journal_entry.create",
+  "purchase.create",
 ] as const;
 
 export const QUICKBOOKS_ACCOUNTING_FACT_KINDS = [
   "CONTACT_CANDIDATE",
   "NATIVE_DOCUMENT",
+  "JOURNAL_ENTRY",
   "UNSUPPORTED_EVENT",
   "EVIDENCE",
   "CONTROL_FINDING",
 ] as const;
 
+/**
+ * Real accounting events this release still cannot route natively.
+ *
+ * PAYMENT, BILL_PAYMENT and PREPAYMENT are `CASH_MOVEMENT` in writePolicy and
+ * are out of scope by decision, not by omission. FX_SETTLEMENT is the gain or
+ * loss realised *by* such a settlement, so it cannot outlive them. Month-end
+ * revaluation is not this: it is an ordinary JOURNAL_ENTRY fact.
+ *
+ * OPENING_BALANCE stays because only half of it is now reachable. A plain
+ * opening trial balance is a journal entry, but opening AR/AP aging needs one
+ * ledger line per customer or vendor, and a JournalEntry line against an
+ * Accounts Receivable/Payable account requires a per-line Entity that this
+ * release does not carry (see #journalEntryPayload). The typed residual is the
+ * honest label for that half.
+ *
+ * FOREIGN_CURRENCY_BILL was retired on evidence, not on the code path existing:
+ * on 2026-08-20 Bill 154 / MBC-2026-0820, S$1,635.00 at 0.783503, posted to the
+ * real Sandbox Company US c694 with sent payload and exact read-back identical
+ * field for field, provider write count +1, and QuickBooks itself auto-creating
+ * an `Accounts Payable (A/P) - SGD` account carrying the balance. Until that run
+ * it stayed listed, because "the code path is ready" is not a release record
+ * here. See docs/QUICKBOOKS-MCP-RELEASE-VERDICT-2026-08-19.md.
+ *
+ * BANK_FEE and EXPENSE_CLAIM were removed by this release: a bank charge is a
+ * Purchase against the bank account, and an expense claim is either a Purchase
+ * (company card) or a journal entry crediting the employee payable. Neither
+ * routes through cash movement.
+ */
 export const QUICKBOOKS_UNSUPPORTED_EVENT_TYPES = [
   "PAYMENT",
   "BILL_PAYMENT",
   "PREPAYMENT",
-  "BANK_FEE",
   "OPENING_BALANCE",
-  "EXPENSE_CLAIM",
-  "FOREIGN_CURRENCY_BILL",
   "FX_SETTLEMENT",
 ] as const;
 
@@ -103,7 +138,15 @@ export interface QuickBooksContactCandidateFact extends QuickBooksFactBase {
   currency?: string;
 }
 
-export type QuickBooksNativeDocumentType = "INVOICE" | "BILL" | "CREDIT_MEMO" | "VENDOR_CREDIT";
+export type QuickBooksNativeDocumentType =
+  | "INVOICE"
+  | "BILL"
+  | "CREDIT_MEMO"
+  | "VENDOR_CREDIT"
+  | "PURCHASE";
+
+/** QuickBooks Purchase.PaymentType. Cash and Check draw a bank account; CreditCard draws a card account. */
+export type QuickBooksPurchasePaymentType = "CASH" | "CHECK" | "CREDIT_CARD";
 
 export interface QuickBooksNativeDocumentLine {
   lineId: string;
@@ -131,6 +174,51 @@ export interface QuickBooksNativeDocumentFact extends QuickBooksFactBase {
   declaredNet: string;
   declaredTax: string;
   declaredGross: string;
+  businessReason: string;
+  /**
+   * PURCHASE only, and required there. A Purchase records an outflow that has
+   * already happened, so unlike every other document type it names the account
+   * the money left from -- a bank or credit card account, resolved by exact
+   * name against the chart of accounts -- and how it left. QuickBooks requires
+   * both on the object; every other released documentType must omit them.
+   */
+  paymentAccountName?: string;
+  paymentType?: QuickBooksPurchasePaymentType;
+}
+
+export type QuickBooksJournalPostingType = "DEBIT" | "CREDIT";
+
+export interface QuickBooksJournalEntryLine {
+  lineId: string;
+  description: string;
+  postingType: QuickBooksJournalPostingType;
+  /** Exact chart-of-accounts name; resolved the same way a document's ACCOUNT coding is. */
+  accountName: string;
+  amount: string;
+}
+
+/**
+ * A general-ledger adjustment: accrual, reclassification, depreciation,
+ * correction. It has no counterparty and no document total -- it has balanced
+ * debit and credit lines against named accounts, which is why it cannot be a
+ * NATIVE_DOCUMENT. Which accounts to touch is the Agent's or skill's judgment;
+ * that debits equal credits is arithmetic and is checked here, deterministically.
+ */
+export interface QuickBooksJournalEntryFact extends QuickBooksFactBase {
+  kind: "JOURNAL_ENTRY";
+  entryDate: string;
+  documentNumber?: string;
+  currency: string;
+  /** Home-currency units per one unit of `currency`; present only for a foreign-currency entry. */
+  exchangeRate?: string;
+  lines: QuickBooksJournalEntryLine[];
+  /**
+   * The entry's own stated value. Total debits and total credits must each
+   * equal it, so a transcription error that happens to keep the entry balanced
+   * is still caught -- the same independent anchor declaredNet/Tax/Gross give a
+   * document.
+   */
+  declaredTotal: string;
   businessReason: string;
 }
 
@@ -167,6 +255,7 @@ export interface QuickBooksControlFindingFact extends QuickBooksFactBase {
 export type QuickBooksAccountingFact =
   | QuickBooksContactCandidateFact
   | QuickBooksNativeDocumentFact
+  | QuickBooksJournalEntryFact
   | QuickBooksUnsupportedEventFact
   | QuickBooksEvidenceFact
   | QuickBooksControlFindingFact;
@@ -187,10 +276,18 @@ export interface QuickBooksCaseEvent {
   sourceUnitIds: string[];
   disposition: QuickBooksCaseEventDisposition;
   reasonCodes: string[];
-  route?: QuickBooksNativeDocumentType | "CONTACT_CREATE";
+  route?: QuickBooksNativeDocumentType | "CONTACT_CREATE" | "JOURNAL_ENTRY";
   unsupportedEventType?: QuickBooksUnsupportedEventType;
 }
 
+/**
+ * Ties the amounts in the provider-ready canonical payload back to the exact
+ * source fact, so source/canonical drift (the observed 80 -> 800 class) is
+ * caught before dispatch. A JOURNAL_ENTRY has no net/tax split: it reports the
+ * entry's balanced total as both net and gross with zero tax, and the canonical
+ * side is read as the debit total only after debits and credits are confirmed
+ * equal in the payload itself.
+ */
 export interface QuickBooksCaseAmountBridge {
   sourceFactIds: string[];
   sourceLineHash: string;

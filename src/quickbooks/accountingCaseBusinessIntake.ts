@@ -47,7 +47,7 @@ const businessDocument = z.object({
   kind: z.literal("DOCUMENT"),
   origin,
   event_key: publicId.optional(),
-  document_type: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT"]),
+  document_type: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT", "PURCHASE"]),
   counterparty_name: z.string().trim().min(1).max(255),
   document_date: date,
   due_date: date.optional(),
@@ -66,14 +66,35 @@ const businessDocument = z.object({
   declared_tax: money,
   declared_gross: money,
   business_reason: z.string().trim().min(3).max(1_000),
+  payment_account_name: z.string().trim().min(1).max(255).optional().describe(
+    "PURCHASE only, and required there: the exact QuickBooks bank or credit card account the money left from.",
+  ),
+  payment_type: z.enum(["CASH", "CHECK", "CREDIT_CARD"]).optional().describe(
+    "PURCHASE only, and required there: how the money left. A Purchase records an outflow that already happened; it never initiates one.",
+  ),
 }).strict().superRefine((value, context) => {
-  // These four rules also exist on the internal Case schema, which stays the
+  // These rules also exist on the internal Case schema, which stays the
   // trusted boundary. Stating them here as well is what makes them reachable:
   // the SDK validates this schema before the handler runs, so an Agent gets
   // the snake_case path it actually sent instead of a re-parse failure raised
   // from inside the handler against internal camelCase field names.
   if (value.due_date && value.due_date < value.document_date) {
     context.addIssue({ code: "custom", path: ["due_date"], message: "must not be before document_date" });
+  }
+  if (value.document_type === "PURCHASE") {
+    if (!value.payment_account_name) {
+      context.addIssue({ code: "custom", path: ["payment_account_name"], message: "a purchase requires the exact bank or credit card account the money came from" });
+    }
+    if (!value.payment_type) {
+      context.addIssue({ code: "custom", path: ["payment_type"], message: "a purchase requires payment_type CASH, CHECK or CREDIT_CARD" });
+    }
+  } else {
+    if (value.payment_account_name !== undefined) {
+      context.addIssue({ code: "custom", path: ["payment_account_name"], message: "only a PURCHASE names a payment account" });
+    }
+    if (value.payment_type !== undefined) {
+      context.addIssue({ code: "custom", path: ["payment_type"], message: "only a PURCHASE names a payment type" });
+    }
   }
   const salesSide = value.document_type === "INVOICE" || value.document_type === "CREDIT_MEMO";
   for (const [index, line] of value.lines.entries()) {
@@ -86,6 +107,37 @@ const businessDocument = z.object({
     if (value.tax_mode !== "NO_TAX" && line.tax_code_name === undefined) {
       context.addIssue({ code: "custom", path: ["lines", index, "tax_code_name"], message: "taxable lines require an exact tax code name" });
     }
+  }
+});
+
+const businessJournalEntryLine = z.object({
+  description: z.string().trim().min(1).max(1_000),
+  posting_type: z.enum(["DEBIT", "CREDIT"]),
+  account_name: z.string().trim().min(1).max(255).describe(
+    "Exact QuickBooks chart-of-accounts name. Read it from `quickbooks_list_accounts`; the server resolves it exactly and refuses an absent or ambiguous name rather than guessing.",
+  ),
+  amount: money.refine((value) => Number(value) > 0, "must be greater than zero"),
+}).strict();
+
+const businessJournalEntry = z.object({
+  kind: z.literal("JOURNAL_ENTRY"),
+  origin,
+  event_key: publicId.optional(),
+  entry_date: date,
+  document_number: z.string().trim().min(1).max(21).optional(),
+  currency,
+  exchange_rate: exchangeRate.optional(),
+  lines: z.array(businessJournalEntryLine).min(2).max(100),
+  declared_total: money.refine((value) => Number(value) > 0, "must be greater than zero").describe(
+    "The entry's own total. Total debits and total credits must each equal it exactly.",
+  ),
+  business_reason: z.string().trim().min(3).max(1_000),
+}).strict().superRefine((value, context) => {
+  if (!value.lines.some((line) => line.posting_type === "DEBIT")) {
+    context.addIssue({ code: "custom", path: ["lines"], message: "a journal entry requires at least one debit line" });
+  }
+  if (!value.lines.some((line) => line.posting_type === "CREDIT")) {
+    context.addIssue({ code: "custom", path: ["lines"], message: "a journal entry requires at least one credit line" });
   }
 });
 
@@ -121,6 +173,7 @@ const businessControlFinding = z.object({
 const businessFact = z.discriminatedUnion("kind", [
   businessContact,
   businessDocument,
+  businessJournalEntry,
   businessUnsupportedEvent,
   businessEvidence,
   businessControlFinding,
@@ -245,6 +298,25 @@ export function normalizeQuickBooksAccountingCaseBusinessIntake(raw: QuickBooksA
         declaredNet: fact.declared_net,
         declaredTax: fact.declared_tax,
         declaredGross: fact.declared_gross,
+        businessReason: fact.business_reason,
+        ...(fact.payment_account_name ? { paymentAccountName: fact.payment_account_name } : {}),
+        ...(fact.payment_type ? { paymentType: fact.payment_type } : {}),
+      };
+      if (fact.kind === "JOURNAL_ENTRY") return {
+        ...base,
+        kind: "JOURNAL_ENTRY" as const,
+        entryDate: fact.entry_date,
+        ...(fact.document_number ? { documentNumber: fact.document_number } : {}),
+        currency: fact.currency,
+        ...(fact.exchange_rate ? { exchangeRate: fact.exchange_rate } : {}),
+        lines: fact.lines.map((line, lineIndex) => ({
+          lineId: derivedId("line", { ...identity, lineIndex }),
+          description: line.description,
+          postingType: line.posting_type,
+          accountName: line.account_name,
+          amount: line.amount,
+        })),
+        declaredTotal: fact.declared_total,
         businessReason: fact.business_reason,
       };
       if (fact.kind === "UNSUPPORTED_EVENT") return {

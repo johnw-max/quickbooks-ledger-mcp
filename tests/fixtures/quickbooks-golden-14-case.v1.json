@@ -13,15 +13,15 @@
       { "unitId": "doc-07:opening", "expectedFactKinds": ["UNSUPPORTED_EVENT"] },
       { "unitId": "doc-07:customer-payment", "expectedFactKinds": ["UNSUPPORTED_EVENT"] },
       { "unitId": "doc-07:bill-payment", "expectedFactKinds": ["UNSUPPORTED_EVENT"] },
-      { "unitId": "doc-07:bank-fee", "expectedFactKinds": ["UNSUPPORTED_EVENT"] },
+      { "unitId": "doc-07:bank-fee", "expectedFactKinds": ["NATIVE_DOCUMENT"] },
       { "unitId": "doc-07:prepayment", "expectedFactKinds": ["UNSUPPORTED_EVENT"] }
     ] },
     { "artifactId": "doc-08", "label": "Customer remittance advice", "units": [{ "unitId": "doc-08", "expectedFactKinds": ["EVIDENCE"] }] },
     { "artifactId": "doc-09", "label": "Customer credit memo", "units": [{ "unitId": "doc-09", "expectedFactKinds": ["NATIVE_DOCUMENT"] }] },
     { "artifactId": "doc-10", "label": "Vendor credit", "units": [{ "unitId": "doc-10", "expectedFactKinds": ["NATIVE_DOCUMENT"] }] },
     { "artifactId": "doc-11", "label": "Meal receipt", "units": [{ "unitId": "doc-11", "expectedFactKinds": ["EVIDENCE"] }] },
-    { "artifactId": "doc-12", "label": "Alice expense claim", "units": [{ "unitId": "doc-12", "expectedFactKinds": ["UNSUPPORTED_EVENT", "CONTROL_FINDING"] }] },
-    { "artifactId": "doc-13", "label": "CloudHost USD vendor invoice", "units": [{ "unitId": "doc-13", "expectedFactKinds": ["UNSUPPORTED_EVENT"] }] },
+    { "artifactId": "doc-12", "label": "Alice expense claim", "units": [{ "unitId": "doc-12", "expectedFactKinds": ["CONTROL_FINDING", "JOURNAL_ENTRY"] }] },
+    { "artifactId": "doc-13", "label": "CloudHost USD vendor invoice", "units": [{ "unitId": "doc-13", "expectedFactKinds": ["NATIVE_DOCUMENT"] }] },
     { "artifactId": "doc-14", "label": "CloudHost FX payment advice", "units": [{ "unitId": "doc-14", "expectedFactKinds": ["UNSUPPORTED_EVENT"] }] }
   ],
   "facts": [
@@ -93,7 +93,13 @@
     {
       "factId": "bank-fee-v1", "lineageKey": "bank-fee", "eventKey": "bank-fee",
       "sourceUnitIds": ["doc-07:bank-fee"], "origin": "MODEL_EXTRACTED", "revision": 1,
-      "kind": "UNSUPPORTED_EVENT", "eventType": "BANK_FEE", "date": "2026-07-25", "currency": "SGD", "amount": "25.00", "note": "DBS bank fee."
+      "kind": "NATIVE_DOCUMENT", "documentType": "PURCHASE", "counterpartyName": "DBS Bank Ltd", "documentDate": "2026-07-25", "currency": "SGD", "taxMode": "NO_TAX",
+      "lines": [
+        { "lineId": "fee", "description": "Monthly current account service fee", "quantity": "1", "unitAmount": "25.00", "sourceTax": "0.00", "codingType": "ACCOUNT", "codingName": "Bank Charges" }
+      ],
+      "declaredNet": "25.00", "declaredTax": "0.00", "declaredGross": "25.00",
+      "paymentAccountName": "DBS Current Account", "paymentType": "CASH",
+      "businessReason": "Record the DBS monthly service fee taken directly from the current account."
     },
     {
       "factId": "prepayment-v1", "lineageKey": "prepayment", "eventKey": "customer-prepayment",
@@ -129,7 +135,14 @@
     {
       "factId": "alice-expense-v1", "lineageKey": "alice-expense", "eventKey": "alice-expense",
       "sourceUnitIds": ["doc-12"], "origin": "AGENT_ASSERTED", "revision": 1,
-      "kind": "UNSUPPORTED_EVENT", "eventType": "EXPENSE_CLAIM", "date": "2026-07-18", "currency": "SGD", "amount": "256.50", "counterpartyName": "Alice Tan", "note": "Expense dates remain in July despite approval on 1 August."
+      "kind": "JOURNAL_ENTRY", "entryDate": "2026-07-18", "currency": "SGD",
+      "lines": [
+        { "lineId": "travel", "description": "Grab fares, no input GST claimed", "postingType": "DEBIT", "accountName": "Travel Expenses", "amount": "38.50" },
+        { "lineId": "welfare", "description": "Client meal, July expense dates preserved", "postingType": "DEBIT", "accountName": "Staff Welfare", "amount": "218.00" },
+        { "lineId": "payable", "description": "Owed to Alice Tan until reimbursed", "postingType": "CREDIT", "accountName": "Employee Reimbursements Payable", "amount": "256.50" }
+      ],
+      "declaredTotal": "256.50",
+      "businessReason": "Recognise Alice Tan's July out-of-pocket expenses and the liability to reimburse her; approval on 1 August does not move the expense dates."
     },
     {
       "factId": "alice-control-v1", "lineageKey": "alice-control", "eventKey": "alice-expense",
@@ -139,7 +152,12 @@
     {
       "factId": "cloudhost-bill-v1", "lineageKey": "cloudhost-bill", "eventKey": "cloudhost-bill",
       "sourceUnitIds": ["doc-13"], "origin": "AGENT_ASSERTED", "revision": 1,
-      "kind": "UNSUPPORTED_EVENT", "eventType": "FOREIGN_CURRENCY_BILL", "date": "2026-07-10", "currency": "USD", "amount": "1000.00", "counterpartyName": "CloudHost Inc.", "note": "CH-INV-78142 uses the supplied 1.3500 invoice rate, but the current released compiler cannot bind that rate into the immutable QuickBooks Bill payload."
+      "kind": "NATIVE_DOCUMENT", "documentType": "BILL", "counterpartyName": "CloudHost Inc.", "documentDate": "2026-07-10", "documentNumber": "CH-INV-78142", "currency": "USD", "exchangeRate": "1.3500", "taxMode": "NO_TAX",
+      "lines": [
+        { "lineId": "hosting", "description": "July cloud hosting subscription", "quantity": "1", "unitAmount": "1000.00", "sourceTax": "0.00", "codingType": "ACCOUNT", "codingName": "Cloud Hosting" }
+      ],
+      "declaredNet": "1000.00", "declaredTax": "0.00", "declaredGross": "1000.00",
+      "businessReason": "Record the CloudHost USD invoice at the supplied 1.3500 invoice-date rate."
     },
     {
       "factId": "fx-settlement-v1", "lineageKey": "fx-settlement", "eventKey": "fx-settlement",

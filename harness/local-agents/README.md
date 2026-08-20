@@ -11,8 +11,10 @@ Safety boundary:
   network service.
 - The request context is OAuth-bound to one synthetic workspace, installation,
   connection and Company. Tool arguments cannot select another tenant.
-- Only the six released Accounting Case `CREATE` capabilities are enabled:
-  Customer, Vendor, Invoice, Bill, CreditMemo and VendorCredit.
+- Only the eight released Accounting Case `CREATE` capabilities are enabled:
+  Customer, Vendor, Invoice, Bill, CreditMemo, VendorCredit, JournalEntry and
+  Purchase. The list is taken from `QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES`,
+  not restated here, so it cannot drift from the release boundary.
 - Every successful synthetic write returns a provider-style receipt and exact
   ID read-back. Reusing a provider request ID is idempotent; substituting a
   different payload under the same ID fails closed.

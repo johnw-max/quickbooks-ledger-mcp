@@ -12,6 +12,7 @@ import {
   type QuickBooksCaseOperation,
   type QuickBooksCaseOperationRecord,
   type QuickBooksContactCandidateFact,
+  type QuickBooksJournalEntryFact,
   type QuickBooksNativeDocumentFact,
   type QuickBooksSourceArtifact,
 } from "./accountingCase.js";
@@ -984,6 +985,7 @@ export class QuickBooksAccountingCaseService {
     company: QuickBooksCompanyContext,
   ): Promise<Record<string, unknown>> {
     if (fact.kind === "CONTACT_CANDIDATE") return this.#contactPayload(resolved, fact, company);
+    if (fact.kind === "JOURNAL_ENTRY") return this.#journalEntryPayload(resolved, fact, company);
     if (fact.kind !== "NATIVE_DOCUMENT") {
       throw new AppError("VALIDATION_FAILED", "Evidence-only facts cannot create QuickBooks operations.", { httpStatus: 422 });
     }
@@ -1063,50 +1065,54 @@ export class QuickBooksAccountingCaseService {
     };
   }
 
-  async #documentPayload(
-    resolved: ResolvedQuickBooksProvider,
-    fact: QuickBooksNativeDocumentFact,
+  /**
+   * The one foreign-currency policy, shared by every posting fact kind.
+   *
+   * A foreign-currency document used to be refused outright, on the grounds
+   * that no exchange-rate policy had been released. Nothing could supply one:
+   * the intake had no field for a rate, so the refusal named a remedy that did
+   * not exist and every SGD document against a USD ledger was unbookable.
+   *
+   * Deciding the rate was never this service's job. It is the same shape as a
+   * tax code: the Agent names an explicit value, and the ledger is what the
+   * claim is checked against. So there are two checkable facts instead of one
+   * policy — whether the company can hold foreign currency at all, which
+   * QuickBooks answers, and whether a rate was actually supplied. The rate
+   * itself is recorded in the receipt and confirmed by exact read-back.
+   */
+  #assertCurrencyPolicy(
+    posting: { currency: string; exchangeRate?: string },
     company: QuickBooksCompanyContext,
-  ): Promise<Record<string, unknown>> {
-    // A foreign-currency document used to be refused outright, on the grounds
-    // that no exchange-rate policy had been released. Nothing could supply one:
-    // the intake had no field for a rate, so the refusal named a remedy that did
-    // not exist and every SGD document against a USD ledger was unbookable.
-    //
-    // Deciding the rate was never this service's job. It is the same shape as a
-    // tax code: the Agent names an explicit value, and the ledger is what the
-    // claim is checked against. So there are now two checkable facts instead of
-    // one policy — whether the company can hold foreign currency at all, which
-    // QuickBooks answers, and whether a rate was actually supplied. The rate
-    // itself is recorded in the receipt and confirmed by exact read-back.
-    const foreignCurrency = fact.currency !== company.HomeCurrency.value;
+    noun: "document" | "journal entry",
+  ): void {
+    const foreignCurrency = posting.currency !== company.HomeCurrency.value;
     if (foreignCurrency && company.MultiCurrencyEnabled !== true) {
-      throw new AppError("VALIDATION_FAILED", `This QuickBooks company keeps its books in ${company.HomeCurrency.value} and does not have multicurrency turned on, so a ${fact.currency} document cannot be created in it.`, {
+      throw new AppError("VALIDATION_FAILED", `This QuickBooks company keeps its books in ${company.HomeCurrency.value} and does not have multicurrency turned on, so a ${posting.currency} ${noun} cannot be created in it.`, {
         httpStatus: 422,
         details: {
           failureLayer: "PROVIDER_CONFIGURATION",
           reasonCodes: ["COMPANY_MULTICURRENCY_DISABLED"],
           homeCurrency: company.HomeCurrency.value,
-          documentCurrency: fact.currency,
+          documentCurrency: posting.currency,
           recoveryAction: "USE_HOME_CURRENCY_OR_A_MULTICURRENCY_COMPANY",
         },
       });
     }
-    if (foreignCurrency && !fact.exchangeRate) {
-      throw new AppError("VALIDATION_FAILED", `A ${fact.currency} document in a ${company.HomeCurrency.value} ledger needs an explicit exchange_rate: how many ${company.HomeCurrency.value} one ${fact.currency} converts to on the document date.`, {
+    if (foreignCurrency && !posting.exchangeRate) {
+      throw new AppError("VALIDATION_FAILED", `A ${posting.currency} ${noun} in a ${company.HomeCurrency.value} ledger needs an explicit exchange_rate: how many ${company.HomeCurrency.value} one ${posting.currency} converts to on that date.`, {
         httpStatus: 422,
         details: {
           failureLayer: "DETERMINISTIC_VALIDATION",
           reasonCodes: ["EXCHANGE_RATE_REQUIRED_FOR_FOREIGN_CURRENCY"],
           homeCurrency: company.HomeCurrency.value,
-          documentCurrency: fact.currency,
+          documentCurrency: posting.currency,
           invalidFields: ["exchange_rate"],
           recoveryAction: "CORRECT_CASE_FACTS",
         },
       });
     }
-    if (!foreignCurrency && fact.exchangeRate) {
-      throw new AppError("VALIDATION_FAILED", `This document is already in the ledger's home currency ${company.HomeCurrency.value}, so it must not carry an exchange_rate.`, {
+    if (!foreignCurrency && posting.exchangeRate) {
+      throw new AppError("VALIDATION_FAILED", `This ${noun} is already in the ledger's home currency ${company.HomeCurrency.value}, so it must not carry an exchange_rate.`, {
         httpStatus: 422,
         details: {
           failureLayer: "DETERMINISTIC_VALIDATION",
@@ -1116,6 +1122,81 @@ export class QuickBooksAccountingCaseService {
         },
       });
     }
+  }
+
+  /**
+   * One exact, active chart-of-accounts record by name, or a refusal that names
+   * the field. Identical discipline to a tax code: the system never guesses an
+   * account and fails closed when the name is absent or ambiguous.
+   */
+  #account(
+    accounts: Awaited<ReturnType<ResolvedQuickBooksProvider["provider"]["listAccounts"]>>,
+    name: string,
+  ) {
+    const account = exactByName(accounts.filter((entry) => entry.Active !== false), name,
+      (entry) => entry.FullyQualifiedName ?? entry.Name, "Account");
+    if (!account.Id) throw new AppError("VALIDATION_FAILED", "QuickBooks Account has no provider Id.", { httpStatus: 422 });
+    return account;
+  }
+
+  async #journalEntryPayload(
+    resolved: ResolvedQuickBooksProvider,
+    fact: QuickBooksJournalEntryFact,
+    company: QuickBooksCompanyContext,
+  ): Promise<Record<string, unknown>> {
+    this.#assertCurrencyPolicy(fact, company, "journal entry");
+    const accounts = await resolved.provider.listAccounts();
+    const lines = fact.lines.map((line) => {
+      const account = this.#account(accounts, line.accountName);
+      // QuickBooks requires a per-line Entity on an Accounts Receivable or
+      // Accounts Payable journal line, because the amount has to land on some
+      // customer's or vendor's sub-ledger. This release carries no such field,
+      // so the honest answer is to refuse before dispatch and say so, rather
+      // than post a line QuickBooks will reject or, worse, mis-attribute.
+      const accountType = account.AccountType;
+      if (accountType === "Accounts Receivable" || accountType === "Accounts Payable") {
+        throw new AppError(
+          "VALIDATION_FAILED",
+          `QuickBooks requires a customer or vendor on a journal line against "${line.accountName}" (${accountType}), and this release does not carry one. Post the receivable or payable side as an Invoice, Bill, CreditMemo or VendorCredit instead, and keep the journal entry to the remaining accounts.`,
+          {
+            httpStatus: 422,
+            details: {
+              failureLayer: "DETERMINISTIC_VALIDATION",
+              reasonCodes: ["JOURNAL_LINE_ACCOUNT_REQUIRES_COUNTERPARTY"],
+              accountName: line.accountName,
+              accountType,
+              invalidFields: ["lines"],
+              recoveryAction: "CORRECT_CASE_FACTS",
+            },
+          },
+        );
+      }
+      return {
+        Amount: decimal(scaled(line.amount)),
+        Description: line.description,
+        DetailType: "JournalEntryLineDetail",
+        JournalEntryLineDetail: {
+          PostingType: line.postingType === "DEBIT" ? "Debit" : "Credit",
+          AccountRef: { value: account.Id as string },
+        },
+      };
+    });
+    return {
+      Line: lines,
+      TxnDate: fact.entryDate,
+      ...(fact.documentNumber ? { DocNumber: fact.documentNumber } : {}),
+      CurrencyRef: { value: fact.currency },
+      ...(fact.exchangeRate ? { ExchangeRate: Number(fact.exchangeRate) } : {}),
+      PrivateNote: fact.businessReason,
+    };
+  }
+
+  async #documentPayload(
+    resolved: ResolvedQuickBooksProvider,
+    fact: QuickBooksNativeDocumentFact,
+    company: QuickBooksCompanyContext,
+  ): Promise<Record<string, unknown>> {
+    this.#assertCurrencyPolicy(fact, company, "document");
     const salesSide = fact.documentType === "INVOICE" || fact.documentType === "CREDIT_MEMO";
     const counterparties = salesSide
       ? (await resolved.provider.searchCustomers(fact.counterpartyName, 100)).records.filter((entry) => entry.Active !== false)
@@ -1155,6 +1236,7 @@ export class QuickBooksAccountingCaseService {
           BILL: "Bill" as const,
           CREDIT_MEMO: "CreditMemo" as const,
           VENDOR_CREDIT: "VendorCredit" as const,
+          PURCHASE: "Purchase" as const,
         }[fact.documentType],
         counterpartyId,
         docNumber: fact.documentNumber,
@@ -1196,21 +1278,69 @@ export class QuickBooksAccountingCaseService {
           },
         };
       }
-      const account = exactByName(accounts.filter((entry) => entry.Active !== false), line.codingName,
-        (entry) => entry.FullyQualifiedName ?? entry.Name, "Account");
-      if (!account.Id) throw new AppError("VALIDATION_FAILED", "QuickBooks Account has no provider Id.", { httpStatus: 422 });
+      const account = this.#account(accounts, line.codingName);
       return {
         Amount: amount,
         Description: line.description,
         DetailType: "AccountBasedExpenseLineDetail",
         AccountBasedExpenseLineDetail: {
-          AccountRef: { value: account.Id },
+          AccountRef: { value: account.Id as string },
           ...(line.taxCodeName ? { TaxCodeRef: { value: this.#taxId(taxes, line.taxCodeName) } } : {}),
         },
       };
     });
+    // A Purchase is an outflow that already happened, so QuickBooks also needs
+    // the account it left from and how. Both are resolved, never inferred: the
+    // account by exact name against the chart of accounts, the payment type
+    // from the closed enum the Agent stated. The account is only checked for
+    // being a money account at all -- pairing Cash/Check with a bank account
+    // and CreditCard with a card account is QuickBooks' own rule to enforce, and
+    // a wrong guess here would block correct work with no override, while a
+    // Provider refusal after dispatch is now recoverable.
+    if (fact.documentType === "PURCHASE" && (!fact.paymentAccountName || !fact.paymentType)) {
+      throw new AppError("VALIDATION_FAILED", "A QuickBooks purchase requires both the account the money came from and the payment type.", {
+        httpStatus: 422,
+        details: {
+          failureLayer: "DETERMINISTIC_VALIDATION",
+          reasonCodes: [fact.paymentAccountName ? "PURCHASE_REQUIRES_PAYMENT_TYPE" : "PURCHASE_REQUIRES_PAYMENT_ACCOUNT"],
+          invalidFields: ["payment_account_name", "payment_type"],
+          recoveryAction: "CORRECT_CASE_FACTS",
+        },
+      });
+    }
+    const paymentSource = fact.documentType === "PURCHASE" && fact.paymentAccountName
+      ? this.#account(accounts, fact.paymentAccountName)
+      : undefined;
+    if (paymentSource && paymentSource.AccountType &&
+      paymentSource.AccountType !== "Bank" && paymentSource.AccountType !== "Credit Card") {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        `The QuickBooks account "${fact.paymentAccountName}" is a ${paymentSource.AccountType} account, so money cannot have left from it. Name the bank or credit card account this purchase was paid from.`,
+        {
+          httpStatus: 422,
+          details: {
+            failureLayer: "DETERMINISTIC_VALIDATION",
+            reasonCodes: ["PAYMENT_ACCOUNT_IS_NOT_A_MONEY_ACCOUNT"],
+            accountName: fact.paymentAccountName,
+            accountType: paymentSource.AccountType,
+            invalidFields: ["payment_account_name"],
+            recoveryAction: "CORRECT_CASE_FACTS",
+          },
+        },
+      );
+    }
     return {
-      [salesSide ? "CustomerRef" : "VendorRef"]: { value: counterpartyId },
+      ...(paymentSource && fact.paymentType
+        // Purchase names its payee through EntityRef, not VendorRef, and the
+        // ref carries the payee's type. This release resolves that payee as a
+        // Vendor only, which is what the compiler already stages and what the
+        // contact-currency derivation assumes.
+        ? {
+          EntityRef: { value: counterpartyId, type: "Vendor" },
+          AccountRef: { value: paymentSource.Id as string },
+          PaymentType: { CASH: "Cash", CHECK: "Check", CREDIT_CARD: "CreditCard" }[fact.paymentType],
+        }
+        : { [salesSide ? "CustomerRef" : "VendorRef"]: { value: counterpartyId } }),
       Line: lines,
       TxnDate: fact.documentDate,
       ...((fact.documentType === "INVOICE" || fact.documentType === "BILL") && fact.dueDate
