@@ -6,7 +6,11 @@ import { basename, resolve } from "node:path";
 // so a redeploy must bring up a differently named candidate beside it. Passing
 // the name in is what makes a second promotion possible at all.
 const candidateName = process.argv[2] ?? "quickbooks-accounting-mcp-0.6-candidate";
-const enabledConfig = "/etc/nginx/sites-enabled/mcp.jiayuanwang.xyz";
+// The nginx site file is this deployment's, not the service's. Production runs
+// on the customer's own host and domain, so it is configuration, not a
+// constant; the default only covers the environment this script grew up in.
+const enabledConfig = process.env.QUICKBOOKS_NGINX_SITE_FILE
+  ?? "/etc/nginx/sites-enabled/mcp.jiayuanwang.xyz";
 const upstreamName = "quickbooks_accounting_mcp_demo";
 
 function dockerInspect(name) {

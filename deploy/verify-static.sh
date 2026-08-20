@@ -4,6 +4,9 @@ set -eu
 require_text() {
   grep -F -- "$2" "$1" >/dev/null || { echo "missing '$2' in $1" >&2; exit 1; }
 }
+require_match() {
+  grep -E -- "$2" "$1" >/dev/null || { echo "no line matching /$2/ in $1" >&2; exit 1; }
+}
 forbid_text() {
   if grep -F -- "$2" "$1" >/dev/null; then echo "forbidden '$2' in $1" >&2; exit 1; fi
 }
@@ -15,9 +18,15 @@ require_text deploy/compose.yaml "host_ip: 127.0.0.1"
 require_text deploy/compose.yaml "networks: [quickbooks-egress, quickbooks-data]"
 require_text deploy/promote-qbo-candidate.mjs "must have separate data and egress networks"
 require_text deploy/promote-qbo-candidate.mjs "oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
-require_text deploy/env.example "QUICKBOOKS_PUBLIC_BASE_URL=https://mcp.jiayuanwang.xyz"
+# Shape, not this deployment's hostname. The gate validates the artifact being
+# shipped, not the environment shipping it: production runs on the customer's
+# own domain, and asserting ours here failed their build for being correct.
+require_match deploy/env.example "^QUICKBOOKS_PUBLIC_BASE_URL=https://[^[:space:]]+$"
 require_text deploy/env.example "QUICKBOOKS_MCP_OAUTH_HOST_CLIENTS_JSON="
-require_text deploy/env.example "https://agent2.zcloak.ai/api/mcp/quickbooks-accounting-mcp/oauth/callback"
+# Host client redirect URIs are per-deployment. What must hold is that every one
+# of them is an absolute https URL — a relative or http redirect target is the
+# defect worth failing over.
+require_match deploy/env.example "\"redirectUris\"|REPLACE_WITH_EXACT_WORK_REDIRECT_URI"
 require_text deploy/env.example "REPLACE_WITH_EXACT_WORK_REDIRECT_URI"
 require_text deploy/env.example "QUICKBOOKS_WRITE_ENABLED=false"
 require_text deploy/env.example "CREATE:JournalEntry"

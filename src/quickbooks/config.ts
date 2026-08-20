@@ -343,7 +343,11 @@ export function loadQuickBooksConfig(env: NodeJS.ProcessEnv = process.env): Quic
     value.QUICKBOOKS_WRITE_TARGET_MODE === "exact_allowlist" &&
     !value.QUICKBOOKS_ALLOWED_REALM_ID
   ) {
-    throw new Error("Invalid QuickBooks configuration: QUICKBOOKS_ALLOWED_REALM_ID is required when writes are enabled");
+    throw new Error(
+      "Invalid QuickBooks configuration: QUICKBOOKS_ALLOWED_REALM_ID is required when writes are enabled " +
+        "and QUICKBOOKS_WRITE_TARGET_MODE is exact_allowlist. Set the realm to pin writes to one company, " +
+        "or use oauth_bound to write to whichever company each user authorised.",
+    );
   }
   const mcpOAuthHostClients = value.QUICKBOOKS_MCP_OAUTH_ENABLED
     ? parseMcpOAuthHostClients(value)

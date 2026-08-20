@@ -20,6 +20,12 @@ EXPECTED_TOOL_COUNT="${QUICKBOOKS_EXPECTED_TOOL_COUNT:-19}"
 PROJECT="qbo-0-6-${COMMIT}"
 IMAGE="quickbooks-ledger-mcp:0.6.0-${COMMIT}"
 CANDIDATE_PORT="${QUICKBOOKS_CANDIDATE_PORT:-18004}"
+# Read the public base URL from the deployment's own env file rather than baking
+# in a hostname: this script has to work on the customer's host under their
+# domain, and there the only truth is what they configured.
+PUBLIC_BASE_URL="${QUICKBOOKS_PUBLIC_BASE_URL:-$(sed -n 's|^QUICKBOOKS_PUBLIC_BASE_URL=||p' deploy/.env.quickbooks 2>/dev/null | tail -1)}"
+[ -n "${PUBLIC_BASE_URL}" ] || die "QUICKBOOKS_PUBLIC_BASE_URL is not set and could not be read from deploy/.env.quickbooks"
+HEALTH_URL="${PUBLIC_BASE_URL%/}/quickbooks/healthz"
 
 step() { printf '\n=== %s ===\n' "$1"; }
 die()  { printf '\nABORTED: %s\n' "$1" >&2; exit 1; }
@@ -89,12 +95,12 @@ step "Confirming from outside"
 # can still be served by the old upstream. That is not a failed promotion and
 # must not send anyone to the rollback instructions; poll briefly instead.
 for attempt in $(seq 1 12); do
-  live_head="$(curl -s https://mcp.jiayuanwang.xyz/quickbooks/healthz \
+  live_head="$(curl -s "${HEALTH_URL}" \
     | python3 -c "import json,sys; print(json.load(sys.stdin)['readiness']['migrations']['latestExpected'])" 2>/dev/null || true)"
   [ "${live_head}" = "${REQUIRED_MIGRATION}" ] && break
   sleep 5
 done
-curl -s https://mcp.jiayuanwang.xyz/quickbooks/healthz \
+curl -s "${HEALTH_URL}" \
   | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
@@ -109,7 +115,7 @@ cat <<EOF
 
 Done. The previous container is still running and untouched.
 
-  Roll back : sudo cp <backup path printed above> /etc/nginx/sites-enabled/mcp.jiayuanwang.xyz \\
+  Roll back : sudo cp <backup path printed above> "\${QUICKBOOKS_NGINX_SITE_FILE:-/etc/nginx/sites-enabled/<your-site>}" \\
               && sudo nginx -t && sudo systemctl reload nginx
   Retire old: docker stop <previous container>   # only once you are satisfied
 
