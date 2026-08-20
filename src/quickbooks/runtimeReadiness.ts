@@ -86,8 +86,16 @@ export async function inspectQuickBooksRuntimeReadiness(options: {
     options.accountingCaseRepositoryReady(),
   ]);
   const persistenceReady = database && controlRepository && mutationRepository && accountingCaseRepository;
-  const migrationsReady = database && missingCount === 0 && unexpectedCount === 0 && checksumMismatchCount === 0 &&
-    legacyCompilerRowCount === 0;
+  // The compiled-plan compiler version is deliberately *not* part of readiness.
+  // The hazard it guards is executing a plan built by a different compiler, and
+  // that is checked per operation at execute time, against the plan actually
+  // about to run. Gating startup on it instead made every historical Case block
+  // the whole service: a compiler bump could never be deployed against a
+  // database that had ever been used, and the states with no outgoing
+  // transition — TERMINAL, BLOCKED_COVERAGE, BLOCKED_VALIDATION — hold plans
+  // that can never execute again, so they were never a hazard at all. The count
+  // is still reported, because a large number is worth seeing.
+  const migrationsReady = database && missingCount === 0 && unexpectedCount === 0 && checksumMismatchCount === 0;
   return Object.freeze({
     ready: persistenceReady && migrationsReady,
     persistence: Object.freeze({

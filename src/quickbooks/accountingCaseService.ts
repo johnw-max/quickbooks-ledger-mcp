@@ -599,6 +599,27 @@ export class QuickBooksAccountingCaseService {
       now: this.#clock(),
     })).record;
     if (record.state === "TERMINAL") return summary(record);
+    // The plan is immutable once compiled, so a Case compiled by an earlier
+    // compiler would be executed under rules it was never checked against.
+    // Refusing here rather than at startup keeps the guard on the actual
+    // hazard, and leaves an achievable remedy: preparing a new Case version
+    // recompiles the same source under the compiler that is running now.
+    if (record.compiled.compilerVersion !== QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        `This Accounting Case was planned by compiler ${record.compiled.compilerVersion} and this server runs ${QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION}. Prepare a new Case version from the same sources so the plan is rebuilt under the compiler that will execute it.`,
+        {
+          httpStatus: 422,
+          details: {
+            failureLayer: "DETERMINISTIC_VALIDATION",
+            reasonCodes: ["CASE_COMPILED_BY_DIFFERENT_COMPILER"],
+            plannedByCompilerVersion: record.compiled.compilerVersion,
+            runningCompilerVersion: QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION,
+            recoveryAction: "PREPARE_NEW_CASE_VERSION",
+          },
+        },
+      );
+    }
     for (const current of record.operations) {
       if (current.state === "READBACK_VERIFIED") continue;
       const operation = current.operation;
