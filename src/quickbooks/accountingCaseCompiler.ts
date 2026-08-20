@@ -2,7 +2,10 @@ import { hashObject } from "../security/hash.js";
 import {
   QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION,
   QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION,
+  QUICKBOOKS_MONEY_ACCOUNT_DOCUMENT_TYPES,
+  type QuickBooksAccountCandidateFact,
   type QuickBooksAccountingFact,
+  type QuickBooksItemCandidateFact,
   type QuickBooksCaseAmountBridge,
   type QuickBooksCaseCompilationDraft,
   type QuickBooksCaseEvent,
@@ -10,6 +13,7 @@ import {
   type QuickBooksCaseOperationCandidate,
   type QuickBooksJournalEntryFact,
   type QuickBooksNativeDocumentFact,
+  type QuickBooksNativeDocumentType,
   type QuickBooksSourceArtifact,
 } from "./accountingCase.js";
 
@@ -129,8 +133,17 @@ function stableFacts(facts: readonly QuickBooksAccountingFact[]): QuickBooksAcco
       left.factId.localeCompare(right.factId, "en"));
 }
 
+/** Whether the counterparty on this document type is a Customer or a Vendor. Shared by contact-currency derivation and by attachment targeting. */
+export function quickBooksDocumentContactRole(
+  documentType: QuickBooksNativeDocumentType,
+): "CUSTOMER" | "VENDOR" {
+  return documentType === "INVOICE" || documentType === "CREDIT_MEMO" || documentType === "SALES_RECEIPT"
+    ? "CUSTOMER"
+    : "VENDOR";
+}
+
 function contactRoleForDocument(fact: QuickBooksNativeDocumentFact): "CUSTOMER" | "VENDOR" {
-  return fact.documentType === "INVOICE" || fact.documentType === "CREDIT_MEMO" ? "CUSTOMER" : "VENDOR";
+  return quickBooksDocumentContactRole(fact.documentType);
 }
 
 function contactCurrencyKey(role: "CUSTOMER" | "VENDOR", displayName: string): string {
@@ -204,10 +217,18 @@ function documentValidation(fact: QuickBooksNativeDocumentFact): string[] {
   if (fact.taxMode !== "NO_TAX" && fact.lines.some((line) => !line.taxCodeName)) {
     reasons.push("TAX_CODE_REQUIRED");
   }
+  if (QUICKBOOKS_MONEY_ACCOUNT_DOCUMENT_TYPES.includes(fact.documentType)) {
+    if (!fact.paymentAccountName) {
+      reasons.push(fact.documentType === "PURCHASE"
+        ? "PURCHASE_REQUIRES_PAYMENT_ACCOUNT"
+        : "SALES_RECEIPT_REQUIRES_DEPOSIT_ACCOUNT");
+    }
+  } else if (fact.paymentAccountName !== undefined) {
+    reasons.push("PAYMENT_SOURCE_NOT_APPLICABLE_TO_DOCUMENT_TYPE");
+  }
   if (fact.documentType === "PURCHASE") {
-    if (!fact.paymentAccountName) reasons.push("PURCHASE_REQUIRES_PAYMENT_ACCOUNT");
     if (!fact.paymentType) reasons.push("PURCHASE_REQUIRES_PAYMENT_TYPE");
-  } else if (fact.paymentAccountName !== undefined || fact.paymentType !== undefined) {
+  } else if (fact.paymentType !== undefined) {
     reasons.push("PAYMENT_SOURCE_NOT_APPLICABLE_TO_DOCUMENT_TYPE");
   }
   return uniqueSorted(reasons);
@@ -243,6 +264,24 @@ function journalEntryValidation(fact: QuickBooksJournalEntryFact): string[] {
 }
 
 /**
+ * QuickBooks builds an account's or item's fully qualified name by joining the
+ * parent path with ":", so a colon inside a leaf name makes that record's own
+ * identity ambiguous -- and its qualified name is what every resolver in this
+ * release matches on and what its stable operation key is derived from. An
+ * account naming itself as its own parent is the same defect stated
+ * differently. Neither is accounting judgment; both are checked here.
+ */
+function masterDataValidation(fact: QuickBooksAccountCandidateFact | QuickBooksItemCandidateFact): string[] {
+  const reasons: string[] = [];
+  if (fact.name.includes(":")) reasons.push("MASTER_DATA_NAME_MUST_NOT_CONTAIN_A_QUALIFIED_NAME_SEPARATOR");
+  if (fact.kind === "ACCOUNT_CANDIDATE" && fact.parentAccountName &&
+      fact.parentAccountName.trim().toLocaleLowerCase("en") === fact.name.trim().toLocaleLowerCase("en")) {
+    reasons.push("ACCOUNT_CANNOT_BE_ITS_OWN_PARENT");
+  }
+  return uniqueSorted(reasons);
+}
+
+/**
  * Adding a fact kind touches three dispatch points in this file — whether it is
  * a primary fact, what it routes to, and what makes two of them the same
  * logical write. Each one used to end in a fallthrough, so missing one produced
@@ -263,8 +302,11 @@ function unhandledFactKind(fact: never): never {
 function isPrimaryFact(kind: QuickBooksAccountingFact["kind"]): boolean {
   switch (kind) {
     case "CONTACT_CANDIDATE":
+    case "ACCOUNT_CANDIDATE":
+    case "ITEM_CANDIDATE":
     case "NATIVE_DOCUMENT":
     case "JOURNAL_ENTRY":
+    case "SOURCE_ATTACHMENT":
     case "UNSUPPORTED_EVENT":
       return true;
     case "EVIDENCE":
@@ -277,6 +319,13 @@ function isPrimaryFact(kind: QuickBooksAccountingFact["kind"]): boolean {
   }
 }
 
+/** The qualified chart-of-accounts path an ACCOUNT_CANDIDATE will occupy, which is the name every resolver in this release matches on. */
+export function quickBooksQualifiedAccountName(fact: { name: string; parentAccountName?: string }): string {
+  const leaf = fact.name.trim();
+  const parent = fact.parentAccountName?.trim();
+  return parent ? `${parent}:${leaf}` : leaf;
+}
+
 function stableOperationKey(fact: QuickBooksAccountingFact): string {
   if (fact.kind === "CONTACT_CANDIDATE") {
     return hashObject({
@@ -284,6 +333,45 @@ function stableOperationKey(fact: QuickBooksAccountingFact): string {
       kind: fact.kind,
       role: fact.role,
       displayName: fact.displayName.trim().toLocaleLowerCase("en"),
+    });
+  }
+  // Master data is identified by the exact name it will occupy in QuickBooks
+  // and by nothing else. That name is what every resolver in this release
+  // matches on, and QuickBooks itself refuses a second record holding it, so
+  // two submissions naming it are the same logical create however else they
+  // differ. Deliberately excluding the account type and the item's accounts is
+  // what makes a correction work: an account refused for the wrong type keeps
+  // its key, so restating it with the right type retries that same operation
+  // rather than opening a second one that would collide on the name.
+  if (fact.kind === "ACCOUNT_CANDIDATE") {
+    return hashObject({
+      schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
+      kind: fact.kind,
+      qualifiedName: quickBooksQualifiedAccountName(fact).toLocaleLowerCase("en"),
+    });
+  }
+  if (fact.kind === "ITEM_CANDIDATE") {
+    return hashObject({
+      schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
+      kind: fact.kind,
+      name: fact.name.trim().toLocaleLowerCase("en"),
+    });
+  }
+  // An attachment is identified by the exact transaction it hangs on and by
+  // its own whole substance, because a note-type Attachable has no other
+  // content: the note is the object. This follows the document precedent --
+  // exact identity where the fact names one, a content identity where it does
+  // not -- and inherits its consequence: two attachments carrying the same note
+  // on the same transaction are one attachment, so distinct evidence on one
+  // document must be described distinctly.
+  if (fact.kind === "SOURCE_ATTACHMENT") {
+    return hashObject({
+      schemaVersion: "quickbooks-accounting-case-stable-operation:v1",
+      kind: fact.kind,
+      documentType: fact.documentType,
+      counterpartyName: fact.counterpartyName.trim().toLocaleLowerCase("en"),
+      documentNumber: fact.documentNumber.trim().toLocaleLowerCase("en"),
+      note: fact.note.trim().toLocaleLowerCase("en"),
     });
   }
   if (fact.kind === "NATIVE_DOCUMENT") {
@@ -343,8 +431,11 @@ function stableOperationKey(fact: QuickBooksAccountingFact): string {
 function eventRoute(fact: QuickBooksAccountingFact): QuickBooksCaseEvent["route"] {
   switch (fact.kind) {
     case "CONTACT_CANDIDATE": return "CONTACT_CREATE";
+    case "ACCOUNT_CANDIDATE": return "ACCOUNT_CREATE";
+    case "ITEM_CANDIDATE": return "ITEM_CREATE";
     case "NATIVE_DOCUMENT": return fact.documentType;
     case "JOURNAL_ENTRY": return "JOURNAL_ENTRY";
+    case "SOURCE_ATTACHMENT": return "ATTACHMENT_CREATE";
     // Carries no route by design: a residual is recorded, not planned, and
     // evidence and control findings ride along with someone else's event.
     case "UNSUPPORTED_EVENT":
@@ -371,13 +462,26 @@ function operationCandidate(
     primaryFactId: primary.factId,
     sourceFactHash,
   });
-  if (primary.kind === "CONTACT_CANDIDATE") {
-    const entity = primary.role === "CUSTOMER" ? "Customer" as const : "Vendor" as const;
+  // Everything that carries no amounts shares one shape: an actionId, an
+  // entity, and no amount bridge. Master data and an attachment are all of
+  // that; only the posting kinds below bridge amounts.
+  const unbridged = primary.kind === "CONTACT_CANDIDATE"
+    ? primary.role === "CUSTOMER"
+      ? { actionId: "customer.create_basic", entity: "Customer" as const }
+      : { actionId: "vendor.create_basic", entity: "Vendor" as const }
+    : primary.kind === "ACCOUNT_CANDIDATE"
+      ? { actionId: "account.create", entity: "Account" as const }
+      : primary.kind === "ITEM_CANDIDATE"
+        ? { actionId: "item.create", entity: "Item" as const }
+        : primary.kind === "SOURCE_ATTACHMENT"
+          ? { actionId: "attachment.create", entity: "Attachable" as const }
+          : undefined;
+  if (unbridged) {
     return {
       operationId,
       eventId: event.eventId,
-      actionId: `${entity === "Customer" ? "customer" : "vendor"}.create_basic`,
-      entity,
+      actionId: unbridged.actionId,
+      entity: unbridged.entity,
       operation: "CREATE",
       sourceUnitIds: event.sourceUnitIds,
       primaryFactId: primary.factId,
@@ -396,6 +500,7 @@ function operationCandidate(
       CREDIT_MEMO: { actionId: "credit_memo.create", entity: "CreditMemo" as const },
       VENDOR_CREDIT: { actionId: "vendor_credit.create", entity: "VendorCredit" as const },
       PURCHASE: { actionId: "purchase.create", entity: "Purchase" as const },
+      SALES_RECEIPT: { actionId: "sales_receipt.create", entity: "SalesReceipt" as const },
     }[primary.documentType];
   return {
     operationId,
@@ -518,6 +623,9 @@ export function compileQuickBooksAccountingCase(input: {
       } else {
         if (primary.kind === "NATIVE_DOCUMENT") reasons.push(...documentValidation(primary));
         if (primary.kind === "JOURNAL_ENTRY") reasons.push(...journalEntryValidation(primary));
+        if (primary.kind === "ACCOUNT_CANDIDATE" || primary.kind === "ITEM_CANDIDATE") {
+          reasons.push(...masterDataValidation(primary));
+        }
         if (primary.kind === "CONTACT_CANDIDATE" && conflictedContactFactIds.has(primary.factId)) {
           reasons.push(CONTACT_DOCUMENT_CURRENCY_MISMATCH);
         }

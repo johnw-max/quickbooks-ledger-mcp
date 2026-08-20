@@ -148,8 +148,8 @@ describe("QuickBooks HTTP and MCP edge", () => {
         targetMode: "exact_allowlist",
         exactTargetConfigured: false,
       },
-      releasedActions: { count: 8, hash: expect.stringMatching(/^[a-f0-9]{64}$/u) },
-      releasedCapabilities: { count: 8, hash: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      releasedActions: { count: 12, hash: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      releasedCapabilities: { count: 12, hash: expect.stringMatching(/^[a-f0-9]{64}$/u) },
       standingDelegation: { enabled: false, status: "DISABLED", revision: null },
       providerAuthorizationModel: {
         requiredOAuthScope: "com.intuit.quickbooks.accounting",

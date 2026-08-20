@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { hashObject } from "../security/hash.js";
 import {
+  QUICKBOOKS_ACCOUNT_TYPES,
   QUICKBOOKS_ACCOUNTING_FACT_KINDS,
   QUICKBOOKS_UNSUPPORTED_EVENT_TYPES,
 } from "./accountingCase.js";
@@ -33,6 +34,51 @@ const businessContact = z.object({
   company_name: z.string().trim().min(1).max(255).optional(),
 }).strict();
 
+const businessAccount = z.object({
+  kind: z.literal("ACCOUNT"),
+  origin,
+  event_key: publicId.optional(),
+  name: z.string().trim().min(1).max(100).describe(
+    "The new account's own name, not its parent path. For a sub-account, name the parent in parent_account_name.",
+  ),
+  account_type: z.enum(QUICKBOOKS_ACCOUNT_TYPES).describe(
+    "QuickBooks' own AccountType, exactly as the chart of accounts shows it. Read existing ones from `quickbooks_list_accounts`.",
+  ),
+  parent_account_name: z.string().trim().min(1).max(255).optional().describe(
+    "Exact name of the existing account this one hangs under. Omit for a top-level account.",
+  ),
+}).strict();
+
+const businessItem = z.object({
+  kind: z.literal("ITEM"),
+  origin,
+  event_key: publicId.optional(),
+  name: z.string().trim().min(1).max(100),
+  item_type: z.enum(["SERVICE", "NON_INVENTORY"]).describe(
+    "Inventory items are not released: they need an asset account, an opening quantity and a start date this release does not carry.",
+  ),
+  income_account_name: z.string().trim().min(1).max(255).describe(
+    "Exact QuickBooks account the item's revenue posts to.",
+  ),
+  expense_account_name: z.string().trim().min(1).max(255).optional().describe(
+    "Exact QuickBooks account the item's cost posts to when the item is bought rather than sold.",
+  ),
+}).strict();
+
+const businessSourceAttachment = z.object({
+  kind: z.literal("SOURCE_ATTACHMENT"),
+  origin,
+  event_key: publicId.optional(),
+  document_type: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT", "PURCHASE", "SALES_RECEIPT"]),
+  counterparty_name: z.string().trim().min(1).max(255),
+  document_number: z.string().trim().min(1).max(21).describe(
+    "The posted transaction's exact document number. Required: it is how the posted transaction is found, so a document with no number cannot be attached to.",
+  ),
+  note: z.string().trim().min(3).max(1_000).describe(
+    "What this evidence is, in your own words. The server appends the source reference, SHA-256 and digest provenance it already holds for this source unit.",
+  ),
+}).strict();
+
 const businessDocumentLine = z.object({
   description: z.string().trim().min(1).max(1_000),
   quantity: positiveDecimal4,
@@ -47,7 +93,7 @@ const businessDocument = z.object({
   kind: z.literal("DOCUMENT"),
   origin,
   event_key: publicId.optional(),
-  document_type: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT", "PURCHASE"]),
+  document_type: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT", "PURCHASE", "SALES_RECEIPT"]),
   counterparty_name: z.string().trim().min(1).max(255),
   document_date: date,
   due_date: date.optional(),
@@ -67,7 +113,7 @@ const businessDocument = z.object({
   declared_gross: money,
   business_reason: z.string().trim().min(3).max(1_000),
   payment_account_name: z.string().trim().min(1).max(255).optional().describe(
-    "PURCHASE only, and required there: the exact QuickBooks bank or credit card account the money left from.",
+    "PURCHASE and SALES_RECEIPT only, and required on both: the exact QuickBooks money account the cash moved through — the bank or credit card account a purchase left from, or the bank or undeposited funds account a sales receipt landed in.",
   ),
   payment_type: z.enum(["CASH", "CHECK", "CREDIT_CARD"]).optional().describe(
     "PURCHASE only, and required there: how the money left. A Purchase records an outflow that already happened; it never initiates one.",
@@ -81,22 +127,28 @@ const businessDocument = z.object({
   if (value.due_date && value.due_date < value.document_date) {
     context.addIssue({ code: "custom", path: ["due_date"], message: "must not be before document_date" });
   }
-  if (value.document_type === "PURCHASE") {
+  if (value.document_type === "PURCHASE" || value.document_type === "SALES_RECEIPT") {
     if (!value.payment_account_name) {
-      context.addIssue({ code: "custom", path: ["payment_account_name"], message: "a purchase requires the exact bank or credit card account the money came from" });
+      context.addIssue({
+        code: "custom",
+        path: ["payment_account_name"],
+        message: value.document_type === "PURCHASE"
+          ? "a purchase requires the exact bank or credit card account the money came from"
+          : "a sales receipt requires the exact bank or undeposited funds account the money landed in",
+      });
     }
+  } else if (value.payment_account_name !== undefined) {
+    context.addIssue({ code: "custom", path: ["payment_account_name"], message: "only a PURCHASE or SALES_RECEIPT names a money account" });
+  }
+  if (value.document_type === "PURCHASE") {
     if (!value.payment_type) {
       context.addIssue({ code: "custom", path: ["payment_type"], message: "a purchase requires payment_type CASH, CHECK or CREDIT_CARD" });
     }
-  } else {
-    if (value.payment_account_name !== undefined) {
-      context.addIssue({ code: "custom", path: ["payment_account_name"], message: "only a PURCHASE names a payment account" });
-    }
-    if (value.payment_type !== undefined) {
-      context.addIssue({ code: "custom", path: ["payment_type"], message: "only a PURCHASE names a payment type" });
-    }
+  } else if (value.payment_type !== undefined) {
+    context.addIssue({ code: "custom", path: ["payment_type"], message: "only a PURCHASE names a payment type" });
   }
-  const salesSide = value.document_type === "INVOICE" || value.document_type === "CREDIT_MEMO";
+  const salesSide = value.document_type === "INVOICE" || value.document_type === "CREDIT_MEMO" ||
+    value.document_type === "SALES_RECEIPT";
   for (const [index, line] of value.lines.entries()) {
     if (salesSide && line.coding_type !== "ITEM") {
       context.addIssue({ code: "custom", path: ["lines", index, "coding_type"], message: "sales documents require ITEM coding" });
@@ -172,8 +224,11 @@ const businessControlFinding = z.object({
 
 const businessFact = z.discriminatedUnion("kind", [
   businessContact,
+  businessAccount,
+  businessItem,
   businessDocument,
   businessJournalEntry,
+  businessSourceAttachment,
   businessUnsupportedEvent,
   businessEvidence,
   businessControlFinding,
@@ -225,6 +280,8 @@ function derivedId(prefix: string, material: unknown): string {
 
 function internalKind(kind: z.infer<typeof businessFact>["kind"]): typeof QUICKBOOKS_ACCOUNTING_FACT_KINDS[number] {
   if (kind === "CONTACT") return "CONTACT_CANDIDATE";
+  if (kind === "ACCOUNT") return "ACCOUNT_CANDIDATE";
+  if (kind === "ITEM") return "ITEM_CANDIDATE";
   if (kind === "DOCUMENT") return "NATIVE_DOCUMENT";
   return kind;
 }
@@ -273,6 +330,29 @@ export function normalizeQuickBooksAccountingCaseBusinessIntake(raw: QuickBooksA
         displayName: fact.display_name,
         ...(fact.email ? { email: fact.email } : {}),
         ...(fact.company_name ? { companyName: fact.company_name } : {}),
+      };
+      if (fact.kind === "ACCOUNT") return {
+        ...base,
+        kind: "ACCOUNT_CANDIDATE" as const,
+        name: fact.name,
+        accountType: fact.account_type,
+        ...(fact.parent_account_name ? { parentAccountName: fact.parent_account_name } : {}),
+      };
+      if (fact.kind === "ITEM") return {
+        ...base,
+        kind: "ITEM_CANDIDATE" as const,
+        name: fact.name,
+        itemType: fact.item_type,
+        incomeAccountName: fact.income_account_name,
+        ...(fact.expense_account_name ? { expenseAccountName: fact.expense_account_name } : {}),
+      };
+      if (fact.kind === "SOURCE_ATTACHMENT") return {
+        ...base,
+        kind: fact.kind,
+        documentType: fact.document_type,
+        counterpartyName: fact.counterparty_name,
+        documentNumber: fact.document_number,
+        note: fact.note,
       };
       if (fact.kind === "DOCUMENT") return {
         ...base,

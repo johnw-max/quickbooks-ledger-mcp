@@ -1,23 +1,31 @@
 import { AppError, toSafeError } from "../errors.js";
+import { quickBooksProviderWriteOutcome } from "../providers/quickbooksWriteOutcome.js";
 import { issueDeterministicValidationReceipt } from "../ledger-control/deterministicValidation.js";
 import { hashObject, sha256 } from "../security/hash.js";
 import { requireOAuthBoundRequestContext, type RequestContext } from "../security/requestContext.js";
 import {
   QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION,
   QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION,
+  QUICKBOOKS_MONEY_ACCOUNT_DOCUMENT_TYPES,
   type CompiledQuickBooksAccountingCase,
+  type QuickBooksAccountCandidateFact,
   type QuickBooksAccountingCaseRecord,
   type QuickBooksAccountingFact,
   type QuickBooksCaseBinding,
   type QuickBooksCaseOperation,
   type QuickBooksCaseOperationRecord,
   type QuickBooksContactCandidateFact,
+  type QuickBooksItemCandidateFact,
   type QuickBooksJournalEntryFact,
   type QuickBooksNativeDocumentFact,
   type QuickBooksSourceArtifact,
+  type QuickBooksSourceAttachmentFact,
+  type QuickBooksSourceDigestProvenance,
 } from "./accountingCase.js";
 import {
   compileQuickBooksAccountingCase,
+  quickBooksDocumentContactRole,
+  quickBooksQualifiedAccountName,
   validateQuickBooksCompiledOperationAgainstSource,
 } from "./accountingCaseCompiler.js";
 import type { QuickBooksAccountingCaseRepository } from "./accountingCaseRepository.js";
@@ -100,6 +108,22 @@ function planHash(caseBinding: QuickBooksCaseBinding, compiled: CompiledQuickBoo
   // remains persisted on the Case as audit evidence.
   const { targetSessionHash: _ephemeralTargetProof, ...durableBinding } = caseBinding;
   return hashObject({ schemaVersion: "quickbooks-accounting-case-plan:v1", binding: durableBinding, compiled });
+}
+
+/**
+ * Whether this failure is one QuickBooks itself produced.
+ *
+ * Only two things prove that: the adapter classified a completed Intuit
+ * response, or the failure carries the possibility that the Provider mutated.
+ * Everything else — an idempotency conflict, a concurrency claim, a reference
+ * that did not resolve, a fencing refusal — is the Case's own and never
+ * travelled. The distinction matters to the accountant, who reads
+ * "QuickBooks rejected this" as a fact about their ledger.
+ */
+function quickBooksFailureReachedProvider(safe: ReturnType<typeof toSafeError>): boolean {
+  return quickBooksProviderWriteOutcome(safe) === "CONFIRMED_NOT_WRITTEN" ||
+    safe.details?.providerMutationPossible === true ||
+    safe.details?.failureLayer === "PROVIDER_OUTCOME";
 }
 
 /**
@@ -410,6 +434,49 @@ function summary(record: QuickBooksAccountingCaseRecord) {
   };
 }
 
+interface QuickBooksCaseSourceIdentity {
+  source_ref: string;
+  source_sha256: string;
+  source_digest_provenance: QuickBooksSourceDigestProvenance;
+  source_attestation_ref?: string;
+}
+
+/**
+ * The source identity one operation inherits from the artifact it came from.
+ *
+ * Two callers need exactly this: durable mutation preparation, which binds the
+ * write to one immutable source-evidence revision, and the Attachable note,
+ * which carries the same three values into QuickBooks so the audit trail is
+ * legible from inside the ledger rather than only from this server's tables.
+ */
+function caseSourceIdentity(
+  sources: readonly QuickBooksSourceArtifact[],
+  sourceUnitIds: readonly string[],
+  stableOperationKey: string,
+): QuickBooksCaseSourceIdentity {
+  const matching = sources.filter((source) => source.units.some((unit) => sourceUnitIds.includes(unit.unitId)));
+  if (matching.length === 1) {
+    const [source] = matching;
+    if (source?.sourceRef && source.sourceSha256 && source.sourceDigestProvenance) {
+      return {
+        source_ref: source.sourceRef,
+        source_sha256: source.sourceSha256,
+        source_digest_provenance: source.sourceDigestProvenance,
+        ...(source.sourceAttestationRef ? { source_attestation_ref: source.sourceAttestationRef } : {}),
+      };
+    }
+  }
+  // This is explicitly a Case fact fingerprint, not an assertion about the
+  // original uploaded bytes. MODEL_EXTRACTED facts remain eligible under the
+  // frozen standing-delegation policy, while preparation still binds the
+  // mutation to one immutable source-evidence revision.
+  return {
+    source_ref: `accounting-case-operation:${stableOperationKey}`,
+    source_sha256: stableOperationKey,
+    source_digest_provenance: "AGENT_SUPPLIED_TEXT_FINGERPRINT",
+  };
+}
+
 function exactByName<T>(records: readonly T[], name: string, select: (value: T) => string | undefined, label: string): T {
   const normalized = name.toLocaleLowerCase("en");
   const matches = records.filter((record) => select(record)?.trim().toLocaleLowerCase("en") === normalized);
@@ -468,7 +535,8 @@ export class QuickBooksAccountingCaseService {
         if (!fact) throw new AppError("CONFIGURATION_ERROR", "Accounting Case compiler lost a primary fact.", { httpStatus: 503 });
         let canonicalPayload: Record<string, unknown>;
         try {
-          canonicalPayload = await this.#canonicalPayload(resolved, fact, company);
+          canonicalPayload = await this.#canonicalPayload(resolved, fact, company,
+            caseSourceIdentity(draft.sources, candidate.sourceUnitIds, candidate.stableOperationKey));
         } catch (error) {
           const safe = toSafeError(error);
           const failureLayer = safe.details?.failureLayer;
@@ -860,7 +928,15 @@ export class QuickBooksAccountingCaseService {
               ? "WRITE_UNCERTAIN" :
             safe.code === "READBACK_MISMATCH" ? "READBACK_MISMATCH" :
               providerMutationPossible ? "WRITE_UNCERTAIN" :
-                safe.code === "VALIDATION_FAILED" ? "BLOCKED_VALIDATION" : "PROVIDER_REJECTED"),
+                safe.code === "VALIDATION_FAILED" ? "BLOCKED_VALIDATION" :
+                  // Everything left has to earn the PROVIDER_REJECTED label.
+                  // An idempotency conflict, a concurrency claim or a fencing
+                  // refusal never reached Intuit, and recording it as a
+                  // Provider rejection tells the accountant QuickBooks refused
+                  // their work when QuickBooks never saw it — the same mistake,
+                  // from the other side, as recording a completed refusal as an
+                  // unknown outcome.
+                  quickBooksFailureReachedProvider(safe) ? "PROVIDER_REJECTED" : "BLOCKED_VALIDATION"),
           ...(durableRecovery?.providerEntityId
             ? { providerEntityId: durableRecovery.providerEntityId }
             : exactProviderEntityId ? { providerEntityId: exactProviderEntityId } : {}),
@@ -967,46 +1043,21 @@ export class QuickBooksAccountingCaseService {
   #sourceIdentity(
     record: QuickBooksAccountingCaseRecord,
     operation: QuickBooksCaseOperation,
-  ): {
-    source_ref: string;
-    source_sha256: string;
-    source_digest_provenance:
-      | "AGENT_SUPPLIED_TEXT_FINGERPRINT"
-      | "HOST_PROVIDED_ORIGINAL_FILE_SHA256"
-      | "EXTERNALLY_SUPPLIED_UNVERIFIED_SHA256";
-    source_attestation_ref?: string;
-  } {
-    const matching = record.compiled.sources.filter((source) => source.units.some((unit) =>
-      operation.sourceUnitIds.includes(unit.unitId)));
-    if (matching.length === 1) {
-      const [source] = matching;
-      if (source?.sourceRef && source.sourceSha256 && source.sourceDigestProvenance) {
-        return {
-          source_ref: source.sourceRef,
-          source_sha256: source.sourceSha256,
-          source_digest_provenance: source.sourceDigestProvenance,
-          ...(source.sourceAttestationRef ? { source_attestation_ref: source.sourceAttestationRef } : {}),
-        };
-      }
-    }
-    // This is explicitly a Case fact fingerprint, not an assertion about the
-    // original uploaded bytes. MODEL_EXTRACTED facts remain eligible under the
-    // frozen standing-delegation policy, while preparation still binds the
-    // mutation to one immutable source-evidence revision.
-    return {
-      source_ref: `accounting-case-operation:${operation.stableOperationKey}`,
-      source_sha256: operation.stableOperationKey,
-      source_digest_provenance: "AGENT_SUPPLIED_TEXT_FINGERPRINT",
-    };
+  ): QuickBooksCaseSourceIdentity {
+    return caseSourceIdentity(record.compiled.sources, operation.sourceUnitIds, operation.stableOperationKey);
   }
 
   async #canonicalPayload(
     resolved: ResolvedQuickBooksProvider,
     fact: QuickBooksAccountingFact,
     company: QuickBooksCompanyContext,
+    sourceIdentity: QuickBooksCaseSourceIdentity,
   ): Promise<Record<string, unknown>> {
     if (fact.kind === "CONTACT_CANDIDATE") return this.#contactPayload(resolved, fact, company);
+    if (fact.kind === "ACCOUNT_CANDIDATE") return this.#accountPayload(resolved, fact);
+    if (fact.kind === "ITEM_CANDIDATE") return this.#itemPayload(resolved, fact);
     if (fact.kind === "JOURNAL_ENTRY") return this.#journalEntryPayload(resolved, fact, company);
+    if (fact.kind === "SOURCE_ATTACHMENT") return this.#attachmentPayload(resolved, fact, sourceIdentity);
     if (fact.kind !== "NATIVE_DOCUMENT") {
       throw new AppError("VALIDATION_FAILED", "Evidence-only facts cannot create QuickBooks operations.", { httpStatus: 422 });
     }
@@ -1083,6 +1134,189 @@ export class QuickBooksAccountingCaseService {
       ...(fact.companyName ? { CompanyName: fact.companyName } : {}),
       ...(fact.email ? { PrimaryEmailAddr: { Address: fact.email } } : {}),
       ...currencyRef,
+    };
+  }
+
+  /**
+   * A chart-of-accounts record, staged exactly the way a contact is: resolve
+   * the exact qualified name first, report an existing one as already
+   * satisfied rather than duplicating it, and refuse an ambiguous one.
+   *
+   * The name that decides all three is the *qualified* name, because that is
+   * what every account resolver in this release matches on. A sub-account named
+   * "Subscriptions" under "Software" is `Software:Subscriptions`, and a
+   * top-level "Subscriptions" is a different account entirely.
+   */
+  async #accountPayload(
+    resolved: ResolvedQuickBooksProvider,
+    fact: QuickBooksAccountCandidateFact,
+  ): Promise<Record<string, unknown>> {
+    const accounts = (await resolved.provider.listAccounts()).filter((entry) => entry.Active !== false);
+    const qualifiedName = quickBooksQualifiedAccountName(fact);
+    const normalized = qualifiedName.toLocaleLowerCase("en");
+    const existing = accounts.filter((entry) =>
+      (entry.FullyQualifiedName ?? entry.Name)?.trim().toLocaleLowerCase("en") === normalized);
+    if (existing.length === 1) {
+      throw new AppError("VALIDATION_FAILED", `The QuickBooks account "${qualifiedName}" already exists.`, {
+        httpStatus: 422,
+        details: {
+          failureLayer: "ALREADY_SATISFIED",
+          reasonCodes: ["ACCOUNT_ALREADY_EXISTS"],
+          providerEntityId: existing[0]?.Id,
+        },
+      });
+    }
+    if (existing.length > 1) {
+      throw new AppError("VALIDATION_FAILED", `More than one active QuickBooks account is named "${qualifiedName}".`, {
+        httpStatus: 422,
+        details: { failureLayer: "PROVIDER_REFERENCE", reasonCodes: ["REFERENCE_AMBIGUOUS"] },
+      });
+    }
+    const parent = fact.parentAccountName ? this.#account(accounts, fact.parentAccountName) : undefined;
+    // QuickBooks derives an account's own currency from the company and, for a
+    // sub-account, from its parent; there is no per-account currency to state
+    // and no released way to state one, so none is sent.
+    return {
+      Name: fact.name,
+      AccountType: fact.accountType,
+      ...(parent ? { SubAccount: true, ParentRef: { value: parent.Id as string } } : {}),
+    };
+  }
+
+  /**
+   * A product or service. The income account is required because a Service or
+   * NonInventory item that cannot say where its revenue posts is not usable on
+   * a sales document, which is the only reason to create one here. The expense
+   * account is optional and exists for the purchase side, where the same item
+   * codes a Bill or Purchase line.
+   */
+  async #itemPayload(
+    resolved: ResolvedQuickBooksProvider,
+    fact: QuickBooksItemCandidateFact,
+  ): Promise<Record<string, unknown>> {
+    const normalized = fact.name.trim().toLocaleLowerCase("en");
+    const existing = (await resolved.provider.listItems()).filter((entry) => entry.Active !== false &&
+      (entry.Name ?? entry.FullyQualifiedName)?.trim().toLocaleLowerCase("en") === normalized);
+    if (existing.length === 1) {
+      throw new AppError("VALIDATION_FAILED", `The QuickBooks item "${fact.name}" already exists.`, {
+        httpStatus: 422,
+        details: {
+          failureLayer: "ALREADY_SATISFIED",
+          reasonCodes: ["ITEM_ALREADY_EXISTS"],
+          providerEntityId: existing[0]?.Id,
+        },
+      });
+    }
+    if (existing.length > 1) {
+      throw new AppError("VALIDATION_FAILED", `More than one active QuickBooks item is named "${fact.name}".`, {
+        httpStatus: 422,
+        details: { failureLayer: "PROVIDER_REFERENCE", reasonCodes: ["REFERENCE_AMBIGUOUS"] },
+      });
+    }
+    const accounts = await resolved.provider.listAccounts();
+    const income = this.#account(accounts, fact.incomeAccountName);
+    const expense = fact.expenseAccountName ? this.#account(accounts, fact.expenseAccountName) : undefined;
+    return {
+      Name: fact.name,
+      Type: fact.itemType === "SERVICE" ? "Service" : "NonInventory",
+      IncomeAccountRef: { value: income.Id as string },
+      ...(expense ? { ExpenseAccountRef: { value: expense.Id as string } } : {}),
+    };
+  }
+
+  /**
+   * The source document, hung off the transaction it produced.
+   *
+   * This resolves a Provider object *this system created*, which is what makes
+   * it the third stage. Its target is found the same way the duplicate check
+   * finds an existing document -- exact counterparty, then exact document
+   * number -- so before that document posts there is simply nothing to resolve
+   * and the attachment plans as REVIEW_REQUIRED / REFERENCE_NOT_FOUND, exactly
+   * as a document does before its contact exists. That is the whole ordering
+   * mechanism; nothing sequences operations inside a Case.
+   *
+   * The write is a plain JSON POST to `/attachable`, not the multipart
+   * `/upload` form: no `base64_content` is present, so the provider falls
+   * through to the entity endpoint. That matters for failure classification --
+   * `/upload` is deliberately excluded from the confirmed-not-written
+   * classifier because its response semantics are per-part, and this path is
+   * not on it, so an Intuit Fault here is proof of a non-write like any other
+   * entity write.
+   */
+  async #attachmentPayload(
+    resolved: ResolvedQuickBooksProvider,
+    fact: QuickBooksSourceAttachmentFact,
+    sourceIdentity: QuickBooksCaseSourceIdentity,
+  ): Promise<Record<string, unknown>> {
+    const entity = {
+      INVOICE: "Invoice" as const,
+      BILL: "Bill" as const,
+      CREDIT_MEMO: "CreditMemo" as const,
+      VENDOR_CREDIT: "VendorCredit" as const,
+      PURCHASE: "Purchase" as const,
+      SALES_RECEIPT: "SalesReceipt" as const,
+    }[fact.documentType];
+    const salesSide = quickBooksDocumentContactRole(fact.documentType) === "CUSTOMER";
+    const counterparties = salesSide
+      ? (await resolved.provider.searchCustomers(fact.counterpartyName, 100)).records.filter((entry) => entry.Active !== false)
+      : (await resolved.provider.searchVendors(fact.counterpartyName, 100)).records.filter((entry) => entry.Active !== false);
+    const counterparty = exactByName(counterparties, fact.counterpartyName,
+      (entry) => "DisplayName" in entry ? entry.DisplayName : undefined, salesSide ? "Customer" : "Vendor");
+    if (!counterparty.Id) throw new AppError("VALIDATION_FAILED", "QuickBooks counterparty has no provider Id.", { httpStatus: 422 });
+    const matches = await resolved.provider.findExistingAccountingDocuments({
+      entity,
+      counterpartyId: counterparty.Id,
+      docNumber: fact.documentNumber,
+    });
+    if (matches.length === 0) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        `QuickBooks holds no ${entity} numbered "${fact.documentNumber}" for "${fact.counterpartyName}", so there is nothing to attach the source document to yet. Post that document first, then prepare the next Case version to attach its source.`,
+        {
+          httpStatus: 422,
+          details: {
+            failureLayer: "PROVIDER_REFERENCE",
+            reasonCodes: ["REFERENCE_NOT_FOUND"],
+            recoveryAction: "POST_THE_DOCUMENT_THEN_PREPARE_A_NEW_CASE_VERSION",
+          },
+        },
+      );
+    }
+    if (matches.length > 1) {
+      throw new AppError("VALIDATION_FAILED", "Multiple QuickBooks documents match the exact document number and counterparty.", {
+        httpStatus: 422,
+        details: { failureLayer: "PROVIDER_REFERENCE", reasonCodes: ["DOCUMENT_NUMBER_AMBIGUOUS"] },
+      });
+    }
+    const target = matches[0] as { providerEntityId: string };
+    const note = [
+      fact.note,
+      "",
+      `Source: ${sourceIdentity.source_ref}`,
+      `SHA-256: ${sourceIdentity.source_sha256}`,
+      `Digest provenance: ${sourceIdentity.source_digest_provenance}`,
+    ].join("\n");
+    // QuickBooks caps Attachable.Note at 2000 characters. Truncating would quietly
+    // cut the digest trail this attachment exists to carry, so it refuses instead
+    // and names both fields the caller can shorten.
+    if (note.length > 2_000) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        `The attachment note and its source identity total ${note.length} characters and QuickBooks accepts at most 2000. Shorten the note, or the source reference this unit was declared with.`,
+        {
+          httpStatus: 422,
+          details: {
+            failureLayer: "DETERMINISTIC_VALIDATION",
+            reasonCodes: ["ATTACHMENT_NOTE_TOO_LONG"],
+            invalidFields: ["note", "source_ref"],
+            recoveryAction: "CORRECT_CASE_FACTS",
+          },
+        },
+      );
+    }
+    return {
+      Note: note,
+      AttachableRef: [{ EntityRef: { type: entity, value: target.providerEntityId } }],
     };
   }
 
@@ -1218,7 +1452,7 @@ export class QuickBooksAccountingCaseService {
     company: QuickBooksCompanyContext,
   ): Promise<Record<string, unknown>> {
     this.#assertCurrencyPolicy(fact, company, "document");
-    const salesSide = fact.documentType === "INVOICE" || fact.documentType === "CREDIT_MEMO";
+    const salesSide = quickBooksDocumentContactRole(fact.documentType) === "CUSTOMER";
     const counterparties = salesSide
       ? (await resolved.provider.searchCustomers(fact.counterpartyName, 100)).records.filter((entry) => entry.Active !== false)
       : (await resolved.provider.searchVendors(fact.counterpartyName, 100)).records.filter((entry) => entry.Active !== false);
@@ -1258,6 +1492,7 @@ export class QuickBooksAccountingCaseService {
           CREDIT_MEMO: "CreditMemo" as const,
           VENDOR_CREDIT: "VendorCredit" as const,
           PURCHASE: "Purchase" as const,
+          SALES_RECEIPT: "SalesReceipt" as const,
         }[fact.documentType],
         counterpartyId,
         docNumber: fact.documentNumber,
@@ -1310,40 +1545,63 @@ export class QuickBooksAccountingCaseService {
         },
       };
     });
-    // A Purchase is an outflow that already happened, so QuickBooks also needs
-    // the account it left from and how. Both are resolved, never inferred: the
-    // account by exact name against the chart of accounts, the payment type
-    // from the closed enum the Agent stated. The account is only checked for
-    // being a money account at all -- pairing Cash/Check with a bank account
-    // and CreditCard with a card account is QuickBooks' own rule to enforce, and
-    // a wrong guess here would block correct work with no override, while a
-    // Provider refusal after dispatch is now recoverable.
-    if (fact.documentType === "PURCHASE" && (!fact.paymentAccountName || !fact.paymentType)) {
-      throw new AppError("VALIDATION_FAILED", "A QuickBooks purchase requires both the account the money came from and the payment type.", {
+    // A Purchase and a SalesReceipt are outflows and inflows that already
+    // happened, so QuickBooks also needs the money account each one settled
+    // through -- and, for a Purchase, how the money left. Both are resolved,
+    // never inferred: the account by exact name against the chart of accounts,
+    // the payment type from the closed enum the Agent stated. The account is
+    // only checked for being the right *kind* of money account at all --
+    // pairing Cash/Check with a bank account and CreditCard with a card account
+    // is QuickBooks' own rule to enforce, and a wrong guess here would block
+    // correct work with no override, while a Provider refusal after dispatch is
+    // now recoverable.
+    const moneyAccountDocument = QUICKBOOKS_MONEY_ACCOUNT_DOCUMENT_TYPES.includes(fact.documentType);
+    if (moneyAccountDocument && !fact.paymentAccountName) {
+      throw new AppError("VALIDATION_FAILED", `A QuickBooks ${fact.documentType === "PURCHASE" ? "purchase requires the account the money came from" : "sales receipt requires the account the money landed in"}.`, {
         httpStatus: 422,
         details: {
           failureLayer: "DETERMINISTIC_VALIDATION",
-          reasonCodes: [fact.paymentAccountName ? "PURCHASE_REQUIRES_PAYMENT_TYPE" : "PURCHASE_REQUIRES_PAYMENT_ACCOUNT"],
-          invalidFields: ["payment_account_name", "payment_type"],
+          reasonCodes: [fact.documentType === "PURCHASE" ? "PURCHASE_REQUIRES_PAYMENT_ACCOUNT" : "SALES_RECEIPT_REQUIRES_DEPOSIT_ACCOUNT"],
+          invalidFields: ["payment_account_name"],
           recoveryAction: "CORRECT_CASE_FACTS",
         },
       });
     }
-    const paymentSource = fact.documentType === "PURCHASE" && fact.paymentAccountName
+    if (fact.documentType === "PURCHASE" && !fact.paymentType) {
+      throw new AppError("VALIDATION_FAILED", "A QuickBooks purchase requires the payment type.", {
+        httpStatus: 422,
+        details: {
+          failureLayer: "DETERMINISTIC_VALIDATION",
+          reasonCodes: ["PURCHASE_REQUIRES_PAYMENT_TYPE"],
+          invalidFields: ["payment_type"],
+          recoveryAction: "CORRECT_CASE_FACTS",
+        },
+      });
+    }
+    const moneyAccount = moneyAccountDocument && fact.paymentAccountName
       ? this.#account(accounts, fact.paymentAccountName)
       : undefined;
-    if (paymentSource && paymentSource.AccountType &&
-      paymentSource.AccountType !== "Bank" && paymentSource.AccountType !== "Credit Card") {
+    // A purchase leaves a bank or card account. A sales receipt lands in a bank
+    // account or in Undeposited Funds, which QuickBooks holds as an Other
+    // Current Asset -- so the two document types accept different account kinds
+    // and neither list is guessed wider than that.
+    const acceptedMoneyAccountTypes = fact.documentType === "PURCHASE"
+      ? ["Bank", "Credit Card"]
+      : ["Bank", "Other Current Asset"];
+    if (moneyAccount && moneyAccount.AccountType && !acceptedMoneyAccountTypes.includes(moneyAccount.AccountType)) {
       throw new AppError(
         "VALIDATION_FAILED",
-        `The QuickBooks account "${fact.paymentAccountName}" is a ${paymentSource.AccountType} account, so money cannot have left from it. Name the bank or credit card account this purchase was paid from.`,
+        fact.documentType === "PURCHASE"
+          ? `The QuickBooks account "${fact.paymentAccountName}" is a ${moneyAccount.AccountType} account, so money cannot have left from it. Name the bank or credit card account this purchase was paid from.`
+          : `The QuickBooks account "${fact.paymentAccountName}" is a ${moneyAccount.AccountType} account, so money cannot have landed in it. Name the bank account, or Undeposited Funds, this sale was received into.`,
         {
           httpStatus: 422,
           details: {
             failureLayer: "DETERMINISTIC_VALIDATION",
             reasonCodes: ["PAYMENT_ACCOUNT_IS_NOT_A_MONEY_ACCOUNT"],
             accountName: fact.paymentAccountName,
-            accountType: paymentSource.AccountType,
+            accountType: moneyAccount.AccountType,
+            acceptedAccountTypes: acceptedMoneyAccountTypes,
             invalidFields: ["payment_account_name"],
             recoveryAction: "CORRECT_CASE_FACTS",
           },
@@ -1351,17 +1609,22 @@ export class QuickBooksAccountingCaseService {
       );
     }
     return {
-      ...(paymentSource && fact.paymentType
+      ...(moneyAccount && fact.documentType === "PURCHASE" && fact.paymentType
         // Purchase names its payee through EntityRef, not VendorRef, and the
         // ref carries the payee's type. This release resolves that payee as a
         // Vendor only, which is what the compiler already stages and what the
         // contact-currency derivation assumes.
         ? {
           EntityRef: { value: counterpartyId, type: "Vendor" },
-          AccountRef: { value: paymentSource.Id as string },
+          AccountRef: { value: moneyAccount.Id as string },
           PaymentType: { CASH: "Cash", CHECK: "Check", CREDIT_CARD: "CreditCard" }[fact.paymentType],
         }
-        : { [salesSide ? "CustomerRef" : "VendorRef"]: { value: counterpartyId } }),
+        // A SalesReceipt is an ordinary sales document that also says where the
+        // money landed; it keeps CustomerRef and gains DepositToAccountRef.
+        : {
+          [salesSide ? "CustomerRef" : "VendorRef"]: { value: counterpartyId },
+          ...(moneyAccount ? { DepositToAccountRef: { value: moneyAccount.Id as string } } : {}),
+        }),
       Line: lines,
       TxnDate: fact.documentDate,
       ...((fact.documentType === "INVOICE" || fact.documentType === "BILL") && fact.dueDate

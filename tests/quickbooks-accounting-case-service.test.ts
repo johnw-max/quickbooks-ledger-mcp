@@ -1367,4 +1367,421 @@ describe("QuickBooks Accounting Case service", () => {
     expect(prepared.operations).toEqual([]);
     expect(executeMutation).not.toHaveBeenCalled();
   });
+
+  // ---- POSTING_TRANSACTION: SalesReceipt --------------------------------
+
+  const salesReceiptCase = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "counter-sale-v1", lineageKey: "counter-sale", eventKey: "counter-sale", sourceUnitIds: ["page-1"],
+      origin: "MODEL_EXTRACTED", revision: 1, kind: "NATIVE_DOCUMENT",
+      documentType: "SALES_RECEIPT", counterpartyName: "Harbour Kitchen", documentDate: "2026-08-02",
+      documentNumber: "SR-2001", currency: "SGD", taxMode: "NO_TAX",
+      lines: [{
+        lineId: "workshop", description: "Bookkeeping workshop seat", quantity: "2", unitAmount: "150.00",
+        sourceTax: "0.00", codingType: "ITEM", codingName: "Bookkeeping",
+      }],
+      declaredNet: "300.00", declaredTax: "0.00", declaredGross: "300.00",
+      businessReason: "Record the cash sale taken at the counter.",
+      paymentAccountName: "Undeposited Funds",
+    };
+    mutate(fact);
+    return quickBooksPrepareAccountingCaseSchema.parse({
+      target_session_ref: targetSessionRef,
+      case_id: "case-counter-sale-001",
+      expected_version: 0,
+      sources: [{ artifactId: "counter-receipt.pdf", label: "Counter receipt", units: [{ unitId: "page-1", expectedFactKinds: ["NATIVE_DOCUMENT"] }] }],
+      facts: [fact],
+    });
+  };
+
+  const salesReceiptAccounts = [
+    { Id: "90", Name: "Undeposited Funds", FullyQualifiedName: "Undeposited Funds", AccountType: "Other Current Asset", AccountSubType: "UndepositedFunds", Active: true },
+    { Id: "91", Name: "DBS Current Account", FullyQualifiedName: "DBS Current Account", AccountType: "Bank", Active: true },
+    { Id: "92", Name: "Services Income", FullyQualifiedName: "Services Income", AccountType: "Income", Active: true },
+  ];
+
+  function salesReceiptFixture(options: Parameters<typeof fixture>[0] = {}) {
+    const built = fixture({ delegationActions: ["sales_receipt.create"], ...options });
+    vi.mocked(built.provider.listAccounts).mockResolvedValue(salesReceiptAccounts);
+    return built;
+  }
+
+  it("posts a cash sale to its customer and the account the money landed in", async () => {
+    const { service, executeMutation } = salesReceiptFixture();
+    const staged = salesReceiptCase();
+    const prepared = await service.prepare(context, staged);
+    expect(prepared).toMatchObject({
+      state: "PLANNED_NEEDS_PREFLIGHT",
+      events: [{ route: "SALES_RECEIPT", compiled_disposition: "AUTO_EXECUTE" }],
+      operations: [{ action_id: "sales_receipt.create", entity: "SalesReceipt", state: "PENDING" }],
+    });
+
+    const executed = await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-counter-sale-1",
+    });
+    expect(executed).toMatchObject({
+      state: "TERMINAL",
+      operations: [{ state: "READBACK_VERIFIED", assurance: { all_required_evidence_verified: true } }],
+      completion_claim: { ledger_write_claim: "ALL_ELIGIBLE_WRITES_READBACK_VERIFIED" },
+    });
+    const payload = executeMutation.mock.calls.at(-1)?.[0].payload;
+    expect(payload).toMatchObject({
+      CustomerRef: { value: "12" },
+      DepositToAccountRef: { value: "90" },
+      DocNumber: "SR-2001",
+      TxnDate: "2026-08-02",
+      CurrencyRef: { value: "SGD" },
+      GlobalTaxCalculation: "NotApplicable",
+      Line: [{
+        Amount: 300, DetailType: "SalesItemLineDetail",
+        SalesItemLineDetail: { ItemRef: { value: "21" }, Qty: 2, UnitPrice: 150 },
+      }],
+    });
+    // A cash sale records a completed sale; it never initiates a movement, so
+    // it carries neither a payment type nor a due date.
+    expect(payload).not.toHaveProperty("PaymentType");
+    expect(payload).not.toHaveProperty("DueDate");
+    expect(payload).not.toHaveProperty("VendorRef");
+  });
+
+  it("accepts a bank account as the deposit target and refuses an account money cannot land in", async () => {
+    const toBank = salesReceiptFixture();
+    const bankStaged = salesReceiptCase((fact) => { fact.paymentAccountName = "DBS Current Account"; });
+    await toBank.service.prepare(context, bankStaged);
+    await toBank.service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: bankStaged.case_id, case_version: 1, request_id: "execute-counter-sale-bank",
+    });
+    expect(toBank.executeMutation.mock.calls.at(-1)?.[0].payload).toMatchObject({
+      DepositToAccountRef: { value: "91" },
+    });
+
+    const toIncome = salesReceiptFixture();
+    const prepared = await toIncome.service.prepare(context, salesReceiptCase((fact) => {
+      fact.paymentAccountName = "Services Income";
+    }));
+    expect(prepared).toMatchObject({ state: "BLOCKED_VALIDATION", operations: [] });
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        disposition: "BLOCKED_VALIDATION",
+        reason_codes: ["PAYMENT_ACCOUNT_IS_NOT_A_MONEY_ACCOUNT"],
+      }),
+    ]));
+    expect(toIncome.executeMutation).not.toHaveBeenCalled();
+  });
+
+  // ---- MASTER_DATA: Account and Item ------------------------------------
+
+  const masterDataCase = (facts: Array<Record<string, unknown>>, expectedFactKinds: string[]) =>
+    quickBooksPrepareAccountingCaseSchema.parse({
+      target_session_ref: targetSessionRef,
+      case_id: "case-master-data-001",
+      expected_version: 0,
+      sources: [{ artifactId: "chart-request.md", label: "Chart of accounts request", units: [{ unitId: "row-1", expectedFactKinds }] }],
+      facts,
+    });
+
+  const newAccountFact = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "account-v1", lineageKey: "account", eventKey: "account", sourceUnitIds: ["row-1"],
+      origin: "AGENT_ASSERTED", revision: 1, kind: "ACCOUNT_CANDIDATE",
+      name: "Software Subscriptions", accountType: "Expense",
+    };
+    mutate(fact);
+    return fact;
+  };
+
+  const newItemFact = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "item-v1", lineageKey: "item", eventKey: "item", sourceUnitIds: ["row-1"],
+      origin: "AGENT_ASSERTED", revision: 1, kind: "ITEM_CANDIDATE",
+      name: "Workshop Seat", itemType: "SERVICE", incomeAccountName: "Services Income",
+    };
+    mutate(fact);
+    return fact;
+  };
+
+  const chartOfAccounts = [
+    { Id: "50", Name: "Operating Expenses", FullyQualifiedName: "Operating Expenses", AccountType: "Expense", Active: true },
+    { Id: "51", Name: "Services Income", FullyQualifiedName: "Services Income", AccountType: "Income", Active: true },
+    { Id: "52", Name: "Subcontractor Costs", FullyQualifiedName: "Subcontractor Costs", AccountType: "Cost of Goods Sold", Active: true },
+  ];
+
+  function masterDataFixture(options: Parameters<typeof fixture>[0] = {}) {
+    const built = fixture({ delegationActions: ["account.create", "item.create"], ...options });
+    vi.mocked(built.provider.listAccounts).mockResolvedValue(chartOfAccounts);
+    return built;
+  }
+
+  it("creates a chart-of-accounts entry and a service item mid-close", async () => {
+    const { service, executeMutation } = masterDataFixture();
+    const staged = masterDataCase([newAccountFact(), newItemFact((fact) => {
+      fact.expenseAccountName = "Subcontractor Costs";
+    })], ["ACCOUNT_CANDIDATE", "ITEM_CANDIDATE"]);
+    const prepared = await service.prepare(context, staged);
+    expect(prepared).toMatchObject({ state: "PLANNED_NEEDS_PREFLIGHT" });
+    expect(prepared.operations.map((operation) => operation.action_id).sort())
+      .toEqual(["account.create", "item.create"]);
+
+    await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-master-data-1",
+    });
+    const written = new Map(executeMutation.mock.calls.map(([mutation]) => [mutation.entity, mutation.payload]));
+    expect(written.get("Account")).toEqual({ Name: "Software Subscriptions", AccountType: "Expense" });
+    expect(written.get("Item")).toEqual({
+      Name: "Workshop Seat",
+      Type: "Service",
+      IncomeAccountRef: { value: "51" },
+      ExpenseAccountRef: { value: "52" },
+    });
+  });
+
+  it("hangs a sub-account off its exactly-named parent", async () => {
+    const { service, executeMutation } = masterDataFixture();
+    const staged = masterDataCase([newAccountFact((fact) => {
+      fact.parentAccountName = "Operating Expenses";
+    })], ["ACCOUNT_CANDIDATE"]);
+    await service.prepare(context, staged);
+    await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-sub-account-1",
+    });
+    expect(executeMutation.mock.calls.at(-1)?.[0].payload).toEqual({
+      Name: "Software Subscriptions",
+      AccountType: "Expense",
+      SubAccount: true,
+      ParentRef: { value: "50" },
+    });
+  });
+
+  it("treats master data that already exists as satisfied, and resolves on the qualified name", async () => {
+    const { service, provider, executeMutation } = masterDataFixture();
+    // Resolution is on FullyQualifiedName, so a *sub*-account already named
+    // Operating Expenses:Software Subscriptions must satisfy the sub-account
+    // request while leaving the top-level request of the same leaf name open.
+    vi.mocked(provider.listAccounts).mockResolvedValue([
+      ...chartOfAccounts,
+      {
+        Id: "53", Name: "Software Subscriptions",
+        FullyQualifiedName: "Operating Expenses:Software Subscriptions",
+        AccountType: "Expense", Active: true,
+      },
+    ]);
+    vi.mocked(provider.listItems).mockResolvedValue([
+      { Id: "21", Name: "Bookkeeping", Active: true },
+      { Id: "22", Name: "Workshop Seat", Active: true },
+    ]);
+    const prepared = await service.prepare(context, masterDataCase(
+      [newAccountFact((fact) => { fact.parentAccountName = "Operating Expenses"; }), newItemFact()],
+      ["ACCOUNT_CANDIDATE", "ITEM_CANDIDATE"],
+    ));
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ route: "ACCOUNT_CREATE", disposition: "EVIDENCE_ONLY", reason_codes: ["ACCOUNT_ALREADY_EXISTS"] }),
+      expect.objectContaining({ route: "ITEM_CREATE", disposition: "EVIDENCE_ONLY", reason_codes: ["ITEM_ALREADY_EXISTS"] }),
+    ]));
+    expect(prepared.operations).toEqual([]);
+    expect(executeMutation).not.toHaveBeenCalled();
+
+    const topLevel = masterDataFixture();
+    vi.mocked(topLevel.provider.listAccounts).mockResolvedValue([
+      ...chartOfAccounts,
+      {
+        Id: "53", Name: "Software Subscriptions",
+        FullyQualifiedName: "Operating Expenses:Software Subscriptions",
+        AccountType: "Expense", Active: true,
+      },
+    ]);
+    const stillOpen = await topLevel.service.prepare(context, masterDataCase([newAccountFact()], ["ACCOUNT_CANDIDATE"]));
+    expect(stillOpen.operations).toEqual([{ ...stillOpen.operations[0], action_id: "account.create" }]);
+  });
+
+  it("refuses master data whose referenced accounts are absent or ambiguous", async () => {
+    const missing = masterDataFixture();
+    const preparedMissingParent = await missing.service.prepare(context, masterDataCase([newAccountFact((fact) => {
+      fact.parentAccountName = "Operating Expensez";
+    })], ["ACCOUNT_CANDIDATE"]));
+    expect(preparedMissingParent.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "REVIEW_REQUIRED", reason_codes: ["REFERENCE_NOT_FOUND"] }),
+    ]));
+    expect(preparedMissingParent.operations).toEqual([]);
+
+    const ambiguous = masterDataFixture();
+    vi.mocked(ambiguous.provider.listAccounts).mockResolvedValue([
+      ...chartOfAccounts,
+      { Id: "54", Name: "Services Income", FullyQualifiedName: "Services Income", AccountType: "Income", Active: true },
+    ]);
+    const preparedAmbiguousIncome = await ambiguous.service.prepare(context,
+      masterDataCase([newItemFact()], ["ITEM_CANDIDATE"]));
+    expect(preparedAmbiguousIncome.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "REVIEW_REQUIRED", reason_codes: ["REFERENCE_AMBIGUOUS"] }),
+    ]));
+    expect(preparedAmbiguousIncome.operations).toEqual([]);
+  });
+
+  // ---- ATTACHMENT: the source document follows the entry -----------------
+
+  const attachmentCase = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "attachment-v1", lineageKey: "attachment", eventKey: "attachment", sourceUnitIds: ["page-1"],
+      origin: "MODEL_EXTRACTED", revision: 1, kind: "SOURCE_ATTACHMENT",
+      documentType: "INVOICE", counterpartyName: "Harbour Kitchen", documentNumber: "INV-1001",
+      note: "Original invoice as issued to the client.",
+    };
+    mutate(fact);
+    return quickBooksPrepareAccountingCaseSchema.parse({
+      target_session_ref: targetSessionRef,
+      case_id: "case-attachment-001",
+      expected_version: 0,
+      sources: [{
+        artifactId: "invoice.pdf",
+        label: "Customer invoice",
+        units: [{ unitId: "page-1", expectedFactKinds: ["SOURCE_ATTACHMENT"] }],
+        sourceRef: "drive://harbour-kitchen/INV-1001.pdf",
+        sourceSha256: "b".repeat(64),
+        sourceDigestProvenance: "AGENT_SUPPLIED_TEXT_FINGERPRINT",
+      }],
+      facts: [fact],
+    });
+  };
+
+  function attachmentFixture(options: Parameters<typeof fixture>[0] = {}) {
+    return fixture({ delegationActions: ["attachment.create"], ...options });
+  }
+
+  it("waits for the document to post, then hangs the source identity off it as a note", async () => {
+    const { service, documents, executeMutation } = attachmentFixture();
+
+    // Stage one: the invoice is not in QuickBooks yet, so there is nothing to
+    // attach to. The attachment orders itself behind the document by the same
+    // prepare-time reference resolution that orders a document behind its
+    // contact -- no compiler sequencing is involved.
+    const beforeDocument = await service.prepare(context, attachmentCase());
+    expect(beforeDocument).toMatchObject({ state: "PLANNED_WITH_EXCEPTIONS", operations: [] });
+    expect(beforeDocument.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        route: "ATTACHMENT_CREATE", disposition: "REVIEW_REQUIRED", reason_codes: ["REFERENCE_NOT_FOUND"],
+      }),
+    ]));
+    expect(executeMutation).not.toHaveBeenCalled();
+
+    // Stage three: the invoice posted, so the same facts now resolve.
+    documents.set("Invoice:12:inv-1001", {
+      entity: "Invoice", counterpartyId: "12", docNumber: "INV-1001", providerEntityId: "9001",
+    });
+    const staged = attachmentCase();
+    staged.expected_version = 1;
+    const prepared = await service.prepare(context, staged);
+    expect(prepared).toMatchObject({
+      state: "PLANNED_NEEDS_PREFLIGHT",
+      operations: [{ action_id: "attachment.create", entity: "Attachable", state: "PENDING" }],
+    });
+
+    await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 2, request_id: "execute-attachment-1",
+    });
+    const mutation = executeMutation.mock.calls.at(-1)?.[0];
+    expect(mutation).toMatchObject({ entity: "Attachable" });
+    expect(mutation?.payload).toEqual({
+      Note: [
+        "Original invoice as issued to the client.",
+        "",
+        "Source: drive://harbour-kitchen/INV-1001.pdf",
+        `SHA-256: ${"b".repeat(64)}`,
+        "Digest provenance: AGENT_SUPPLIED_TEXT_FINGERPRINT",
+      ].join("\n"),
+      AttachableRef: [{ EntityRef: { type: "Invoice", value: "9001" } }],
+    });
+    // The note form is a plain entity write, never the multipart /upload form
+    // that the confirmed-not-written classifier deliberately excludes.
+    expect(mutation?.payload).not.toHaveProperty("base64_content");
+    expect(mutation?.payload).not.toHaveProperty("FileName");
+  });
+
+  it("refuses an attachment whose counterparty or target document is ambiguous", async () => {
+    const ambiguousDocument = attachmentFixture();
+    vi.mocked(ambiguousDocument.provider.findExistingAccountingDocuments).mockResolvedValue([
+      { entity: "Invoice", providerEntityId: "9001", counterpartyId: "12", docNumber: "INV-1001" },
+      { entity: "Invoice", providerEntityId: "9002", counterpartyId: "12", docNumber: "INV-1001" },
+    ] as never);
+    const prepared = await ambiguousDocument.service.prepare(context, attachmentCase());
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "REVIEW_REQUIRED", reason_codes: ["DOCUMENT_NUMBER_AMBIGUOUS"] }),
+    ]));
+    expect(prepared.operations).toEqual([]);
+
+    const missingCounterparty = attachmentFixture({ customerInitiallyMissing: true });
+    const preparedMissing = await missingCounterparty.service.prepare(context, attachmentCase());
+    expect(preparedMissing.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "REVIEW_REQUIRED", reason_codes: ["REFERENCE_NOT_FOUND"] }),
+    ]));
+  });
+
+  it("refuses rather than truncates when the note and its source identity exceed the QuickBooks limit", async () => {
+    const { service, documents } = attachmentFixture();
+    documents.set("Invoice:12:inv-1001", {
+      entity: "Invoice", counterpartyId: "12", docNumber: "INV-1001", providerEntityId: "9001",
+    });
+    const staged = attachmentCase((fact) => { fact.note = "n".repeat(1_000); });
+    const [source] = staged.sources;
+    if (!source) throw new Error("test fixture requires one source artifact");
+    source.sourceRef = `drive://${"p".repeat(1_100)}`;
+    const prepared = await service.prepare(context, staged);
+    expect(prepared).toMatchObject({ state: "BLOCKED_VALIDATION", operations: [] });
+    expect(prepared.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ disposition: "BLOCKED_VALIDATION", reason_codes: ["ATTACHMENT_NOTE_TOO_LONG"] }),
+    ]));
+  });
+
+  it("never attaches twice under one attachment key, and refuses rather than collapsing distinct evidence", async () => {
+    // The stable key is target plus note, so these two Cases are one logical
+    // attachment -- but they declare different source identities, which the
+    // note itself carries. The durable request id is shared while the payload
+    // is not, so the second is refused outright. That is the safe answer: no
+    // second Attachable is posted, and the distinct evidence is not silently
+    // discarded as "already done".
+    const mutationRepository = new InMemoryQuickBooksMutationRepository();
+    const posted = { entity: "Invoice", counterpartyId: "12", docNumber: "INV-1001", providerEntityId: "9001" };
+    const first = attachmentFixture({ mutationRepository });
+    first.documents.set("Invoice:12:inv-1001", posted);
+    const firstStaged = attachmentCase();
+    await first.service.prepare(context, firstStaged);
+    await first.service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: firstStaged.case_id, case_version: 1, request_id: "execute-attachment-a",
+    });
+    expect(first.executeMutation).toHaveBeenCalledTimes(1);
+
+    const second = attachmentFixture({ mutationRepository });
+    second.documents.set("Invoice:12:inv-1001", posted);
+    const secondStaged = attachmentCase();
+    secondStaged.case_id = "case-attachment-002";
+    const [otherSource] = secondStaged.sources;
+    if (!otherSource) throw new Error("test fixture requires one source artifact");
+    otherSource.sourceRef = "drive://harbour-kitchen/INV-1001-approval.pdf";
+    otherSource.sourceSha256 = "c".repeat(64);
+    await second.service.prepare(context, secondStaged);
+    await expect(second.service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: secondStaged.case_id, case_version: 1, request_id: "execute-attachment-b",
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(second.executeMutation).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the Case fact fingerprint when the source unit declared no identity", async () => {
+    const { service, documents, executeMutation } = attachmentFixture();
+    documents.set("Invoice:12:inv-1001", {
+      entity: "Invoice", counterpartyId: "12", docNumber: "INV-1001", providerEntityId: "9001",
+    });
+    const staged = attachmentCase();
+    const [source] = staged.sources;
+    if (!source) throw new Error("test fixture requires one source artifact");
+    delete source.sourceRef;
+    delete source.sourceSha256;
+    delete source.sourceDigestProvenance;
+    await service.prepare(context, staged);
+    await service.execute(context, {
+      target_session_ref: targetSessionRef, case_id: staged.case_id, case_version: 1, request_id: "execute-attachment-fallback",
+    });
+    const note = (executeMutation.mock.calls.at(-1)?.[0].payload as { Note: string }).Note;
+    // The fallback is labelled for what it is -- a Case fact fingerprint, not a
+    // claim about the original file's bytes.
+    expect(note).toContain("Source: accounting-case-operation:");
+    expect(note).toContain("Digest provenance: AGENT_SUPPLIED_TEXT_FINGERPRINT");
+  });
 });

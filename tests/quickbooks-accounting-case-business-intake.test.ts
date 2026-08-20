@@ -184,6 +184,126 @@ describe("QuickBooks Accounting Case business intake", () => {
     expect(quickBooksAccountingCaseBusinessIntakeSchema.safeParse(intake({ due_date: "2026-08-01" })).success).toBe(true);
   });
 
+  it("normalizes the wave-two business shapes into their internal fact kinds", () => {
+    const normalized = normalizeQuickBooksAccountingCaseBusinessIntake({
+      target_session_ref: targetSessionRef,
+      case_id: "case-business-wave-two-001",
+      expected_version: 0,
+      source_set_complete: true as const,
+      sources: [{
+        source_key: "SR-2026-0802",
+        label: "Counter receipt and chart request",
+        units: [{
+          unit_key: "counter-sale",
+          facts: [{
+            kind: "ACCOUNT" as const,
+            name: "Software Subscriptions",
+            account_type: "Expense" as const,
+            parent_account_name: "Operating Expenses",
+          }, {
+            kind: "ITEM" as const,
+            name: "Workshop Seat",
+            item_type: "SERVICE" as const,
+            income_account_name: "Services Income",
+            expense_account_name: "Subcontractor Costs",
+          }, {
+            kind: "DOCUMENT" as const,
+            document_type: "SALES_RECEIPT" as const,
+            counterparty_name: "Walk-in Customer",
+            document_date: "2026-08-02",
+            document_number: "SR-2001",
+            currency: "SGD",
+            tax_mode: "NO_TAX" as const,
+            lines: [{
+              description: "Bookkeeping workshop seat",
+              quantity: "2",
+              unit_amount: "150.00",
+              source_tax_amount: "0.00",
+              coding_type: "ITEM" as const,
+              coding_name: "Workshop Seat",
+            }],
+            declared_net: "300.00",
+            declared_tax: "0.00",
+            declared_gross: "300.00",
+            business_reason: "Record the cash sale taken at the counter.",
+            payment_account_name: "Undeposited Funds",
+          }, {
+            kind: "SOURCE_ATTACHMENT" as const,
+            document_type: "SALES_RECEIPT" as const,
+            counterparty_name: "Walk-in Customer",
+            document_number: "SR-2001",
+            note: "Counter receipt as printed at the till.",
+          }],
+        }],
+      }],
+    });
+    expect(normalized.facts.map((fact) => fact.kind)).toEqual([
+      "ACCOUNT_CANDIDATE", "ITEM_CANDIDATE", "NATIVE_DOCUMENT", "SOURCE_ATTACHMENT",
+    ]);
+    expect(normalized.facts[0]).toMatchObject({
+      name: "Software Subscriptions", accountType: "Expense", parentAccountName: "Operating Expenses",
+    });
+    expect(normalized.facts[1]).toMatchObject({
+      name: "Workshop Seat", itemType: "SERVICE",
+      incomeAccountName: "Services Income", expenseAccountName: "Subcontractor Costs",
+    });
+    expect(normalized.facts[2]).toMatchObject({
+      documentType: "SALES_RECEIPT", paymentAccountName: "Undeposited Funds",
+    });
+    expect(normalized.facts[2]).not.toHaveProperty("paymentType");
+    expect(normalized.facts[3]).toMatchObject({
+      documentType: "SALES_RECEIPT", counterpartyName: "Walk-in Customer", documentNumber: "SR-2001",
+    });
+    // The unit's declared coverage is derived, so it must name all four kinds.
+    expect(normalized.sources[0]?.units[0]?.expectedFactKinds).toEqual([
+      "ACCOUNT_CANDIDATE", "ITEM_CANDIDATE", "NATIVE_DOCUMENT", "SOURCE_ATTACHMENT",
+    ]);
+  });
+
+  it("refuses the wave-two rules at the Agent-facing boundary", () => {
+    const intake = (fact: Record<string, unknown>) => ({
+      target_session_ref: targetSessionRef,
+      case_id: "case-business-wave-two-rules",
+      expected_version: 0,
+      source_set_complete: true as const,
+      sources: [{ source_key: "SR-2026-0802", label: "Counter receipt", units: [{ unit_key: "counter-sale", facts: [fact] }] }],
+    });
+    const salesReceipt = {
+      kind: "DOCUMENT" as const,
+      document_type: "SALES_RECEIPT" as const,
+      counterparty_name: "Walk-in Customer",
+      document_date: "2026-08-02",
+      currency: "SGD",
+      tax_mode: "NO_TAX" as const,
+      lines: [{
+        description: "Bookkeeping workshop seat", quantity: "2", unit_amount: "150.00",
+        source_tax_amount: "0.00", coding_type: "ITEM" as const, coding_name: "Workshop Seat",
+      }],
+      declared_net: "300.00", declared_tax: "0.00", declared_gross: "300.00",
+      business_reason: "Record the cash sale taken at the counter.",
+      payment_account_name: "Undeposited Funds",
+    };
+    const attachment = {
+      kind: "SOURCE_ATTACHMENT" as const,
+      document_type: "BILL" as const,
+      counterparty_name: "OfficeHub",
+      document_number: "OH-1001",
+      note: "Original supplier invoice.",
+    };
+    const refusals: Array<[string, Record<string, unknown>]> = [
+      ["sales receipt with no deposit account", { ...salesReceipt, payment_account_name: undefined }],
+      ["sales receipt carrying a payment type", { ...salesReceipt, payment_type: "CASH" }],
+      ["attachment with no target document number", { ...attachment, document_number: undefined }],
+      ["inventory item", { kind: "ITEM", name: "Widget", item_type: "INVENTORY", income_account_name: "Sales" }],
+      ["account type QuickBooks does not have", { kind: "ACCOUNT", name: "Software", account_type: "Expenses" }],
+    ];
+    for (const [label, fact] of refusals) {
+      expect(quickBooksAccountingCaseBusinessIntakeSchema.safeParse(intake(fact)).success, label).toBe(false);
+    }
+    expect(quickBooksAccountingCaseBusinessIntakeSchema.safeParse(intake(salesReceipt)).success).toBe(true);
+    expect(quickBooksAccountingCaseBusinessIntakeSchema.safeParse(intake(attachment)).success).toBe(true);
+  });
+
   it("rejects duplicate business source and unit keys", () => {
     const duplicateSource = {
       ...residualIntake,

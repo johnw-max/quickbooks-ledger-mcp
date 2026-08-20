@@ -450,9 +450,19 @@ export class QuickBooksMutationService {
       }
     }
     if (!created.created && !safeEqual(created.preparation.payloadHash, payloadHash)) {
-      throw new AppError("CONFLICT", "request_id was already used with a different QuickBooks mutation payload.", {
-        httpStatus: 409,
-      });
+      throw new AppError(
+        "CONFLICT",
+        "This operation was already prepared from different facts. A Case operation's request id is derived from the document itself, so the same id arriving with a different payload means the source was restated after it was prepared; prepare a new Case version so the plan is rebuilt from the facts as they stand now.",
+        {
+          httpStatus: 409,
+          details: {
+            failureLayer: "IDEMPOTENCY",
+            reasonCodes: ["REQUEST_ID_REUSED_WITH_DIFFERENT_PAYLOAD"],
+            recoveryAction: "PREPARE_NEW_CASE_VERSION",
+            providerMutationPossible: false,
+          },
+        },
+      );
     }
     const verifiedTerminalReplay = !created.created && options.allowVerifiedTerminalReplay === true &&
       created.preparation.state === "POSTED_READBACK_VERIFIED";

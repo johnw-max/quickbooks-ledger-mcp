@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 import {
+  QUICKBOOKS_ACCOUNT_TYPES,
   QUICKBOOKS_ACCOUNTING_FACT_KINDS,
   QUICKBOOKS_UNSUPPORTED_EVENT_TYPES,
 } from "./accountingCase.js";
@@ -93,6 +94,23 @@ const contact = z.object({
   // reconcileContactCurrencies in accountingCaseCompiler.ts.
 }).strict();
 
+const accountCandidate = z.object({
+  ...factBase,
+  kind: z.literal("ACCOUNT_CANDIDATE"),
+  name: z.string().trim().min(1).max(100),
+  accountType: z.enum(QUICKBOOKS_ACCOUNT_TYPES),
+  parentAccountName: z.string().trim().min(1).max(255).optional(),
+}).strict();
+
+const itemCandidate = z.object({
+  ...factBase,
+  kind: z.literal("ITEM_CANDIDATE"),
+  name: z.string().trim().min(1).max(100),
+  itemType: z.enum(["SERVICE", "NON_INVENTORY"]),
+  incomeAccountName: z.string().trim().min(1).max(255),
+  expenseAccountName: z.string().trim().min(1).max(255).optional(),
+}).strict();
+
 const documentLine = z.object({
   lineId: id,
   description: z.string().trim().min(1).max(1_000),
@@ -107,7 +125,7 @@ const documentLine = z.object({
 const document = z.object({
   ...factBase,
   kind: z.literal("NATIVE_DOCUMENT"),
-  documentType: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT", "PURCHASE"]),
+  documentType: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT", "PURCHASE", "SALES_RECEIPT"]),
   counterpartyName: z.string().trim().min(1).max(255),
   documentDate: date,
   dueDate: date.optional(),
@@ -127,25 +145,32 @@ const document = z.object({
   if (value.dueDate && value.dueDate < value.documentDate) {
     context.addIssue({ code: "custom", path: ["dueDate"], message: "must not be before documentDate" });
   }
-  // A Purchase is the only released document that already moved money, so it
-  // is the only one that names where the money came from. QuickBooks requires
-  // both fields on the object and accepts neither on the other four.
-  if (value.documentType === "PURCHASE") {
+  // A Purchase and a SalesReceipt are the two released documents whose cash has
+  // already moved, so they are the two that name the money account it moved
+  // through. QuickBooks accepts that account on neither of the other four, and
+  // carries PaymentType on a Purchase alone.
+  if (value.documentType === "PURCHASE" || value.documentType === "SALES_RECEIPT") {
     if (!value.paymentAccountName) {
-      context.addIssue({ code: "custom", path: ["paymentAccountName"], message: "a purchase requires the exact bank or credit card account the money came from" });
+      context.addIssue({
+        code: "custom",
+        path: ["paymentAccountName"],
+        message: value.documentType === "PURCHASE"
+          ? "a purchase requires the exact bank or credit card account the money came from"
+          : "a sales receipt requires the exact bank or undeposited funds account the money landed in",
+      });
     }
+  } else if (value.paymentAccountName !== undefined) {
+    context.addIssue({ code: "custom", path: ["paymentAccountName"], message: "only a PURCHASE or SALES_RECEIPT names a money account" });
+  }
+  if (value.documentType === "PURCHASE") {
     if (!value.paymentType) {
       context.addIssue({ code: "custom", path: ["paymentType"], message: "a purchase requires paymentType CASH, CHECK or CREDIT_CARD" });
     }
-  } else {
-    if (value.paymentAccountName !== undefined) {
-      context.addIssue({ code: "custom", path: ["paymentAccountName"], message: "only a PURCHASE names a payment account" });
-    }
-    if (value.paymentType !== undefined) {
-      context.addIssue({ code: "custom", path: ["paymentType"], message: "only a PURCHASE names a payment type" });
-    }
+  } else if (value.paymentType !== undefined) {
+    context.addIssue({ code: "custom", path: ["paymentType"], message: "only a PURCHASE names a payment type" });
   }
-  const salesSide = value.documentType === "INVOICE" || value.documentType === "CREDIT_MEMO";
+  const salesSide = value.documentType === "INVOICE" || value.documentType === "CREDIT_MEMO" ||
+    value.documentType === "SALES_RECEIPT";
   for (const [index, line] of value.lines.entries()) {
     if (salesSide && line.codingType !== "ITEM") {
       context.addIssue({ code: "custom", path: ["lines", index, "codingType"], message: "sales documents require ITEM coding" });
@@ -191,6 +216,17 @@ const journalEntry = z.object({
   }
 });
 
+const sourceAttachment = z.object({
+  ...factBase,
+  kind: z.literal("SOURCE_ATTACHMENT"),
+  documentType: z.enum(["INVOICE", "BILL", "CREDIT_MEMO", "VENDOR_CREDIT", "PURCHASE", "SALES_RECEIPT"]),
+  counterpartyName: z.string().trim().min(1).max(255),
+  // Required, unlike on the document itself: this is the natural key the posted
+  // transaction is found by, and an unnumbered document has no natural key.
+  documentNumber: z.string().trim().min(1).max(21),
+  note: z.string().trim().min(3).max(1_000),
+}).strict();
+
 const unsupportedEvent = z.object({
   ...factBase,
   kind: z.literal("UNSUPPORTED_EVENT"),
@@ -221,8 +257,11 @@ const control = z.object({
 
 export const quickBooksAccountingFactSchema = z.discriminatedUnion("kind", [
   contact,
+  accountCandidate,
+  itemCandidate,
   document,
   journalEntry,
+  sourceAttachment,
   unsupportedEvent,
   evidence,
   control,

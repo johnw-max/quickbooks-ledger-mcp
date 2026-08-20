@@ -5,7 +5,7 @@ import type {
   QuickBooksMutationReuseEvidence,
 } from "./autonomousAuthorizationEvidence.js";
 
-export const QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION = "0.3.0";
+export const QUICKBOOKS_ACCOUNTING_CASE_COMPILER_VERSION = "0.4.0";
 export const QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION = "quickbooks-sg-core-v1";
 
 /**
@@ -14,36 +14,48 @@ export const QUICKBOOKS_ACCOUNTING_CASE_POLICY_VERSION = "quickbooks-sg-core-v1"
  * the Agent-facing Case tools in this release.
  *
  * The boundary is drawn on writePolicy's `providerEffect`: MASTER_DATA,
- * POSTING_TRANSACTION and LEDGER_ADJUSTMENT record the books and are released
- * here; CASH_MOVEMENT (Payment, BillPayment, Deposit, Transfer, RefundReceipt)
- * initiates or settles money and stays out of this release deliberately.
+ * POSTING_TRANSACTION, LEDGER_ADJUSTMENT and ATTACHMENT record the books or the
+ * evidence for them and are released here; CASH_MOVEMENT (Payment, BillPayment,
+ * Deposit, Transfer, RefundReceipt) initiates or settles money and stays out of
+ * this release deliberately.
  */
 export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_CAPABILITIES = [
   "CREATE:Customer",
   "CREATE:Vendor",
+  "CREATE:Account",
+  "CREATE:Item",
   "CREATE:Invoice",
   "CREATE:Bill",
   "CREATE:CreditMemo",
   "CREATE:VendorCredit",
   "CREATE:JournalEntry",
   "CREATE:Purchase",
+  "CREATE:SalesReceipt",
+  "CREATE:Attachable",
 ] as const;
 
 export const QUICKBOOKS_ACCOUNTING_CASE_RELEASED_ACTIONS = [
   "customer.create_basic",
   "vendor.create_basic",
+  "account.create",
+  "item.create",
   "invoice.create",
   "bill.create",
   "credit_memo.create",
   "vendor_credit.create",
   "journal_entry.create",
   "purchase.create",
+  "sales_receipt.create",
+  "attachment.create",
 ] as const;
 
 export const QUICKBOOKS_ACCOUNTING_FACT_KINDS = [
   "CONTACT_CANDIDATE",
+  "ACCOUNT_CANDIDATE",
+  "ITEM_CANDIDATE",
   "NATIVE_DOCUMENT",
   "JOURNAL_ENTRY",
+  "SOURCE_ATTACHMENT",
   "UNSUPPORTED_EVENT",
   "EVIDENCE",
   "CONTROL_FINDING",
@@ -138,15 +150,80 @@ export interface QuickBooksContactCandidateFact extends QuickBooksFactBase {
   currency?: string;
 }
 
+/**
+ * QuickBooks' own AccountType vocabulary, closed. The server never invents a
+ * type and never maps a description onto one; the accountant names the type
+ * QuickBooks itself would show in the chart of accounts.
+ */
+export const QUICKBOOKS_ACCOUNT_TYPES = [
+  "Bank",
+  "Other Current Asset",
+  "Fixed Asset",
+  "Other Asset",
+  "Accounts Receivable",
+  "Equity",
+  "Expense",
+  "Other Expense",
+  "Cost of Goods Sold",
+  "Accounts Payable",
+  "Credit Card",
+  "Long Term Liability",
+  "Other Current Liability",
+  "Income",
+  "Other Income",
+] as const;
+
+export type QuickBooksAccountType = typeof QUICKBOOKS_ACCOUNT_TYPES[number];
+
+/**
+ * A chart-of-accounts record the Case may need to create before it can code a
+ * line to it. Same shape as CONTACT_CANDIDATE and the same discipline: exact
+ * name resolution, never a guess, and an account that already exists is
+ * ALREADY_SATISFIED rather than a duplicate.
+ *
+ * A sub-account is named by its parent, and resolution everywhere in this
+ * release is on `FullyQualifiedName ?? Name`, so the identity of this record is
+ * the qualified path `Parent:Child`, not the bare leaf name.
+ */
+export interface QuickBooksAccountCandidateFact extends QuickBooksFactBase {
+  kind: "ACCOUNT_CANDIDATE";
+  name: string;
+  accountType: QuickBooksAccountType;
+  /** Exact name of an existing account this one hangs under. Omit for a top-level account. */
+  parentAccountName?: string;
+}
+
+/** QuickBooks Item.Type. Inventory is deliberately absent: it needs an asset account, an opening quantity and a start date, none of which this release carries. */
+export type QuickBooksItemType = "SERVICE" | "NON_INVENTORY";
+
+/**
+ * A product or service record. Sales documents code their lines by Item, so an
+ * accountant who meets a service the ledger has never billed before has to be
+ * able to add it without leaving the product.
+ */
+export interface QuickBooksItemCandidateFact extends QuickBooksFactBase {
+  kind: "ITEM_CANDIDATE";
+  name: string;
+  itemType: QuickBooksItemType;
+  /** Exact chart-of-accounts name the item's revenue posts to. */
+  incomeAccountName: string;
+  /** Exact chart-of-accounts name the item's cost posts to when it is bought rather than sold. */
+  expenseAccountName?: string;
+}
+
 export type QuickBooksNativeDocumentType =
   | "INVOICE"
   | "BILL"
   | "CREDIT_MEMO"
   | "VENDOR_CREDIT"
-  | "PURCHASE";
+  | "PURCHASE"
+  | "SALES_RECEIPT";
 
 /** QuickBooks Purchase.PaymentType. Cash and Check draw a bank account; CreditCard draws a card account. */
 export type QuickBooksPurchasePaymentType = "CASH" | "CHECK" | "CREDIT_CARD";
+
+/** Document types whose cash side has already settled, so the document names the money account it settled through. */
+export const QUICKBOOKS_MONEY_ACCOUNT_DOCUMENT_TYPES: readonly QuickBooksNativeDocumentType[] = ["PURCHASE", "SALES_RECEIPT"];
 
 export interface QuickBooksNativeDocumentLine {
   lineId: string;
@@ -176,13 +253,24 @@ export interface QuickBooksNativeDocumentFact extends QuickBooksFactBase {
   declaredGross: string;
   businessReason: string;
   /**
-   * PURCHASE only, and required there. A Purchase records an outflow that has
-   * already happened, so unlike every other document type it names the account
-   * the money left from -- a bank or credit card account, resolved by exact
-   * name against the chart of accounts -- and how it left. QuickBooks requires
-   * both on the object; every other released documentType must omit them.
+   * The money account this document's cash side settled through, resolved by
+   * exact name against the chart of accounts. Required for exactly the two
+   * document types whose cash has already moved, and refused on the other four:
+   *
+   *  - PURCHASE     -- the bank or credit card account the money left from,
+   *                    QuickBooks' `AccountRef`.
+   *  - SALES_RECEIPT -- the bank or undeposited-funds account the money landed
+   *                    in, QuickBooks' `DepositToAccountRef`.
+   *
+   * Neither initiates a movement; both record one that already happened.
    */
   paymentAccountName?: string;
+  /**
+   * PURCHASE only, and required there. QuickBooks carries `PaymentType` on a
+   * Purchase and not on a SalesReceipt, which names its tender through
+   * `PaymentMethodRef` instead -- a master-data reference this release does not
+   * carry, so it is left unset and QuickBooks records the receipt without one.
+   */
   paymentType?: QuickBooksPurchasePaymentType;
 }
 
@@ -237,6 +325,42 @@ export interface QuickBooksUnsupportedEventFact extends QuickBooksFactBase {
   note: string;
 }
 
+/**
+ * The source document, carried into QuickBooks and hung off the transaction it
+ * produced, so the client's auditor opening that Bill sees where it came from.
+ *
+ * This is the only fact kind whose Provider reference is an object *this system
+ * created*, which is what makes it a third stage rather than a second one. It
+ * names its target the same way the duplicate check names an existing document
+ * -- documentType, exact counterparty, exact document number -- and that
+ * target is resolved at prepare time against the ledger, exactly as a document
+ * resolves its counterparty. Before the document posts there is nothing to
+ * resolve, so the attachment plans as REVIEW_REQUIRED / REFERENCE_NOT_FOUND and
+ * the next Case version picks it up. No ordering machinery exists or is needed:
+ * ordering is what prepare-time reference resolution already does. It follows
+ * that the target document must carry a documentNumber; an unnumbered document
+ * has no natural key to attach to.
+ *
+ * It is deliberately not EVIDENCE. An EVIDENCE fact is Case-internal and never
+ * reaches QuickBooks; this one is a Provider write with a Provider id, a
+ * receipt and an exact read-back like any other.
+ *
+ * The attachment is a *note*, not a file. The Agent holds extracted text, never
+ * the original bytes, so the multipart `/upload` form is out of reach and would
+ * be a lie to attempt; the note form is a plain JSON POST to `/attachable` and
+ * carries the source identity the Case already computed -- reference, SHA-256
+ * and digest provenance -- which is the part an auditor needs and the part the
+ * Agent can honestly assert.
+ */
+export interface QuickBooksSourceAttachmentFact extends QuickBooksFactBase {
+  kind: "SOURCE_ATTACHMENT";
+  documentType: QuickBooksNativeDocumentType;
+  counterpartyName: string;
+  documentNumber: string;
+  /** What this evidence is, in the accountant's words. The server appends the source identity. */
+  note: string;
+}
+
 export interface QuickBooksEvidenceFact extends QuickBooksFactBase {
   kind: "EVIDENCE";
   evidenceRole: "SOURCE_DOCUMENT" | "APPROVAL" | "CORRESPONDENCE" | "CONTROL_SUPPORT";
@@ -254,8 +378,11 @@ export interface QuickBooksControlFindingFact extends QuickBooksFactBase {
 
 export type QuickBooksAccountingFact =
   | QuickBooksContactCandidateFact
+  | QuickBooksAccountCandidateFact
+  | QuickBooksItemCandidateFact
   | QuickBooksNativeDocumentFact
   | QuickBooksJournalEntryFact
+  | QuickBooksSourceAttachmentFact
   | QuickBooksUnsupportedEventFact
   | QuickBooksEvidenceFact
   | QuickBooksControlFindingFact;
@@ -276,7 +403,12 @@ export interface QuickBooksCaseEvent {
   sourceUnitIds: string[];
   disposition: QuickBooksCaseEventDisposition;
   reasonCodes: string[];
-  route?: QuickBooksNativeDocumentType | "CONTACT_CREATE" | "JOURNAL_ENTRY";
+  route?: QuickBooksNativeDocumentType
+    | "CONTACT_CREATE"
+    | "ACCOUNT_CREATE"
+    | "ITEM_CREATE"
+    | "JOURNAL_ENTRY"
+    | "ATTACHMENT_CREATE";
   unsupportedEventType?: QuickBooksUnsupportedEventType;
 }
 

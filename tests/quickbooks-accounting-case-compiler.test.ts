@@ -319,4 +319,213 @@ describe("QuickBooks Accounting Case compiler", () => {
     });
     expect(quickBooksPrepareAccountingCaseSchema.safeParse(onABill).success).toBe(false);
   });
+
+  // ---- POSTING_TRANSACTION: SalesReceipt --------------------------------
+
+  const salesReceiptCase = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "counter-sale-v1", lineageKey: "counter-sale", eventKey: "counter-sale", sourceUnitIds: ["page-1"],
+      origin: "MODEL_EXTRACTED", revision: 1, kind: "NATIVE_DOCUMENT",
+      documentType: "SALES_RECEIPT", counterpartyName: "Walk-in Customer", documentDate: "2026-08-02",
+      documentNumber: "SR-2001", currency: "SGD", taxMode: "NO_TAX",
+      lines: [{
+        lineId: "workshop", description: "Bookkeeping workshop seat", quantity: "2", unitAmount: "150.00",
+        sourceTax: "0.00", codingType: "ITEM", codingName: "Training",
+      }],
+      declaredNet: "300.00", declaredTax: "0.00", declaredGross: "300.00",
+      businessReason: "Record the cash sale taken at the counter.",
+      paymentAccountName: "Undeposited Funds",
+    };
+    mutate(fact);
+    return {
+      target_session_ref,
+      case_id: "case-counter-sale-001",
+      expected_version: 0,
+      sources: [{ artifactId: "receipt.pdf", label: "Counter receipt", units: [{ unitId: "page-1", expectedFactKinds: ["NATIVE_DOCUMENT" as const] }] }],
+      facts: [fact],
+    };
+  };
+
+  it("plans a cash sale as its own document route and derives its contact as a Customer", () => {
+    const compiled = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(salesReceiptCase()));
+    expect(compiled).toMatchObject({
+      status: "PLANNED_NEEDS_PREFLIGHT",
+      events: [{ disposition: "AUTO_EXECUTE", route: "SALES_RECEIPT" }],
+      operationCandidates: [{ actionId: "sales_receipt.create", entity: "SalesReceipt" }],
+    });
+  });
+
+  it("requires a deposit account on a sales receipt, refuses a payment type on one, and demands ITEM coding", () => {
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(
+      salesReceiptCase((fact) => { delete fact.paymentAccountName; }),
+    ).success).toBe(false);
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(
+      salesReceiptCase((fact) => { fact.paymentType = "CASH"; }),
+    ).success).toBe(false);
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(
+      salesReceiptCase((fact) => { (fact.lines as Array<Record<string, unknown>>)[0]!.codingType = "ACCOUNT"; }),
+    ).success).toBe(false);
+  });
+
+  // ---- MASTER_DATA: Account and Item ------------------------------------
+
+  const masterDataCase = (facts: Array<Record<string, unknown>>, expectedFactKinds: string[]) => ({
+    target_session_ref,
+    case_id: "case-master-data-001",
+    expected_version: 0,
+    sources: [{ artifactId: "chart-request.md", label: "Chart of accounts request", units: [{ unitId: "row-1", expectedFactKinds }] }],
+    facts,
+  });
+
+  const accountFact = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "account-v1", lineageKey: "account", eventKey: "account", sourceUnitIds: ["row-1"],
+      origin: "AGENT_ASSERTED", revision: 1, kind: "ACCOUNT_CANDIDATE",
+      name: "Software Subscriptions", accountType: "Expense",
+    };
+    mutate(fact);
+    return fact;
+  };
+
+  const itemFact = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "item-v1", lineageKey: "item", eventKey: "item", sourceUnitIds: ["row-1"],
+      origin: "AGENT_ASSERTED", revision: 1, kind: "ITEM_CANDIDATE",
+      name: "Training", itemType: "SERVICE", incomeAccountName: "Services Income",
+    };
+    mutate(fact);
+    return fact;
+  };
+
+  it("plans an account and an item as their own master-data routes", () => {
+    const compiled = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      masterDataCase([accountFact(), itemFact()], ["ACCOUNT_CANDIDATE", "ITEM_CANDIDATE"]),
+    ));
+    expect(compiled.status).toBe("PLANNED_NEEDS_PREFLIGHT");
+    expect(compiled.events.map((event) => event.route).sort()).toEqual(["ACCOUNT_CREATE", "ITEM_CREATE"]);
+    expect(compiled.operationCandidates.map((candidate) => ({ actionId: candidate.actionId, entity: candidate.entity })))
+      .toEqual(expect.arrayContaining([
+        { actionId: "account.create", entity: "Account" },
+        { actionId: "item.create", entity: "Item" },
+      ]));
+    // Master data carries no amounts, so it must carry no amount bridge either;
+    // an unexpected bridge is a hard source-integrity mismatch downstream.
+    expect(compiled.operationCandidates.every((candidate) => candidate.amountBridge === undefined)).toBe(true);
+  });
+
+  it("keys an account on its qualified path, so a sub-account is not the same operation as a top-level one", () => {
+    const topLevel = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      masterDataCase([accountFact()], ["ACCOUNT_CANDIDATE"]),
+    )).operationCandidates[0]?.stableOperationKey;
+    const subAccount = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      masterDataCase([accountFact((fact) => { fact.parentAccountName = "Operating Expenses"; })], ["ACCOUNT_CANDIDATE"]),
+    )).operationCandidates[0]?.stableOperationKey;
+    expect(topLevel).toBeDefined();
+    expect(subAccount).toBeDefined();
+    expect(subAccount).not.toBe(topLevel);
+    // The account type is deliberately outside the key: restating the same
+    // account with a corrected type must retry that same logical create, not
+    // open a second one that would collide on the name in QuickBooks.
+    const retypedTopLevel = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      masterDataCase([accountFact((fact) => { fact.accountType = "Other Expense"; })], ["ACCOUNT_CANDIDATE"]),
+    )).operationCandidates[0]?.stableOperationKey;
+    expect(retypedTopLevel).toBe(topLevel);
+  });
+
+  it("blocks master-data names that would make their own qualified identity ambiguous", () => {
+    const colonInName = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      masterDataCase([accountFact((fact) => { fact.name = "Operating Expenses:Software"; })], ["ACCOUNT_CANDIDATE"]),
+    ));
+    expect(colonInName).toMatchObject({
+      status: "BLOCKED_VALIDATION",
+      events: [{ reasonCodes: ["MASTER_DATA_NAME_MUST_NOT_CONTAIN_A_QUALIFIED_NAME_SEPARATOR"] }],
+    });
+    expect(colonInName.operationCandidates).toEqual([]);
+
+    const ownParent = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      masterDataCase([accountFact((fact) => { fact.parentAccountName = "Software Subscriptions"; })], ["ACCOUNT_CANDIDATE"]),
+    ));
+    expect(ownParent).toMatchObject({
+      status: "BLOCKED_VALIDATION",
+      events: [{ reasonCodes: ["ACCOUNT_CANNOT_BE_ITS_OWN_PARENT"] }],
+    });
+
+    const itemColon = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      masterDataCase([itemFact((fact) => { fact.name = "Services:Training"; })], ["ITEM_CANDIDATE"]),
+    ));
+    expect(itemColon.status).toBe("BLOCKED_VALIDATION");
+  });
+
+  it("refuses an inventory item and an account type QuickBooks does not have", () => {
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(
+      masterDataCase([itemFact((fact) => { fact.itemType = "INVENTORY"; })], ["ITEM_CANDIDATE"]),
+    ).success).toBe(false);
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(
+      masterDataCase([accountFact((fact) => { fact.accountType = "Expenses"; })], ["ACCOUNT_CANDIDATE"]),
+    ).success).toBe(false);
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(
+      masterDataCase([itemFact((fact) => { delete fact.incomeAccountName; })], ["ITEM_CANDIDATE"]),
+    ).success).toBe(false);
+  });
+
+  // ---- ATTACHMENT: the source document follows the entry ----------------
+
+  const attachmentCase = (mutate: (fact: Record<string, unknown>) => void = () => {}) => {
+    const fact: Record<string, unknown> = {
+      factId: "attachment-v1", lineageKey: "attachment", eventKey: "attachment", sourceUnitIds: ["page-1"],
+      origin: "MODEL_EXTRACTED", revision: 1, kind: "SOURCE_ATTACHMENT",
+      documentType: "BILL", counterpartyName: "OfficeHub", documentNumber: "OH-1001",
+      note: "Original supplier invoice as received by email.",
+    };
+    mutate(fact);
+    return {
+      target_session_ref,
+      case_id: "case-attachment-001",
+      expected_version: 0,
+      sources: [{
+        artifactId: "invoice.pdf",
+        label: "OfficeHub invoice",
+        units: [{ unitId: "page-1", expectedFactKinds: ["SOURCE_ATTACHMENT" as const] }],
+        sourceRef: "drive://officehub/OH-1001.pdf",
+        sourceSha256: "b".repeat(64),
+        sourceDigestProvenance: "AGENT_SUPPLIED_TEXT_FINGERPRINT" as const,
+      }],
+      facts: [fact],
+    };
+  };
+
+  it("plans an attachment as its own route with no amount bridge", () => {
+    const compiled = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(attachmentCase()));
+    expect(compiled).toMatchObject({
+      status: "PLANNED_NEEDS_PREFLIGHT",
+      events: [{ disposition: "AUTO_EXECUTE", route: "ATTACHMENT_CREATE" }],
+      operationCandidates: [{ actionId: "attachment.create", entity: "Attachable" }],
+    });
+    expect(compiled.operationCandidates[0]).not.toHaveProperty("amountBridge");
+  });
+
+  it("keys an attachment on its target transaction and its own note", () => {
+    const base = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(attachmentCase()))
+      .operationCandidates[0]?.stableOperationKey;
+    const otherNote = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      attachmentCase((fact) => { fact.note = "Approval email from the finance director."; }),
+    )).operationCandidates[0]?.stableOperationKey;
+    const otherDocument = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      attachmentCase((fact) => { fact.documentNumber = "OH-1002"; }),
+    )).operationCandidates[0]?.stableOperationKey;
+    // Restating the same evidence differently-cased is the same attachment.
+    const recased = compileParsed(quickBooksPrepareAccountingCaseSchema.parse(
+      attachmentCase((fact) => { fact.counterpartyName = "officehub"; }),
+    )).operationCandidates[0]?.stableOperationKey;
+    expect(base).toBeDefined();
+    expect(otherNote).not.toBe(base);
+    expect(otherDocument).not.toBe(base);
+    expect(recased).toBe(base);
+  });
+
+  it("requires the attachment's target document number, because that is how the posted transaction is found", () => {
+    expect(quickBooksPrepareAccountingCaseSchema.safeParse(
+      attachmentCase((fact) => { delete fact.documentNumber; }),
+    ).success).toBe(false);
+  });
 });
